@@ -285,7 +285,8 @@ class CliAgentChatActivity : AppCompatActivity() {
             val danger = if (runtimeOptions.dangerousAutoApprove) "开" else "关"
             val mode = if (runtimeOptions.claudeNativeSession) "原生会话" else "兼容会话"
             val nativeTag = buildNativeStatusTag()
-            "就绪 · 共享存储:$shared · 高权限:$danger · 会话模式:$mode · native:$nativeTag · 链路:$lastExecutionRoute"
+            val runtimeTag = if (agentId == ExternalAgentId.CLAUDE_CODE) serverManager.describeClaudeExecutionRoute() else "n/a"
+            "就绪 · 共享存储:$shared · 高权限:$danger · 会话模式:$mode · native:$nativeTag · 运行时:$runtimeTag · 链路:$lastExecutionRoute"
         }
         tvAttachmentSummary.text = buildAttachmentSummary()
         renderBottomTabState()
@@ -1328,15 +1329,10 @@ class CliAgentChatActivity : AppCompatActivity() {
         resumeSessionId: String = "",
         sendPromptViaStdin: Boolean = true,
     ): AgentRunResult {
-        val paths = BootstrapInstaller.getPaths(this)
-        val nodePath = File(paths.prefixDir, "bin/node").absolutePath
-        val claudeCliPath = File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code/cli.js").absolutePath
         val mcpConfigPath = ensureClaudeAnyClawMcpConfig(options).absolutePath
         val systemPromptFile = buildClaudeSystemPromptFile()
 
         val args = mutableListOf(
-            nodePath,
-            claudeCliPath,
             "-p",
             "--verbose",
         )
@@ -1368,7 +1364,7 @@ class CliAgentChatActivity : AppCompatActivity() {
             extraEnv["ANTHROPIC_BASE_URL"] = config.baseUrl.trim()
         }
 
-        val process = serverManager.startPrefixExecProcess(args, extraEnv)
+        val process = serverManager.startClaudeExecProcess(args, extraEnv)
         if (sendPromptViaStdin) {
             runCatching {
                 process.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
