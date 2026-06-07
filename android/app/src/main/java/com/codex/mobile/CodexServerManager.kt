@@ -2585,10 +2585,10 @@ WEOF
             set +e
             PREFIX_DIR="${paths.prefixDir}"
             HOME_DIR="${paths.homeDir}"
-            LEGACY_JS="$PREFIX_DIR/lib/node_modules/@anthropic-ai/claude-code/cli.js"
-            GLIBC_BIN="$PREFIX_DIR/lib/node_modules/@anthropic-ai/claude-code-linux-arm64/claude"
-            NODE_BIN="$PREFIX_DIR/bin/node"
-            UBUNTU_BIN="${'$'}{ANYCLAW_UBUNTU_BIN:-$HOME_DIR/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh}"
+            LEGACY_JS="${'$'}PREFIX_DIR/lib/node_modules/@anthropic-ai/claude-code/cli.js"
+            GLIBC_BIN="${'$'}PREFIX_DIR/lib/node_modules/@anthropic-ai/claude-code-linux-arm64/claude"
+            NODE_BIN="${'$'}PREFIX_DIR/bin/node"
+            UBUNTU_BIN="${'$'}{ANYCLAW_UBUNTU_BIN:-${'$'}HOME_DIR/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh}"
 
             if [ -f "${'$'}LEGACY_JS" ] && [ -x "${'$'}NODE_BIN" ]; then
               exec "${'$'}NODE_BIN" "${'$'}LEGACY_JS" "${'$'}@"
@@ -2598,10 +2598,10 @@ WEOF
               quote_arg() {
                 printf "'%s'" "${'$'}(printf "%s" "${'$'}1" | sed "s/'/'\"'\"'/g")"
               }
-              cmd="cd ${'$'}(quote_arg "${'$'}{PWD:-$HOME_DIR}") 2>/dev/null || true; exec env"
+              cmd="cd ${'$'}(quote_arg "${'$'}{PWD:-${'$'}HOME_DIR}") 2>/dev/null || true; exec env"
               append_env() {
                 name="${'$'}1"
-                eval "value=\${${'$'}name:-}"
+                value="${'$'}(printenv "${'$'}name" 2>/dev/null || true)"
                 [ -n "${'$'}value" ] || return 0
                 cmd="${'$'}cmd ${'$'}name=${'$'}(quote_arg "${'$'}value")"
               }
