@@ -256,12 +256,26 @@ class CodexServerManager(private val context: Context) {
         return sb.toString().trim()
     }
 
-    private fun legacyClaudeCliFile(paths: BootstrapInstaller.Paths): File {
-        return File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code/cli.js")
+    private fun claudeRootPackageDir(paths: BootstrapInstaller.Paths): File {
+        return File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code")
     }
 
-    private fun claudeGlibcBinaryFile(paths: BootstrapInstaller.Paths): File {
-        return File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code-linux-arm64/claude")
+    private fun legacyClaudeCliFile(paths: BootstrapInstaller.Paths): File {
+        return File(claudeRootPackageDir(paths), "cli.js")
+    }
+
+    private fun claudeGlibcBinaryCandidates(paths: BootstrapInstaller.Paths): List<File> {
+        return listOf(
+            File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code-linux-arm64/claude"),
+            File(
+                paths.prefixDir,
+                "lib/node_modules/@anthropic-ai/claude-code/node_modules/@anthropic-ai/claude-code-linux-arm64/claude",
+            ),
+        )
+    }
+
+    private fun claudeGlibcBinaryFile(paths: BootstrapInstaller.Paths): File? {
+        return claudeGlibcBinaryCandidates(paths).firstOrNull { it.exists() }
     }
 
     private fun claudeWrapperFile(paths: BootstrapInstaller.Paths): File {
@@ -287,7 +301,7 @@ class CodexServerManager(private val context: Context) {
         val paths = BootstrapInstaller.getPaths(context)
         return when {
             legacyClaudeCliFile(paths).exists() -> "本地JS"
-            claudeGlibcBinaryFile(paths).exists() -> "Ubuntu"
+            claudeGlibcBinaryFile(paths) != null -> "Ubuntu"
             else -> "未安装"
         }
     }
@@ -306,7 +320,7 @@ class CodexServerManager(private val context: Context) {
         }
 
         val glibcBinary = claudeGlibcBinaryFile(paths)
-        if (glibcBinary.exists()) {
+        if (glibcBinary != null) {
             return startUbuntuExecProcess(listOf(glibcBinary.absolutePath) + args, extraEnv, paths.homeDir)
         }
 
@@ -330,13 +344,15 @@ class CodexServerManager(private val context: Context) {
         return File(paths.prefixDir, "lib/node_modules/@openai/codex/bin/codex.js").exists()
     }
 
+    fun isClaudeCodePackageInstalled(): Boolean {
+        val paths = BootstrapInstaller.getPaths(context)
+        return claudeRootPackageDir(paths).exists()
+    }
+
     fun isClaudeCodeInstalled(): Boolean {
         val paths = BootstrapInstaller.getPaths(context)
-        val pkg = File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code")
-        if (!pkg.exists()) return false
-        return legacyClaudeCliFile(paths).exists() ||
-            claudeGlibcBinaryFile(paths).exists() ||
-            claudeWrapperFile(paths).exists()
+        if (!claudeRootPackageDir(paths).exists()) return false
+        return legacyClaudeCliFile(paths).exists() || claudeGlibcBinaryFile(paths) != null
     }
 
     fun getInstalledCodexVersion(): String {
@@ -350,11 +366,48 @@ class CodexServerManager(private val context: Context) {
 
     fun getInstalledClaudeCodeVersion(): String {
         val paths = BootstrapInstaller.getPaths(context)
-        val pkg = File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code/package.json")
+        val pkg = File(claudeRootPackageDir(paths), "package.json")
         if (!pkg.exists()) return ""
         return runCatching {
             JSONObject(pkg.readText()).optString("version", "").trim()
         }.getOrDefault("")
+    }
+
+    fun verifyClaudeRuntime(onProgress: ((String) -> Unit)? = null): Boolean {
+        val paths = BootstrapInstaller.getPaths(context)
+        val timeoutMs = 30L
+        val glibcBinary = claudeGlibcBinaryFile(paths)
+
+        val process =
+            when {
+                legacyClaudeCliFile(paths).exists() -> {
+                    val nodePath = File(paths.prefixDir, "bin/node").absolutePath
+                    startPrefixExecProcess(listOf(nodePath, legacyClaudeCliFile(paths).absolutePath, "--version"))
+                }
+                glibcBinary != null -> {
+                    startUbuntuExecProcess(
+                        listOf(glibcBinary.absolutePath, "--version"),
+                        workingDirectory = paths.homeDir,
+                    )
+                }
+                else -> return false
+            }
+
+        val finished = runCatching { process.waitFor(timeoutMs, TimeUnit.SECONDS) }.getOrDefault(false)
+        if (!finished) {
+            runCatching { process.destroy() }
+            onProgress?.invoke("Claude runtime check timed out")
+            return false
+        }
+
+        val output =
+            runCatching {
+                process.inputStream.bufferedReader().use { it.readText().trim() }
+            }.getOrDefault("")
+        if (output.isNotBlank()) {
+            onProgress?.invoke(output)
+        }
+        return process.exitValue() == 0 && output.contains("Claude Code")
     }
 
     fun isServerBundleInstalled(): Boolean = false
@@ -2541,7 +2594,11 @@ EOF
             return false
         }
         ensureClaudeWrapperScript()
-        return isClaudeCodeInstalled()
+        val ready = verifyClaudeRuntime(onProgress)
+        if (!ready) {
+            Log.e(TAG, "Claude runtime verification failed after install")
+        }
+        return ready
     }
 
     fun ensureCodexWrapperScript() {
@@ -2570,7 +2627,7 @@ WEOF
         val paths = BootstrapInstaller.getPaths(context)
         val legacyCli = legacyClaudeCliFile(paths)
         val glibcBinary = claudeGlibcBinaryFile(paths)
-        if (!legacyCli.exists() && !glibcBinary.exists()) return
+        if (!legacyCli.exists() && glibcBinary == null) return
 
         val claudeBin = claudeWrapperFile(paths)
         runCatching {
@@ -2586,7 +2643,7 @@ WEOF
             PREFIX_DIR="${paths.prefixDir}"
             HOME_DIR="${paths.homeDir}"
             LEGACY_JS="${'$'}PREFIX_DIR/lib/node_modules/@anthropic-ai/claude-code/cli.js"
-            GLIBC_BIN="${'$'}PREFIX_DIR/lib/node_modules/@anthropic-ai/claude-code-linux-arm64/claude"
+            GLIBC_BIN="${glibcBinary?.absolutePath.orEmpty()}"
             NODE_BIN="${'$'}PREFIX_DIR/bin/node"
             UBUNTU_BIN="${'$'}{ANYCLAW_UBUNTU_BIN:-${'$'}HOME_DIR/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh}"
 
@@ -2594,7 +2651,7 @@ WEOF
               exec "${'$'}NODE_BIN" "${'$'}LEGACY_JS" "${'$'}@"
             fi
 
-            if [ -x "${'$'}GLIBC_BIN" ] && [ -x "${'$'}UBUNTU_BIN" ]; then
+            if [ -n "${'$'}GLIBC_BIN" ] && [ -x "${'$'}GLIBC_BIN" ] && [ -x "${'$'}UBUNTU_BIN" ]; then
               quote_arg() {
                 printf "'%s'" "${'$'}(printf "%s" "${'$'}1" | sed "s/'/'\"'\"'/g")"
               }

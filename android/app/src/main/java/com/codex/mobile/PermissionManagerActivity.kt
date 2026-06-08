@@ -272,27 +272,43 @@ class PermissionManagerActivity : AppCompatActivity() {
             getString(R.string.codex_auth_status_checking),
         )
         Thread {
-            val claudeInstalled = runCatching { serverManager.isClaudeCodeInstalled() }.getOrElse { false }
-            val claudeVersion = if (claudeInstalled) {
+            val claudePackageInstalled = runCatching { serverManager.isClaudeCodePackageInstalled() }.getOrElse { false }
+            val claudeRuntimeReady = runCatching { serverManager.isClaudeCodeInstalled() }.getOrElse { false }
+            val claudeVersion = if (claudePackageInstalled) {
                 runCatching { serverManager.getInstalledClaudeCodeVersion() }.getOrElse { "" }
             } else {
                 ""
             }
             runOnUiThread {
-                val statusText = if (claudeInstalled) {
-                    if (claudeVersion.isBlank()) {
-                        getString(R.string.optional_agent_installed)
-                    } else {
-                        "${getString(R.string.optional_agent_installed)} · CLI $claudeVersion"
+                val statusText = when {
+                    claudeRuntimeReady -> {
+                        if (claudeVersion.isBlank()) {
+                            getString(R.string.optional_agent_installed)
+                        } else {
+                            "${getString(R.string.optional_agent_installed)} · CLI $claudeVersion"
+                        }
                     }
-                } else {
-                    getString(R.string.optional_agent_not_installed)
+                    claudePackageInstalled -> {
+                        if (claudeVersion.isBlank()) {
+                            getString(R.string.optional_agent_runtime_missing)
+                        } else {
+                            getString(R.string.optional_agent_runtime_missing_with_version, claudeVersion)
+                        }
+                    }
+                    else -> {
+                        getString(R.string.optional_agent_not_installed)
+                    }
                 }
                 tvClaudeInstallStatus.text = getString(
                     R.string.optional_agent_status_template,
                     statusText,
                 )
                 btnClaudeInstall.isEnabled = !claudeInstallRunning
+                btnClaudeInstall.text = if (claudePackageInstalled || claudeRuntimeReady) {
+                    getString(R.string.claude_install_repair_text)
+                } else {
+                    getString(R.string.claude_install_button_text)
+                }
             }
         }.start()
     }

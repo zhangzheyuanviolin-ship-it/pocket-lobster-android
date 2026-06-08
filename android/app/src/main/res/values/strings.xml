@@ -189,9 +189,12 @@
     <string name="optional_agent_status_template">当前状态：%1$s</string>
     <string name="optional_agent_installed">已安装</string>
     <string name="optional_agent_not_installed">未安装</string>
+    <string name="optional_agent_runtime_missing">CLI 已下载，运行时未就绪</string>
+    <string name="optional_agent_runtime_missing_with_version">CLI %1$s 已下载，运行时未就绪</string>
     <string name="claude_install_title">Claude Code 组件</string>
     <string name="claude_install_subtitle">安装后可直接在聊天入口启动 Claude Code 智能体；点击按钮会升级到内置目标版本。</string>
     <string name="claude_install_button_text">安装或升级 Claude Code</string>
+    <string name="claude_install_repair_text">修复 Claude Code 组件</string>
     <string name="claude_install_starting">正在安装或升级 Claude Code…</string>
     <string name="claude_install_success">Claude Code 组件安装或升级完成。</string>
     <string name="claude_install_failed">Claude Code 组件安装失败，请检查网络后重试。</string>
