@@ -2236,7 +2236,7 @@ class CliAgentChatActivity : AppCompatActivity() {
         val existingServers = existingRoot?.optJSONObject("mcpServers")
         val existingServerConfig = existingServers?.optJSONObject("anyclaw_toolbox")
         val existingEnv = existingServerConfig?.optJSONObject("env")
-        val claudeRuntime = if (serverManager.describeClaudeExecutionRoute() == "Ubuntu") "ubuntu" else "local"
+        val mcpRuntime = "local"
 
         val systemShellPath = File(paths.prefixDir, "bin/system-shell")
         val envJson = JSONObject()
@@ -2244,14 +2244,7 @@ class CliAgentChatActivity : AppCompatActivity() {
         envJson
             .put("HOME", paths.homeDir)
             .put("PREFIX", paths.prefixDir)
-            .put(
-                "PATH",
-                if (claudeRuntime == "ubuntu") {
-                    "/usr/bin:/bin:${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin"
-                } else {
-                    "${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin"
-                },
-            )
+            .put("PATH", "${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin")
             .put("ANYCLAW_WEB_BRIDGE_URL", "http://127.0.0.1:${ShizukuShellBridgeServer.BRIDGE_PORT}/web/call")
             .put("ANYCLAW_TAVILY_BASE_URL", "https://api.tavily.com/search")
             .put("ANYCLAW_EXA_MCP_URL", "https://mcp.exa.ai/mcp")
@@ -2260,24 +2253,10 @@ class CliAgentChatActivity : AppCompatActivity() {
             .put("ANYCLAW_GITHUB_API_BASE_URL", "https://api.github.com")
             .put("ANYCLAW_WORKSPACE_ROOT", "${paths.homeDir}/.openclaw/workspace")
             .put("ANYCLAW_UBUNTU_BIN", "${paths.homeDir}/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh")
-            .put(
-                "ANYCLAW_LOCAL_SHELL_BRIDGE_URL",
-                if (claudeRuntime == "ubuntu") {
-                    "http://127.0.0.1:${ShizukuShellBridgeServer.BRIDGE_PORT}/local-shell/call"
-                } else {
-                    ""
-                },
-            )
-            .put(
-                "ANYCLAW_SYSTEM_SHELL_BRIDGE_URL",
-                if (claudeRuntime == "ubuntu") {
-                    "http://127.0.0.1:${ShizukuShellBridgeServer.BRIDGE_PORT}/exec"
-                } else {
-                    ""
-                },
-            )
             .put("ANYCLAW_ALLOW_SHARED_STORAGE", if (options.allowSharedStorage) "1" else "0")
-            .put("ANYCLAW_MCP_RUNTIME", claudeRuntime)
+            .put("ANYCLAW_LOCAL_SHELL_BRIDGE_URL", "")
+            .put("ANYCLAW_SYSTEM_SHELL_BRIDGE_URL", "")
+            .put("ANYCLAW_MCP_RUNTIME", mcpRuntime)
             .put("ANYCLAW_MCP_CONFIG_PATH", configFile.absolutePath)
         val passThroughEnv = listOf(
             "GITHUB_TOKEN",
@@ -2300,12 +2279,12 @@ class CliAgentChatActivity : AppCompatActivity() {
 
         val serverConfig = JSONObject()
         copyJsonProperties(existingServerConfig, serverConfig)
-        val mcpCommand = if (claudeRuntime == "ubuntu") "/usr/bin/node" else "${paths.prefixDir}/bin/node"
+        val mcpCommand = "${paths.prefixDir}/bin/node"
         serverConfig
-            .put("type", "stdio")
             .put("command", mcpCommand)
             .put("args", JSONArray().put(serverFile.absolutePath))
             .put("env", envJson)
+        serverConfig.remove("type")
 
         val mcpServers = JSONObject()
         copyJsonProperties(existingServers, mcpServers)
