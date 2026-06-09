@@ -29,6 +29,7 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -119,6 +120,13 @@ class CliAgentChatActivity : AppCompatActivity() {
     private data class ProbeResult(
         val code: Int,
         val output: String,
+    )
+
+    private data class ClaudeMcpServerProbe(
+        val ok: Boolean,
+        val runtime: String,
+        val toolNames: List<String>,
+        val error: String = "",
     )
 
     private data class LocalAttachment(
@@ -1308,7 +1316,7 @@ class CliAgentChatActivity : AppCompatActivity() {
     }
 
     private fun appendToolRoutingRules(out: StringBuilder) {
-        out.appendLine("6) 本会话已注入 AnyClaw MCP 工具箱，调用时优先使用 mcp__anyclaw_toolbox__ 前缀工具名。")
+        out.appendLine("6) 若本会话可见 mcp__anyclaw_toolbox__ 前缀工具，则优先使用；若不可见，必须先报告 MCP_TOOLBOX_STATUS=UNAVAILABLE。")
         out.appendLine("7) 文件检索/读写/构建/测试首选 anyclaw_terminal；工作区内确定性文本改写优先 anyclaw_apply_file。")
         out.appendLine("8) anyclaw_terminal 默认 cwd 在 workspace_root，可访问工作区与共享存储绝对路径（如 /sdcard/...）。")
         out.appendLine("9) anyclaw_apply_file 仅允许 workspace_root 内路径，越界写入会失败。")
@@ -1337,7 +1345,11 @@ class CliAgentChatActivity : AppCompatActivity() {
             "--verbose",
         )
         if (options.dangerousAutoApprove) {
-            args += "--dangerously-skip-permissions"
+            if (serverManager.describeClaudeExecutionRoute() == "Ubuntu") {
+                args += buildClaudeAllowedTools()
+            } else {
+                args += "--dangerously-skip-permissions"
+            }
         }
         args += buildClaudeDirArgs(options)
         args += listOf("--mcp-config", mcpConfigPath, "--strict-mcp-config")
@@ -1409,6 +1421,28 @@ class CliAgentChatActivity : AppCompatActivity() {
             args += dir
         }
         return args
+    }
+
+    private fun buildClaudeAllowedTools(): List<String> {
+        val allowed = linkedSetOf(
+            "Bash(*)",
+            "Read",
+            "Write",
+            "Edit",
+            "MultiEdit",
+            "Glob",
+            "Grep",
+            "LS",
+            "Task",
+            "TodoWrite",
+            "NotebookRead",
+            "NotebookEdit",
+            "WebFetch",
+            "WebSearch",
+            "ExitPlanMode",
+            "mcp__anyclaw_toolbox",
+        )
+        return listOf("--allowedTools") + allowed.toList()
     }
 
     private fun runStreamingCommand(
@@ -1961,11 +1995,8 @@ class CliAgentChatActivity : AppCompatActivity() {
     private fun buildClaudeMcpProbeBlock(options: AgentRuntimeOptions): String {
         val configFile = ensureClaudeAnyClawMcpConfig(options)
         val serverFile = File(configFile.parentFile, "anyclaw-toolbox-server.cjs")
-        val toolNames = if (serverFile.exists()) {
-            extractAnyClawToolNames(serverFile.readText())
-        } else {
-            emptyList()
-        }
+        val probe = probeClaudeAnyClawMcpServer(configFile)
+        val toolNames = probe.toolNames
         val required = listOf(
             "anyclaw_device_exec",
             "anyclaw_device_screen_info",
@@ -1984,6 +2015,7 @@ class CliAgentChatActivity : AppCompatActivity() {
         val statusHint = when {
             !configFile.exists() -> "CONFIG_MISSING"
             !serverFile.exists() -> "SERVER_SCRIPT_MISSING"
+            !probe.ok -> "SERVER_SMOKE_FAILED"
             missing.isNotEmpty() -> "REQUIRED_TOOLS_MISSING"
             else -> "READY"
         }
@@ -1992,6 +2024,9 @@ class CliAgentChatActivity : AppCompatActivity() {
             appendLine("mcp_config_exists=${if (configFile.exists()) 1 else 0}")
             appendLine("mcp_server_path=${serverFile.absolutePath}")
             appendLine("mcp_server_exists=${if (serverFile.exists()) 1 else 0}")
+            appendLine("mcp_runtime=${probe.runtime}")
+            appendLine("mcp_smoke_ok=${if (probe.ok) 1 else 0}")
+            appendLine("mcp_smoke_error=${probe.error.ifBlank { "none" }}")
             appendLine("anyclaw_tools_count=${toolNames.size}")
             appendLine("anyclaw_tools_declared=${if (toolNames.isEmpty()) "none" else toolNames.joinToString(",")}")
             appendLine("required_probe_tools=${required.joinToString(",")}")
@@ -2007,6 +2042,81 @@ class CliAgentChatActivity : AppCompatActivity() {
             appendLine("bash_tool_hint=built_in_bash_can_include_noise_or_truncation_prefer_anyclaw_terminal")
             appendLine("if_tools_unavailable_report=MCP_TOOLBOX_STATUS=UNAVAILABLE reason=<no_anyclaw_tools|tool_call_error|tool_timeout> step=<list|device|search|github>")
         }.trim()
+    }
+
+    private fun probeClaudeAnyClawMcpServer(configFile: File): ClaudeMcpServerProbe {
+        val root = readJsonObjectSafely(configFile) ?: return ClaudeMcpServerProbe(
+            ok = false,
+            runtime = "unknown",
+            toolNames = emptyList(),
+            error = "config_parse_failed",
+        )
+        val server = root.optJSONObject("mcpServers")?.optJSONObject("anyclaw_toolbox")
+            ?: return ClaudeMcpServerProbe(
+                ok = false,
+                runtime = "unknown",
+                toolNames = emptyList(),
+                error = "server_config_missing",
+            )
+        val command = server.optString("command", "").trim()
+        val argsJson = server.optJSONArray("args") ?: JSONArray()
+        val envJson = server.optJSONObject("env") ?: JSONObject()
+        val runtime = envJson.optString("ANYCLAW_MCP_RUNTIME", "local").trim().ifBlank { "local" }
+        if (command.isBlank()) {
+            return ClaudeMcpServerProbe(false, runtime, emptyList(), "command_missing")
+        }
+
+        val args = mutableListOf(command)
+        for (i in 0 until argsJson.length()) {
+            args += argsJson.optString(i, "")
+        }
+        val extraEnv = mutableMapOf<String, String>()
+        val envKeys = envJson.keys()
+        while (envKeys.hasNext()) {
+            val key = envKeys.next()
+            val value = envJson.optString(key, "").trim()
+            if (key.isNotBlank() && value.isNotBlank()) {
+                extraEnv[key] = value
+            }
+        }
+
+        return runCatching {
+            val process = if (runtime == "ubuntu") {
+                serverManager.startUbuntuExecProcess(args, extraEnv)
+            } else {
+                serverManager.startPrefixExecProcess(args, extraEnv)
+            }
+            process.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
+                writer.write("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"pocketlobster-probe","version":"1.0"}}}""")
+                writer.newLine()
+                writer.write("""{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}""")
+                writer.newLine()
+                writer.flush()
+            }
+            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+            if (!process.waitFor(8, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                return@runCatching ClaudeMcpServerProbe(false, runtime, emptyList(), "probe_timeout")
+            }
+            val lines = output.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList()
+            val toolsLine = lines.firstOrNull { it.contains(""""id":2""") }
+                ?: return@runCatching ClaudeMcpServerProbe(false, runtime, emptyList(), output.take(240))
+            val toolsPayload = JSONObject(toolsLine)
+            val tools = toolsPayload.optJSONObject("result")?.optJSONArray("tools") ?: JSONArray()
+            val names = mutableListOf<String>()
+            for (i in 0 until tools.length()) {
+                val name = tools.optJSONObject(i)?.optString("name", "")?.trim().orEmpty()
+                if (name.isNotBlank()) names += name
+            }
+            ClaudeMcpServerProbe(
+                ok = process.exitValue() == 0 && names.isNotEmpty(),
+                runtime = runtime,
+                toolNames = names.distinct().sorted(),
+                error = if (process.exitValue() == 0) "" else "exit_${process.exitValue()}",
+            )
+        }.getOrElse { error ->
+            ClaudeMcpServerProbe(false, runtime, emptyList(), error.message ?: error.javaClass.simpleName)
+        }
     }
 
     private fun extractAnyClawToolNames(script: String): List<String> {
@@ -2126,6 +2236,7 @@ class CliAgentChatActivity : AppCompatActivity() {
         val existingServers = existingRoot?.optJSONObject("mcpServers")
         val existingServerConfig = existingServers?.optJSONObject("anyclaw_toolbox")
         val existingEnv = existingServerConfig?.optJSONObject("env")
+        val claudeRuntime = if (serverManager.describeClaudeExecutionRoute() == "Ubuntu") "ubuntu" else "local"
 
         val systemShellPath = File(paths.prefixDir, "bin/system-shell")
         val envJson = JSONObject()
@@ -2133,7 +2244,14 @@ class CliAgentChatActivity : AppCompatActivity() {
         envJson
             .put("HOME", paths.homeDir)
             .put("PREFIX", paths.prefixDir)
-            .put("PATH", "${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin")
+            .put(
+                "PATH",
+                if (claudeRuntime == "ubuntu") {
+                    "/usr/bin:/bin:${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin"
+                } else {
+                    "${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin"
+                },
+            )
             .put("ANYCLAW_WEB_BRIDGE_URL", "http://127.0.0.1:${ShizukuShellBridgeServer.BRIDGE_PORT}/web/call")
             .put("ANYCLAW_TAVILY_BASE_URL", "https://api.tavily.com/search")
             .put("ANYCLAW_EXA_MCP_URL", "https://mcp.exa.ai/mcp")
@@ -2142,7 +2260,24 @@ class CliAgentChatActivity : AppCompatActivity() {
             .put("ANYCLAW_GITHUB_API_BASE_URL", "https://api.github.com")
             .put("ANYCLAW_WORKSPACE_ROOT", "${paths.homeDir}/.openclaw/workspace")
             .put("ANYCLAW_UBUNTU_BIN", "${paths.homeDir}/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh")
+            .put(
+                "ANYCLAW_LOCAL_SHELL_BRIDGE_URL",
+                if (claudeRuntime == "ubuntu") {
+                    "http://127.0.0.1:${ShizukuShellBridgeServer.BRIDGE_PORT}/local-shell/call"
+                } else {
+                    ""
+                },
+            )
+            .put(
+                "ANYCLAW_SYSTEM_SHELL_BRIDGE_URL",
+                if (claudeRuntime == "ubuntu") {
+                    "http://127.0.0.1:${ShizukuShellBridgeServer.BRIDGE_PORT}/exec"
+                } else {
+                    ""
+                },
+            )
             .put("ANYCLAW_ALLOW_SHARED_STORAGE", if (options.allowSharedStorage) "1" else "0")
+            .put("ANYCLAW_MCP_RUNTIME", claudeRuntime)
             .put("ANYCLAW_MCP_CONFIG_PATH", configFile.absolutePath)
         val passThroughEnv = listOf(
             "GITHUB_TOKEN",
@@ -2165,8 +2300,10 @@ class CliAgentChatActivity : AppCompatActivity() {
 
         val serverConfig = JSONObject()
         copyJsonProperties(existingServerConfig, serverConfig)
+        val mcpCommand = if (claudeRuntime == "ubuntu") "/usr/bin/node" else "${paths.prefixDir}/bin/node"
         serverConfig
-            .put("command", "${paths.prefixDir}/bin/node")
+            .put("type", "stdio")
+            .put("command", mcpCommand)
             .put("args", JSONArray().put(serverFile.absolutePath))
             .put("env", envJson)
 
