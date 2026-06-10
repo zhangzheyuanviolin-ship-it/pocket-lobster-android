@@ -2594,11 +2594,42 @@ EOF
             return false
         }
         ensureClaudeWrapperScript()
+        val ubuntuNodeReady = ensureUbuntuNodeForClaudeMcp(onProgress)
+        if (!ubuntuNodeReady) {
+            Log.e(TAG, "Ubuntu Node.js runtime missing for Claude MCP")
+            return false
+        }
         val ready = verifyClaudeRuntime(onProgress)
         if (!ready) {
             Log.e(TAG, "Claude runtime verification failed after install")
         }
         return ready
+    }
+
+    fun ensureUbuntuNodeForClaudeMcp(onProgress: ((String) -> Unit)? = null): Boolean {
+        val paths = BootstrapInstaller.getPaths(context)
+        if (claudeGlibcBinaryFile(paths) == null) return true
+        if (isUbuntuNodeAvailable()) return true
+
+        onProgress?.invoke("Installing Ubuntu Node.js runtime for Claude MCP …")
+        val installCmd =
+            """
+            export DEBIAN_FRONTEND=noninteractive
+            if command -v node >/dev/null 2>&1; then
+              node --version
+              exit 0
+            fi
+            apt-get update 2>&1 || true
+            apt-get install -y nodejs 2>&1 || apt-get install -y nodejs npm 2>&1
+            command -v node >/dev/null 2>&1 || exit 1
+            node --version
+            """.trimIndent()
+        val code = runInUbuntu(installCmd, onProgress)
+        if (code != 0) {
+            Log.e(TAG, "Ubuntu node install failed with code $code")
+            return false
+        }
+        return isUbuntuNodeAvailable()
     }
 
     fun ensureCodexWrapperScript() {
@@ -2680,6 +2711,32 @@ WEOF
         claudeBin.writeText(script)
         runCatching { android.system.Os.chmod(claudeBin.absolutePath, 0b111_000_000) }
         Log.i(TAG, "Created claude wrapper at $claudeBin")
+    }
+
+    private fun isUbuntuNodeAvailable(): Boolean {
+        val process = runCatching { startUbuntuProcess("command -v node >/dev/null 2>&1 && node --version >/dev/null 2>&1") }.getOrNull()
+            ?: return false
+        val finished = runCatching { process.waitFor(20, TimeUnit.SECONDS) }.getOrDefault(false)
+        if (!finished) {
+            runCatching { process.destroyForcibly() }
+            return false
+        }
+        return runCatching { process.exitValue() == 0 }.getOrDefault(false)
+    }
+
+    private fun runInUbuntu(command: String, onOutput: ((String) -> Unit)? = null): Int {
+        val process = startUbuntuProcess(command)
+        BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
+            var line = reader.readLine()
+            while (line != null) {
+                val cleaned = line.trim()
+                if (cleaned.isNotEmpty()) {
+                    onOutput?.invoke(cleaned)
+                }
+                line = reader.readLine()
+            }
+        }
+        return process.waitFor()
     }
 
     fun installServerBundle(onProgress: (String) -> Unit): Boolean {
