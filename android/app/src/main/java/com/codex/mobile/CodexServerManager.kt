@@ -2724,21 +2724,6 @@ WEOF
         return runCatching { process.exitValue() == 0 }.getOrDefault(false)
     }
 
-    private fun runInUbuntu(command: String, onOutput: ((String) -> Unit)? = null): Int {
-        val process = startUbuntuProcess(command)
-        BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
-            var line = reader.readLine()
-            while (line != null) {
-                val cleaned = line.trim()
-                if (cleaned.isNotEmpty()) {
-                    onOutput?.invoke(cleaned)
-                }
-                line = reader.readLine()
-            }
-        }
-        return process.waitFor()
-    }
-
     fun installServerBundle(onProgress: (String) -> Unit): Boolean {
         val paths = BootstrapInstaller.getPaths(context)
         val targetDir = File(paths.prefixDir, "lib/node_modules/codex-web-local")
