@@ -26,7 +26,7 @@ class CodexServerManager(private val context: Context) {
         private const val TAG = "CodexServerManager"
         const val SERVER_PORT = 18923
         private const val PROXY_PORT = 18924
-        private const val CODEX_VERSION = "0.121.0"
+        private const val CODEX_VERSION = "0.137.0"
         private const val CLAUDE_CODE_VERSION = "2.1.112"
         const val OPENCLAW_GATEWAY_PORT = 18789
         const val OPENCLAW_CONTROL_UI_PORT = 19001
@@ -254,16 +254,28 @@ class CodexServerManager(private val context: Context) {
 
     fun isServerBundleInstalled(): Boolean = false
 
+    private fun installedCodexBinaryFile(paths: BootstrapInstaller.Paths): File? {
+        val candidates =
+            listOf(
+                File(
+                    paths.prefixDir,
+                    "lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex",
+                ),
+                File(
+                    paths.prefixDir,
+                    "lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/codex/codex",
+                ),
+            )
+        return candidates.firstOrNull { it.exists() }
+    }
+
     /**
      * The native Rust binary that the JS launcher delegates to.
      * Required for `codex app-server`, `codex login`, `codex exec`, etc.
      */
     fun isPlatformBinaryInstalled(): Boolean {
         val paths = BootstrapInstaller.getPaths(context)
-        return File(
-            paths.prefixDir,
-            "lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/codex/codex",
-        ).exists()
+        return installedCodexBinaryFile(paths) != null
     }
 
     // ── Installation ────────────────────────────────────────────────────────
@@ -2526,10 +2538,11 @@ WEOF
               }).on("error", (e) => { console.error(e.message); process.exit(1); });
             ' 2>&1 &&
             tar xzf codex-bin.tgz 2>&1 &&
-            mkdir -p "$targetPkg/vendor/aarch64-unknown-linux-musl/codex" &&
-            cp package/vendor/aarch64-unknown-linux-musl/codex/codex "$targetPkg/vendor/aarch64-unknown-linux-musl/codex/codex" &&
+            rm -rf "$targetPkg/vendor" &&
+            mkdir -p "$targetPkg" &&
+            cp -a package/vendor "$targetPkg/vendor" &&
             cp package/package.json "$targetPkg/package.json" &&
-            chmod 700 "$targetPkg/vendor/aarch64-unknown-linux-musl/codex/codex" &&
+            find "$targetPkg/vendor" -type f \( -name codex -o -name rg -o -name bwrap -o -name zsh \) -exec chmod 700 {} \; 2>/dev/null || true &&
             rm -rf "$prefix/tmp/_codex_bin" &&
             echo "Platform binary installed"
         """.trimIndent()
@@ -2607,8 +2620,8 @@ WEOF
 
     private fun codexBinPath(): String {
         val paths = BootstrapInstaller.getPaths(context)
-        return "${paths.prefixDir}/lib/node_modules/@openai/codex-linux-arm64" +
-            "/vendor/aarch64-unknown-linux-musl/codex/codex"
+        return installedCodexBinaryFile(paths)?.absolutePath
+            ?: "${paths.prefixDir}/lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex"
     }
 
     fun isLoggedIn(): Boolean {
@@ -2919,13 +2932,19 @@ EOF
 set +e
 PREFIX_DIR="${'$'}{PREFIX:-/data/data/com.termux/files/usr}"
 HOME_DIR="${'$'}{HOME:-/data/data/com.termux/files/home}"
-RG_CANDIDATE="${'$'}PREFIX_DIR/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/path/rg"
-if [ -x "${'$'}RG_CANDIDATE" ]; then
-  "${'$'}RG_CANDIDATE" --version >/dev/null 2>&1
-  if [ "${'$'}?" -eq 0 ]; then
-    exec "${'$'}RG_CANDIDATE" "${'$'}@"
+for RG_CANDIDATE in \
+  "${'$'}PREFIX_DIR/lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/codex-path/rg" \
+  "${'$'}PREFIX_DIR/lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/path/rg" \
+  "${'$'}PREFIX_DIR/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/codex-path/rg" \
+  "${'$'}PREFIX_DIR/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/path/rg"
+do
+  if [ -x "${'$'}RG_CANDIDATE" ]; then
+    "${'$'}RG_CANDIDATE" --version >/dev/null 2>&1
+    if [ "${'$'}?" -eq 0 ]; then
+      exec "${'$'}RG_CANDIDATE" "${'$'}@"
+    fi
   fi
-fi
+done
 UBUNTU_BIN="${'$'}{ANYCLAW_UBUNTU_BIN:-${'$'}HOME_DIR/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh}"
 if [ -x "${'$'}UBUNTU_BIN" ]; then
   "${'$'}UBUNTU_BIN" --command "command -v rg >/dev/null 2>&1" >/dev/null 2>&1
