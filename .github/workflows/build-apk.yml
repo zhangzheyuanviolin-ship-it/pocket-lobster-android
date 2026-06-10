@@ -56,11 +56,50 @@ jobs:
           rm -f android/app/src/main/assets/runtime/openclaw-runtime-2026.3.2.tar
           rm -f android/app/src/main/assets/runtime/openclaw_installed_2026_3_2.tar.gz
           rm -f android/app/src/main/assets/runtime/davey.android-arm64.node
-          gh release download runtime-assets-2026-03-19-r1 \
-            --repo "${{ github.repository }}" \
-            --pattern "openclaw_installed_2026_3_2.tar.gz" \
-            --pattern "davey.android-arm64.node" \
-            --dir android/app/src/main/assets/runtime
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          target_dir = "android/app/src/main/assets/runtime"
+          tag = "runtime-assets-2026-03-19-r1"
+          wanted = {
+              "openclaw_installed_2026_3_2.tar.gz",
+              "davey.android-arm64.node",
+          }
+
+          api_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+          req = urllib.request.Request(
+              api_url,
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {token}",
+              },
+          )
+          with urllib.request.urlopen(req) as resp:
+              release = json.load(resp)
+
+          assets = {asset["name"]: asset for asset in release.get("assets", [])}
+          missing = sorted(wanted - set(assets))
+          if missing:
+              raise SystemExit(f"Missing runtime release assets: {', '.join(missing)}")
+
+          for name in sorted(wanted):
+              asset = assets[name]
+              out_path = os.path.join(target_dir, name)
+              download_req = urllib.request.Request(
+                  asset["url"],
+                  headers={
+                      "Accept": "application/octet-stream",
+                      "Authorization": f"Bearer {token}",
+                  },
+              )
+              with urllib.request.urlopen(download_req) as resp, open(out_path, "wb") as out:
+                  out.write(resp.read())
+              print(f"Downloaded {name} -> {out_path}")
+          PY
           mv android/app/src/main/assets/runtime/openclaw_installed_2026_3_2.tar.gz \
             android/app/src/main/assets/runtime/openclaw-runtime-2026.3.2.tar
           ls -lh android/app/src/main/assets/runtime
