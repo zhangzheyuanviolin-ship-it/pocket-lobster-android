@@ -85,38 +85,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupMarkerFile(): File {
-        val paths = BootstrapInstaller.getPaths(this)
-        return File(paths.homeDir, ".openclaw-android/state/setup-ready.marker")
-    }
-
-    private fun currentSetupMarkerValue(): String {
-        val versionName =
-            runCatching {
-                @Suppress("DEPRECATION")
-                packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
-            }.getOrElse { "" }
-        return "$packageName:$versionName"
-    }
-
-    private fun isSetupMarkerCurrent(): Boolean {
-        if (!BootstrapInstaller.isBootstrapInstalled(this)) return false
-        val paths = BootstrapInstaller.getPaths(this)
-        val marker = setupMarkerFile()
-        if (!marker.exists()) return false
-        if (!File(paths.prefixDir, "bin/node").exists()) return false
-        if (!File(paths.prefixDir, "bin/proot").exists()) return false
-        if (!File(paths.homeDir, ".openclaw-android/linux-runtime/bin/ubuntu-shell.sh").exists()) return false
-        if (!File(paths.homeDir, ".openclaw-android/linux-runtime/rootfs/ubuntu-noble-aarch64/bin/bash").exists()) return false
-        return runCatching { marker.readText().trim() == currentSetupMarkerValue() }.getOrDefault(false)
-    }
-
-    private fun writeSetupMarker() {
-        val marker = setupMarkerFile()
-        marker.parentFile?.mkdirs()
-        marker.writeText(currentSetupMarkerValue() + "\n")
-    }
-
     private fun isOpenClawLightweightOnlyMode(): Boolean {
         return false
     }
@@ -163,7 +131,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (!hasExplicitTargetIntent(intent) && isSetupMarkerCurrent()) {
+        if (!hasExplicitTargetIntent(intent) && BootstrapInstaller.isBootstrapInstalled(this)) {
             startActivity(Intent(this, AgentHubActivity::class.java))
             finish()
             return
@@ -783,9 +751,6 @@ class MainActivity : AppCompatActivity() {
         serverManager.ensureStorageBridge()
         serverManager.ensureShizukuBridgeScripts()
         PromptProfileStore.ensureSynced(this)
-        if (serverManager.isClaudeCodeInstalled()) {
-            runCatching { serverManager.ensureClaudeWrapperScript() }
-        }
 
         // Step 4: Start CONNECT proxy (needed for native binary DNS/TLS)
         updateStatus("Starting network proxy…")
@@ -833,8 +798,6 @@ class MainActivity : AppCompatActivity() {
         if (!ready) {
             throw RuntimeException("Server did not start in time")
         }
-
-        writeSetupMarker()
 
         // Step 10: Show web UI
         runOnUiThread { showReadyUi(explicitTarget) }

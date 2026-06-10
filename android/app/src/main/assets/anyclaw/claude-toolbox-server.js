@@ -8,9 +8,6 @@ const SERVER_INFO = { name: "anyclaw-toolbox", version: "2.1.0" };
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_STDIO_BYTES = 4 * 1024 * 1024;
 const DEFAULT_SEARCH_LIMIT = 6;
-const MCP_RUNTIME = String(process.env.ANYCLAW_MCP_RUNTIME || "local").trim() || "local";
-const LOCAL_SHELL_BRIDGE_URL = String(process.env.ANYCLAW_LOCAL_SHELL_BRIDGE_URL || "").trim();
-const SYSTEM_SHELL_BRIDGE_URL = String(process.env.ANYCLAW_SYSTEM_SHELL_BRIDGE_URL || "").trim();
 const WEB_BRIDGE_URL = process.env.ANYCLAW_WEB_BRIDGE_URL || "http://127.0.0.1:18926/web/call";
 const TAVILY_BASE_URL = process.env.ANYCLAW_TAVILY_BASE_URL || "https://api.tavily.com/search";
 const EXA_MCP_URL = process.env.ANYCLAW_EXA_MCP_URL || "https://mcp.exa.ai/mcp";
@@ -575,57 +572,7 @@ function shellQuote(value) {
   return "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
 }
 
-function runJsonBridge(url, payload, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  if (!url) {
-    return { ok: false, code: 127, stdout: "", stderr: "", error: "bridge_url_missing" };
-  }
-  const result = spawnSync(
-    "curl",
-    [
-      "-sS",
-      "--max-time",
-      String(Math.max(1, Math.ceil(clampInt(timeoutMs, 1000, 180000) / 1000))),
-      "-H",
-      "Content-Type: application/json",
-      "-d",
-      JSON.stringify(payload || {}),
-      url
-    ],
-    {
-      encoding: "utf8",
-      timeout: clampInt(timeoutMs, 1000, 180000),
-      maxBuffer: MAX_STDIO_BYTES
-    }
-  );
-  const stdout = String(result.stdout || "").trim();
-  const stderr = String(result.stderr || "").trim();
-  const status = typeof result.status === "number" ? result.status : 1;
-  if (result.error) {
-    return { ok: false, code: status, stdout, stderr, error: String(result.error.message || result.error) };
-  }
-  let data = null;
-  try {
-    data = stdout ? JSON.parse(stdout) : null;
-  } catch {
-    data = null;
-  }
-  if (!data || typeof data !== "object") {
-    return { ok: false, code: status, stdout, stderr, error: "bridge_invalid_json" };
-  }
-  return {
-    ok: !!data.ok,
-    code: typeof data.exitCode === "number" ? data.exitCode : status,
-    stdout: String(data.stdout || ""),
-    stderr: String(data.stderr || ""),
-    error: data.error ? String(data.error) : "",
-    data
-  };
-}
-
 function runSystemShellCommand(command, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  if (SYSTEM_SHELL_BRIDGE_URL) {
-    return runJsonBridge(SYSTEM_SHELL_BRIDGE_URL, { command }, timeoutMs);
-  }
   const bin = process.env.ANYCLAW_SYSTEM_SHELL_BIN || "system-shell";
   const result = spawnSync(bin, [String(command)], {
     encoding: "utf8",
@@ -647,9 +594,6 @@ function runSystemShellArgs(args, timeoutMs = DEFAULT_TIMEOUT_MS) {
 }
 
 function runLocalShell(command, cwd, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  if (LOCAL_SHELL_BRIDGE_URL) {
-    return runJsonBridge(LOCAL_SHELL_BRIDGE_URL, { command, cwd, timeoutMs }, timeoutMs);
-  }
   const result = spawnSync("sh", ["-lc", String(command)], {
     cwd,
     encoding: "utf8",
@@ -687,20 +631,6 @@ function normalizeUbuntuOutput(value) {
 }
 
 function runUbuntuShell(command, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  if (MCP_RUNTIME === "ubuntu") {
-    const result = spawnSync("sh", ["-lc", String(command)], {
-      encoding: "utf8",
-      timeout: clampInt(timeoutMs, 1000, 180000),
-      maxBuffer: MAX_STDIO_BYTES
-    });
-    const stdout = String(result.stdout || "").trim();
-    const stderr = String(result.stderr || "").trim();
-    const status = typeof result.status === "number" ? result.status : 1;
-    if (result.error) {
-      return { ok: false, code: status, stdout, stderr, error: String(result.error.message || result.error) };
-    }
-    return { ok: status === 0, code: status, stdout, stderr };
-  }
   const ubuntuBin = resolveUbuntuShellBin();
   if (!ubuntuBin) {
     return {

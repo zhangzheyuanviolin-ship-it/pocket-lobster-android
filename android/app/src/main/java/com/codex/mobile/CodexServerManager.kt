@@ -8,7 +8,6 @@ import java.io.InputStreamReader
 import java.io.InterruptedIOException
 import java.net.HttpURLConnection
 import java.net.URL
-import java.nio.file.Files
 import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
 import org.json.JSONArray
@@ -27,8 +26,8 @@ class CodexServerManager(private val context: Context) {
         private const val TAG = "CodexServerManager"
         const val SERVER_PORT = 18923
         private const val PROXY_PORT = 18924
-        private const val CODEX_VERSION = "0.137.0"
-        private const val CLAUDE_CODE_VERSION = "2.1.168"
+        private const val CODEX_VERSION = "0.121.0"
+        private const val CLAUDE_CODE_VERSION = "2.1.112"
         const val OPENCLAW_GATEWAY_PORT = 18789
         const val OPENCLAW_CONTROL_UI_PORT = 19001
         private const val ANYCLAW_SEARCH_PLUGIN_ID = "anyclaw-search-suite"
@@ -144,35 +143,6 @@ class CodexServerManager(private val context: Context) {
         return pb.start()
     }
 
-    fun startUbuntuExecProcess(
-        args: List<String>,
-        extraEnv: Map<String, String> = emptyMap(),
-        workingDirectory: String? = null,
-    ): Process {
-        require(args.isNotEmpty()) { "args must not be empty" }
-
-        val paths = BootstrapInstaller.getPaths(context)
-        val env = buildEnvironment(paths)
-        val ubuntuBin = File(paths.homeDir, ".openclaw-android/linux-runtime/bin/ubuntu-shell.sh")
-        if (!ubuntuBin.exists()) {
-            throw IllegalStateException("ubuntu-runtime-missing")
-        }
-
-        val command =
-            buildEnvExecShellCommand(
-                args = args,
-                extraEnv = extraEnv,
-                workingDirectory = workingDirectory ?: paths.homeDir,
-            )
-        val wrapped = "${ubuntuBin.absolutePath} --command ${shellQuote(command)}"
-        val pb = ProcessBuilder(runtimeShell(), "-c", wrapped)
-        pb.environment().clear()
-        pb.environment().putAll(env)
-        pb.directory(File(paths.homeDir))
-        pb.redirectErrorStream(true)
-        return pb.start()
-    }
-
     fun startUbuntuProcess(command: String): Process {
         val paths = BootstrapInstaller.getPaths(context)
         val env = buildEnvironment(paths)
@@ -195,22 +165,6 @@ class CodexServerManager(private val context: Context) {
     private fun shellQuote(value: String): String {
         val escaped = value.replace("'", "'\"'\"'")
         return "'$escaped'"
-    }
-
-    private fun buildEnvExecShellCommand(
-        args: List<String>,
-        extraEnv: Map<String, String>,
-        workingDirectory: String,
-    ): String {
-        val envPrefix =
-            extraEnv.entries
-                .filter { (key, value) ->
-                    key.matches(Regex("[A-Za-z_][A-Za-z0-9_]*")) && value.isNotBlank()
-                }
-                .joinToString(" ") { (key, value) -> "$key=${shellQuote(value)}" }
-        val execArgs = args.joinToString(" ") { shellQuote(it) }
-        val envCommand = if (envPrefix.isBlank()) execArgs else "env $envPrefix $execArgs"
-        return "cd ${shellQuote(workingDirectory)} 2>/dev/null || true; exec $envCommand"
     }
 
     private fun startProcessLogThread(proc: Process, label: String) {
@@ -256,77 +210,6 @@ class CodexServerManager(private val context: Context) {
         return sb.toString().trim()
     }
 
-    private fun claudeRootPackageDir(paths: BootstrapInstaller.Paths): File {
-        return File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code")
-    }
-
-    private fun legacyClaudeCliFile(paths: BootstrapInstaller.Paths): File {
-        return File(claudeRootPackageDir(paths), "cli.js")
-    }
-
-    private fun claudeGlibcBinaryCandidates(paths: BootstrapInstaller.Paths): List<File> {
-        return listOf(
-            File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code-linux-arm64/claude"),
-            File(
-                paths.prefixDir,
-                "lib/node_modules/@anthropic-ai/claude-code/node_modules/@anthropic-ai/claude-code-linux-arm64/claude",
-            ),
-        )
-    }
-
-    private fun claudeGlibcBinaryFile(paths: BootstrapInstaller.Paths): File? {
-        return claudeGlibcBinaryCandidates(paths).firstOrNull { it.exists() }
-    }
-
-    private fun claudeWrapperFile(paths: BootstrapInstaller.Paths): File {
-        return File(paths.prefixDir, "bin/claude")
-    }
-
-    private fun installedCodexBinaryFile(paths: BootstrapInstaller.Paths): File? {
-        val candidates =
-            listOf(
-                File(
-                    paths.prefixDir,
-                    "lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex",
-                ),
-                File(
-                    paths.prefixDir,
-                    "lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/codex/codex",
-                ),
-            )
-        return candidates.firstOrNull { it.exists() }
-    }
-
-    fun describeClaudeExecutionRoute(): String {
-        val paths = BootstrapInstaller.getPaths(context)
-        return when {
-            legacyClaudeCliFile(paths).exists() -> "本地JS"
-            claudeGlibcBinaryFile(paths) != null -> "Ubuntu"
-            else -> "未安装"
-        }
-    }
-
-    fun startClaudeExecProcess(
-        args: List<String>,
-        extraEnv: Map<String, String> = emptyMap(),
-    ): Process {
-        require(args.isNotEmpty()) { "args must not be empty" }
-
-        val paths = BootstrapInstaller.getPaths(context)
-        val legacyCli = legacyClaudeCliFile(paths)
-        if (legacyCli.exists()) {
-            val nodePath = File(paths.prefixDir, "bin/node").absolutePath
-            return startPrefixExecProcess(listOf(nodePath, legacyCli.absolutePath) + args, extraEnv)
-        }
-
-        val glibcBinary = claudeGlibcBinaryFile(paths)
-        if (glibcBinary != null) {
-            return startUbuntuExecProcess(listOf(glibcBinary.absolutePath) + args, extraEnv, paths.homeDir)
-        }
-
-        throw IllegalStateException("claude-runtime-missing")
-    }
-
     // ── Install checks ─────────────────────────────────────────────────────
 
     fun isProotInstalled(): Boolean {
@@ -344,15 +227,11 @@ class CodexServerManager(private val context: Context) {
         return File(paths.prefixDir, "lib/node_modules/@openai/codex/bin/codex.js").exists()
     }
 
-    fun isClaudeCodePackageInstalled(): Boolean {
-        val paths = BootstrapInstaller.getPaths(context)
-        return claudeRootPackageDir(paths).exists()
-    }
-
     fun isClaudeCodeInstalled(): Boolean {
         val paths = BootstrapInstaller.getPaths(context)
-        if (!claudeRootPackageDir(paths).exists()) return false
-        return legacyClaudeCliFile(paths).exists() || claudeGlibcBinaryFile(paths) != null
+        val pkg = File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code")
+        if (pkg.exists()) return true
+        return runCapture("command -v claude >/dev/null 2>&1 && echo yes || echo no") == "yes"
     }
 
     fun getInstalledCodexVersion(): String {
@@ -366,48 +245,11 @@ class CodexServerManager(private val context: Context) {
 
     fun getInstalledClaudeCodeVersion(): String {
         val paths = BootstrapInstaller.getPaths(context)
-        val pkg = File(claudeRootPackageDir(paths), "package.json")
+        val pkg = File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code/package.json")
         if (!pkg.exists()) return ""
         return runCatching {
             JSONObject(pkg.readText()).optString("version", "").trim()
         }.getOrDefault("")
-    }
-
-    fun verifyClaudeRuntime(onProgress: ((String) -> Unit)? = null): Boolean {
-        val paths = BootstrapInstaller.getPaths(context)
-        val timeoutMs = 30L
-        val glibcBinary = claudeGlibcBinaryFile(paths)
-
-        val process =
-            when {
-                legacyClaudeCliFile(paths).exists() -> {
-                    val nodePath = File(paths.prefixDir, "bin/node").absolutePath
-                    startPrefixExecProcess(listOf(nodePath, legacyClaudeCliFile(paths).absolutePath, "--version"))
-                }
-                glibcBinary != null -> {
-                    startUbuntuExecProcess(
-                        listOf(glibcBinary.absolutePath, "--version"),
-                        workingDirectory = paths.homeDir,
-                    )
-                }
-                else -> return false
-            }
-
-        val finished = runCatching { process.waitFor(timeoutMs, TimeUnit.SECONDS) }.getOrDefault(false)
-        if (!finished) {
-            runCatching { process.destroy() }
-            onProgress?.invoke("Claude runtime check timed out")
-            return false
-        }
-
-        val output =
-            runCatching {
-                process.inputStream.bufferedReader().use { it.readText().trim() }
-            }.getOrDefault("")
-        if (output.isNotBlank()) {
-            onProgress?.invoke(output)
-        }
-        return process.exitValue() == 0 && output.contains("Claude Code")
     }
 
     fun isServerBundleInstalled(): Boolean = false
@@ -418,7 +260,10 @@ class CodexServerManager(private val context: Context) {
      */
     fun isPlatformBinaryInstalled(): Boolean {
         val paths = BootstrapInstaller.getPaths(context)
-        return installedCodexBinaryFile(paths) != null
+        return File(
+            paths.prefixDir,
+            "lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/codex/codex",
+        ).exists()
     }
 
     // ── Installation ────────────────────────────────────────────────────────
@@ -2577,59 +2422,14 @@ EOF
 
         onProgress("Installing Claude Code CLI $CLAUDE_CODE_VERSION …")
         val code = runInPrefix(
-            """
-            export npm_config_platform=linux
-            export npm_config_arch=arm64
-            export npm_config_libc=glibc
-            export npm_config_optional=true
-            export npm_config_update_notifier=false
-            export npm_config_fund=false
-            node $npmCli cache clean --force 2>&1 || true
-            node $npmCli install -g --force @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION 2>&1
-            """.trimIndent(),
+            "node $npmCli install -g @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION 2>&1",
             onOutput = { onProgress(it) },
         )
         if (code != 0) {
             Log.e(TAG, "npm install @anthropic-ai/claude-code failed with code $code")
             return false
         }
-        ensureClaudeWrapperScript()
-        val ubuntuNodeReady = ensureUbuntuNodeForClaudeMcp(onProgress)
-        if (!ubuntuNodeReady) {
-            Log.e(TAG, "Ubuntu Node.js runtime missing for Claude MCP")
-            return false
-        }
-        val ready = verifyClaudeRuntime(onProgress)
-        if (!ready) {
-            Log.e(TAG, "Claude runtime verification failed after install")
-        }
-        return ready
-    }
-
-    fun ensureUbuntuNodeForClaudeMcp(onProgress: ((String) -> Unit)? = null): Boolean {
-        val paths = BootstrapInstaller.getPaths(context)
-        if (claudeGlibcBinaryFile(paths) == null) return true
-        if (isUbuntuNodeAvailable()) return true
-
-        onProgress?.invoke("Installing Ubuntu Node.js runtime for Claude MCP …")
-        val installCmd =
-            """
-            export DEBIAN_FRONTEND=noninteractive
-            if command -v node >/dev/null 2>&1; then
-              node --version
-              exit 0
-            fi
-            apt-get update 2>&1 || true
-            apt-get install -y nodejs 2>&1 || apt-get install -y nodejs npm 2>&1
-            command -v node >/dev/null 2>&1 || exit 1
-            node --version
-            """.trimIndent()
-        val code = runInUbuntu(installCmd, onProgress)
-        if (code != 0) {
-            Log.e(TAG, "Ubuntu node install failed with code $code")
-            return false
-        }
-        return isUbuntuNodeAvailable()
+        return isClaudeCodeInstalled()
     }
 
     fun ensureCodexWrapperScript() {
@@ -2652,76 +2452,6 @@ WEOF
         """.trimIndent()
         runInPrefix(wrapperCmd)
         Log.i(TAG, "Created codex wrapper at $codexBin")
-    }
-
-    fun ensureClaudeWrapperScript() {
-        val paths = BootstrapInstaller.getPaths(context)
-        val legacyCli = legacyClaudeCliFile(paths)
-        val glibcBinary = claudeGlibcBinaryFile(paths)
-        if (!legacyCli.exists() && glibcBinary == null) return
-
-        val claudeBin = claudeWrapperFile(paths)
-        runCatching {
-            if (Files.isSymbolicLink(claudeBin.toPath()) || claudeBin.exists()) {
-                claudeBin.delete()
-            }
-        }
-
-        val script =
-            """
-            #!/system/bin/sh
-            set +e
-            PREFIX_DIR="${paths.prefixDir}"
-            HOME_DIR="${paths.homeDir}"
-            LEGACY_JS="${'$'}PREFIX_DIR/lib/node_modules/@anthropic-ai/claude-code/cli.js"
-            GLIBC_BIN="${glibcBinary?.absolutePath.orEmpty()}"
-            NODE_BIN="${'$'}PREFIX_DIR/bin/node"
-            UBUNTU_BIN="${'$'}{ANYCLAW_UBUNTU_BIN:-${'$'}HOME_DIR/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh}"
-
-            if [ -f "${'$'}LEGACY_JS" ] && [ -x "${'$'}NODE_BIN" ]; then
-              exec "${'$'}NODE_BIN" "${'$'}LEGACY_JS" "${'$'}@"
-            fi
-
-            if [ -n "${'$'}GLIBC_BIN" ] && [ -x "${'$'}GLIBC_BIN" ] && [ -x "${'$'}UBUNTU_BIN" ]; then
-              quote_arg() {
-                printf "'%s'" "${'$'}(printf "%s" "${'$'}1" | sed "s/'/'\"'\"'/g")"
-              }
-              cmd="cd ${'$'}(quote_arg "${'$'}{PWD:-${'$'}HOME_DIR}") 2>/dev/null || true; exec env"
-              append_env() {
-                name="${'$'}1"
-                value="${'$'}(printenv "${'$'}name" 2>/dev/null || true)"
-                [ -n "${'$'}value" ] || return 0
-                cmd="${'$'}cmd ${'$'}name=${'$'}(quote_arg "${'$'}value")"
-              }
-              for name in ANTHROPIC_API_KEY ANTHROPIC_BASE_URL CLAUDE_CONFIG_DIR CLAUDE_CODE_SIMPLE AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE GOOGLE_APPLICATION_CREDENTIALS GOOGLE_CLOUD_PROJECT GCLOUD_PROJECT; do
-                append_env "${'$'}name"
-              done
-              cmd="${'$'}cmd ${'$'}(quote_arg "${'$'}GLIBC_BIN")"
-              for arg in "${'$'}@"; do
-                cmd="${'$'}cmd ${'$'}(quote_arg "${'$'}arg")"
-              done
-              exec "${'$'}UBUNTU_BIN" --command "${'$'}cmd"
-            fi
-
-            echo "Claude Code runtime not installed." >&2
-            exit 1
-            """.trimIndent() + "\n"
-
-        claudeBin.parentFile?.mkdirs()
-        claudeBin.writeText(script)
-        runCatching { android.system.Os.chmod(claudeBin.absolutePath, 0b111_000_000) }
-        Log.i(TAG, "Created claude wrapper at $claudeBin")
-    }
-
-    private fun isUbuntuNodeAvailable(): Boolean {
-        val process = runCatching { startUbuntuProcess("command -v node >/dev/null 2>&1 && node --version >/dev/null 2>&1") }.getOrNull()
-            ?: return false
-        val finished = runCatching { process.waitFor(20, TimeUnit.SECONDS) }.getOrDefault(false)
-        if (!finished) {
-            runCatching { process.destroyForcibly() }
-            return false
-        }
-        return runCatching { process.exitValue() == 0 }.getOrDefault(false)
     }
 
     fun installServerBundle(onProgress: (String) -> Unit): Boolean {
@@ -2796,11 +2526,10 @@ WEOF
               }).on("error", (e) => { console.error(e.message); process.exit(1); });
             ' 2>&1 &&
             tar xzf codex-bin.tgz 2>&1 &&
-            rm -rf "$targetPkg/vendor" &&
-            mkdir -p "$targetPkg" &&
-            cp -a package/vendor "$targetPkg/vendor" &&
+            mkdir -p "$targetPkg/vendor/aarch64-unknown-linux-musl/codex" &&
+            cp package/vendor/aarch64-unknown-linux-musl/codex/codex "$targetPkg/vendor/aarch64-unknown-linux-musl/codex/codex" &&
             cp package/package.json "$targetPkg/package.json" &&
-            find "$targetPkg/vendor" -type f \( -name codex -o -name rg -o -name bwrap -o -name zsh \) -exec chmod 700 {} \; 2>/dev/null || true &&
+            chmod 700 "$targetPkg/vendor/aarch64-unknown-linux-musl/codex/codex" &&
             rm -rf "$prefix/tmp/_codex_bin" &&
             echo "Platform binary installed"
         """.trimIndent()
@@ -2878,8 +2607,8 @@ WEOF
 
     private fun codexBinPath(): String {
         val paths = BootstrapInstaller.getPaths(context)
-        return installedCodexBinaryFile(paths)?.absolutePath
-            ?: "${paths.prefixDir}/lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex"
+        return "${paths.prefixDir}/lib/node_modules/@openai/codex-linux-arm64" +
+            "/vendor/aarch64-unknown-linux-musl/codex/codex"
     }
 
     fun isLoggedIn(): Boolean {
@@ -3190,19 +2919,13 @@ EOF
 set +e
 PREFIX_DIR="${'$'}{PREFIX:-/data/data/com.termux/files/usr}"
 HOME_DIR="${'$'}{HOME:-/data/data/com.termux/files/home}"
-for RG_CANDIDATE in \
-  "${'$'}PREFIX_DIR/lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/codex-path/rg" \
-  "${'$'}PREFIX_DIR/lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/path/rg" \
-  "${'$'}PREFIX_DIR/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/codex-path/rg" \
-  "${'$'}PREFIX_DIR/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/path/rg"
-do
-  if [ -x "${'$'}RG_CANDIDATE" ]; then
-    "${'$'}RG_CANDIDATE" --version >/dev/null 2>&1
-    if [ "${'$'}?" -eq 0 ]; then
-      exec "${'$'}RG_CANDIDATE" "${'$'}@"
-    fi
+RG_CANDIDATE="${'$'}PREFIX_DIR/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/path/rg"
+if [ -x "${'$'}RG_CANDIDATE" ]; then
+  "${'$'}RG_CANDIDATE" --version >/dev/null 2>&1
+  if [ "${'$'}?" -eq 0 ]; then
+    exec "${'$'}RG_CANDIDATE" "${'$'}@"
   fi
-done
+fi
 UBUNTU_BIN="${'$'}{ANYCLAW_UBUNTU_BIN:-${'$'}HOME_DIR/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh}"
 if [ -x "${'$'}UBUNTU_BIN" ]; then
   "${'$'}UBUNTU_BIN" --command "command -v rg >/dev/null 2>&1" >/dev/null 2>&1
@@ -3746,13 +3469,13 @@ import os
 from pathlib import Path
 
 OLD = b"/data/data/com.termux"
-NEW = b"__PREFIX__"
+NEW = b"/data/user/0/com.codex.mobile.beta"
 
 roots = [
-    Path("__PREFIX__/bin"),
-    Path("__PREFIX__/libexec"),
-    Path("__HOME__/.openclaw/workspace/scripts"),
-    Path("__HOME__/.openclaw/workspace/.git/hooks"),
+    Path("/data/user/0/com.codex.mobile.beta/files/usr/bin"),
+    Path("/data/user/0/com.codex.mobile.beta/files/usr/libexec"),
+    Path("/data/user/0/com.codex.mobile.beta/files/home/.openclaw/workspace/scripts"),
+    Path("/data/user/0/com.codex.mobile.beta/files/home/.openclaw/workspace/.git/hooks"),
 ]
 
 patched = 0
