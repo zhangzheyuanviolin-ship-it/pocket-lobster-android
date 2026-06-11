@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/tvCodexExtensionTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:importantForAccessibility="yes"
+        android:text="@string/codex_extension_manager_title"
+        android:textSize="22sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/tvCodexExtensionSubtitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:importantForAccessibility="yes"
+        android:text="@string/codex_extension_manager_subtitle"
+        android:textSize="14sp" />
+
+    <LinearLayout
+        android:id="@+id/layoutCodexExtensionModes"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnCodexExtensionModeSkills"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/codex_extension_mode_skills"
+            android:importantForAccessibility="yes" />
+
+        <Button
+            android:id="@+id/btnCodexExtensionModePlugins"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:text="@string/codex_extension_mode_plugins"
+            android:importantForAccessibility="yes" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/layoutCodexExtensionActionsTop"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnCodexExtensionRefresh"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/codex_extension_refresh"
+            android:importantForAccessibility="yes" />
+
+        <Button
+            android:id="@+id/btnCodexExtensionPrimaryAction"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:importantForAccessibility="yes" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/layoutCodexExtensionActionsBottom"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnCodexExtensionSecondaryAction"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:importantForAccessibility="yes" />
+
+        <Button
+            android:id="@+id/btnCodexExtensionTertiaryAction"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:importantForAccessibility="yes" />
+    </LinearLayout>
+
+    <ProgressBar
+        android:id="@+id/progressCodexExtension"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:indeterminate="true"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tvCodexExtensionStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:importantForAccessibility="yes"
+        android:text="@string/codex_extension_loading"
+        android:visibility="gone" />
+
+    <ListView
+        android:id="@+id/listCodexExtensions"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="12dp"
+        android:layout_weight="1"
+        android:importantForAccessibility="yes" />
+
+</LinearLayout>

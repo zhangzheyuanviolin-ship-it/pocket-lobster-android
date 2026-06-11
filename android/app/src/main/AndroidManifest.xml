@@ -78,6 +78,12 @@
             android:label="@string/model_manager_title"
             android:windowSoftInputMode="adjustResize" />
 
+        <activity
+            android:name=".CodexExtensionManagerActivity"
+            android:exported="false"
+            android:label="@string/codex_extension_manager_title"
+            android:windowSoftInputMode="adjustResize" />
+
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"

@@ -55,6 +55,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var promptManagerButton: Button
     private lateinit var conversationManagerButton: Button
     private lateinit var modelManagerButton: Button
+    private lateinit var codexSkillsManagerButton: Button
+    private lateinit var codexPluginsManagerButton: Button
     private lateinit var gatewayToggleButton: Button
     private lateinit var backToCodexButton: Button
     private lateinit var openClawNewChatButton: Button
@@ -147,6 +149,8 @@ class MainActivity : AppCompatActivity() {
         promptManagerButton = findViewById(R.id.btnPromptManager)
         conversationManagerButton = findViewById(R.id.btnConversationManager)
         modelManagerButton = findViewById(R.id.btnModelManager)
+        codexSkillsManagerButton = findViewById(R.id.btnCodexSkillsManager)
+        codexPluginsManagerButton = findViewById(R.id.btnCodexPluginsManager)
         gatewayToggleButton = findViewById(R.id.btnGatewayToggle)
         backToCodexButton = findViewById(R.id.btnBackToCodex)
         openClawNewChatButton = findViewById(R.id.btnOpenClawNewChat)
@@ -168,6 +172,26 @@ class MainActivity : AppCompatActivity() {
         }
         modelManagerButton.setOnClickListener {
             startActivity(Intent(this, ModelManagerActivity::class.java))
+        }
+        codexSkillsManagerButton.setOnClickListener {
+            startActivity(
+                Intent(this, CodexExtensionManagerActivity::class.java).apply {
+                    putExtra(
+                        CodexExtensionManagerActivity.EXTRA_MODE,
+                        CodexExtensionManagerActivity.MODE_SKILLS,
+                    )
+                },
+            )
+        }
+        codexPluginsManagerButton.setOnClickListener {
+            startActivity(
+                Intent(this, CodexExtensionManagerActivity::class.java).apply {
+                    putExtra(
+                        CodexExtensionManagerActivity.EXTRA_MODE,
+                        CodexExtensionManagerActivity.MODE_PLUGINS,
+                    )
+                },
+            )
         }
         gatewayToggleButton.setOnClickListener {
             onGatewayTogglePressed()
@@ -810,6 +834,8 @@ class MainActivity : AppCompatActivity() {
         promptManagerButton.visibility = View.VISIBLE
         conversationManagerButton.visibility = View.VISIBLE
         modelManagerButton.visibility = View.VISIBLE
+        codexSkillsManagerButton.visibility = View.VISIBLE
+        codexPluginsManagerButton.visibility = View.VISIBLE
         bottomAgentTabs.visibility = View.VISIBLE
         applyGatewayConnectedState(false, announce = false)
         if (!explicitTarget) {
@@ -1184,6 +1210,8 @@ class MainActivity : AppCompatActivity() {
             promptManagerButton.visibility = View.GONE
             conversationManagerButton.visibility = View.GONE
             modelManagerButton.visibility = View.GONE
+            codexSkillsManagerButton.visibility = View.GONE
+            codexPluginsManagerButton.visibility = View.GONE
             bottomAgentTabs.visibility = View.GONE
             gatewayToggleButton.visibility = View.GONE
             backToCodexButton.visibility = View.GONE
