@@ -959,9 +959,7 @@ class CodexExtensionManagerActivity : AppCompatActivity() {
         params.put("pluginName", pluginName)
         if (row.marketplacePath.isNotBlank()) {
             params.put("marketplacePath", row.marketplacePath)
-        }
-        if (row.marketplaceName.isNotBlank()) {
-            params.put("marketplaceName", row.marketplaceName)
+        } else if (row.marketplaceName.isNotBlank()) {
             params.put("remoteMarketplaceName", row.marketplaceName)
         }
         return params
