@@ -335,7 +335,7 @@ class CodexExtensionManagerActivity : AppCompatActivity() {
                     description = app.optStringAny("description", "shortDescription", "subtitle"),
                     status = appStatus(app),
                     authorizationUrl = app.optStringAny("authorizationUrl", "authorizeUrl", "manageUrl", "settingsUrl", "url", "webUrl"),
-                    oauthName = app.optStringAny("oauthName", "mcpServerName", "serverName", "name"),
+                    oauthName = app.optStringAny("oauthName", "mcpServerName", "serverName"),
                     raw = app,
                 )
         }
@@ -467,7 +467,8 @@ class CodexExtensionManagerActivity : AppCompatActivity() {
         val actions = mutableListOf<String>()
         if (row.oauthName.isNotEmpty()) {
             actions += getString(R.string.codex_plugins_action_authorize)
-        } else if (row.authorizationUrl.isNotEmpty()) {
+        }
+        if (row.authorizationUrl.isNotEmpty()) {
             actions += getString(R.string.codex_plugins_action_open_browser)
         }
         actions += getString(R.string.codex_extension_action_view_detail)
@@ -494,15 +495,13 @@ class CodexExtensionManagerActivity : AppCompatActivity() {
         val actions = mutableListOf<String>()
         if (row.marketplacePath.isNotEmpty()) {
             actions += if (row.installed == true) getString(R.string.codex_plugins_action_uninstall) else getString(R.string.codex_plugins_action_install)
-            actions += getString(R.string.codex_extension_action_view_detail)
         }
+        actions += getString(R.string.codex_extension_action_view_detail)
         if (row.oauthName.isNotEmpty()) {
             actions += getString(R.string.codex_plugins_action_authorize)
-        } else if (row.authorizationUrl.isNotEmpty()) {
-            actions += getString(R.string.codex_plugins_action_open_browser)
         }
-        if (actions.isEmpty()) {
-            actions += getString(R.string.codex_extension_action_view_detail)
+        if (row.authorizationUrl.isNotEmpty()) {
+            actions += getString(R.string.codex_plugins_action_open_browser)
         }
 
         AlertDialog.Builder(this)
@@ -663,7 +662,12 @@ class CodexExtensionManagerActivity : AppCompatActivity() {
             successText = getString(R.string.codex_plugins_installed_toast),
         ) {
             val params = buildPluginLookupParams(row)
-            LocalBridgeClients.callCodexRpc("plugin/install", params)
+            val result = LocalBridgeClients.callCodexRpc("plugin/install", params)
+            val url =
+                result.optStringAny("url", "authorizationUrl", "authorizeUrl", "browserUrl")
+            if (url.isNotEmpty()) {
+                runOnUiThread { openExternalUrl(url) }
+            }
         }
     }
 

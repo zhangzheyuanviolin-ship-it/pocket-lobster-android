@@ -45,8 +45,8 @@ android {
         // Android 10+ (targetSdk 29+) enforces W^X which blocks this via SELinux.
         // Termux (F-Droid) uses the same approach.
         targetSdk = 28
-        versionCode = 288
-        versionName = "1.0.49-codex-plugin-marketplace-fix-v288"
+        versionCode = 289
+        versionName = "1.0.50-codex-plugin-auth-flow-fix-v289"
     }
 
     flavorDimensions += "channel"
