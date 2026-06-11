@@ -81,9 +81,11 @@ class CodexExtensionManagerActivity : AppCompatActivity() {
 
         data class Plugin(
             val pluginId: String,
+            val pluginName: String,
             val displayName: String,
             val description: String,
             val marketplacePath: String,
+            val marketplaceName: String,
             val marketplaceLabel: String,
             val installed: Boolean?,
             val oauthName: String,
@@ -342,6 +344,7 @@ class CodexExtensionManagerActivity : AppCompatActivity() {
         for (i in 0 until marketplaces.length()) {
             val marketplace = marketplaces.optJSONObject(i) ?: continue
             val marketplacePath = marketplace.optStringAny("marketplacePath", "path", "id", "name")
+            val marketplaceName = marketplace.optStringAny("marketplaceName", "name", "id")
             val marketplaceLabel = marketplace.optStringAny("displayName", "title", "name", "path", "id").ifEmpty { "官方插件目录" }
             val plugins =
                 marketplace.optJSONArray("plugins")
@@ -352,10 +355,12 @@ class CodexExtensionManagerActivity : AppCompatActivity() {
                 val plugin = plugins.optJSONObject(j) ?: continue
                 output +=
                     RowItem.Plugin(
-                        pluginId = plugin.optStringAny("pluginId", "id", "name", "slug"),
+                        pluginId = plugin.optStringAny("pluginId", "id", "slug", "name"),
+                        pluginName = plugin.optStringAny("pluginName", "name", "slug", "pluginId", "id"),
                         displayName = plugin.optStringAny("displayName", "title", "name", "pluginId", "id").ifEmpty { "未命名插件" },
                         description = plugin.optStringAny("description", "shortDescription", "subtitle"),
                         marketplacePath = plugin.optStringAny("marketplacePath", "path").ifEmpty { marketplacePath },
+                        marketplaceName = plugin.optStringAny("marketplaceName", "remoteMarketplaceName").ifEmpty { marketplaceName },
                         marketplaceLabel = marketplaceLabel,
                         installed = plugin.optBooleanAny("installed", "enabled"),
                         oauthName = plugin.optStringAny("oauthName", "mcpServerName", "serverName"),
@@ -657,8 +662,7 @@ class CodexExtensionManagerActivity : AppCompatActivity() {
             loadingText = getString(R.string.codex_extension_loading),
             successText = getString(R.string.codex_plugins_installed_toast),
         ) {
-            val params = JSONObject().put("marketplacePath", row.marketplacePath)
-            if (row.pluginId.isNotEmpty()) params.put("pluginId", row.pluginId)
+            val params = buildPluginLookupParams(row)
             LocalBridgeClients.callCodexRpc("plugin/install", params)
         }
     }
@@ -668,8 +672,8 @@ class CodexExtensionManagerActivity : AppCompatActivity() {
             loadingText = getString(R.string.codex_extension_loading),
             successText = getString(R.string.codex_plugins_uninstalled_toast),
         ) {
-            val params = JSONObject().put("pluginId", row.pluginId)
-            if (row.marketplacePath.isNotEmpty()) params.put("marketplacePath", row.marketplacePath)
+            val params = buildPluginLookupParams(row)
+            if (row.pluginId.isNotEmpty()) params.put("pluginId", row.pluginId)
             LocalBridgeClients.callCodexRpc("plugin/uninstall", params)
         }
     }
@@ -680,7 +684,7 @@ class CodexExtensionManagerActivity : AppCompatActivity() {
             successText = null,
             autoReload = false,
         ) {
-            val params = JSONObject().put("marketplacePath", row.marketplacePath)
+            val params = buildPluginLookupParams(row)
             val result = LocalBridgeClients.callCodexRpc("plugin/read", params)
             runOnUiThread {
                 showInfoDialog(row.displayName, row.description.ifEmpty { row.pluginId }, prettyJson(result))
@@ -944,6 +948,23 @@ class CodexExtensionManagerActivity : AppCompatActivity() {
             parts += source
         }
         return parts.joinToString(" · ")
+    }
+
+    private fun buildPluginLookupParams(row: RowItem.Plugin): JSONObject {
+        val params = JSONObject()
+        val pluginName = row.pluginName.ifBlank { row.pluginId }
+        if (pluginName.isBlank()) {
+            throw IllegalStateException("插件条目缺少 pluginName")
+        }
+        params.put("pluginName", pluginName)
+        if (row.marketplacePath.isNotBlank()) {
+            params.put("marketplacePath", row.marketplacePath)
+        }
+        if (row.marketplaceName.isNotBlank()) {
+            params.put("marketplaceName", row.marketplaceName)
+            params.put("remoteMarketplaceName", row.marketplaceName)
+        }
+        return params
     }
 
     private fun jsonKeys(obj: JSONObject): List<String> {
