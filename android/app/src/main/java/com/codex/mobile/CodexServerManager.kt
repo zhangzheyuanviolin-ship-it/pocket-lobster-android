@@ -243,6 +243,8 @@ class CodexServerManager(private val context: Context) {
         }.getOrDefault("")
     }
 
+    fun getTargetCodexVersion(): String = CODEX_VERSION
+
     fun getInstalledClaudeCodeVersion(): String {
         val paths = BootstrapInstaller.getPaths(context)
         val pkg = File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code/package.json")
@@ -2412,10 +2414,19 @@ EOF
         val paths = BootstrapInstaller.getPaths(context)
         val prefix = paths.prefixDir
         val npmCli = "$prefix/lib/node_modules/npm/bin/npm-cli.js"
+        val installedVersion = getInstalledCodexVersion()
+
+        if (installedVersion.isNotBlank() && installedVersion != CODEX_VERSION) {
+            onProgress("Removing old Codex CLI $installedVersion …")
+            runInPrefix(
+                "rm -rf \"$prefix/lib/node_modules/@openai/codex\" \"$prefix/lib/node_modules/@openai/codex-linux-arm64\" \"$prefix/bin/codex\" 2>&1 || true",
+                onOutput = { onProgress(it) },
+            )
+        }
 
         onProgress("Installing Codex CLI $CODEX_VERSION …")
         val codexCode = runInPrefix(
-            "node $npmCli install -g @openai/codex@$CODEX_VERSION 2>&1",
+            "node $npmCli install -g --force @openai/codex@$CODEX_VERSION 2>&1",
             onOutput = { onProgress(it) },
         )
         if (codexCode != 0) {
@@ -2424,7 +2435,7 @@ EOF
         }
 
         ensureCodexWrapperScript()
-        return isCodexInstalled()
+        return isCodexInstalled() && getInstalledCodexVersion() == CODEX_VERSION
     }
 
     fun installClaudeCode(onProgress: (String) -> Unit): Boolean {

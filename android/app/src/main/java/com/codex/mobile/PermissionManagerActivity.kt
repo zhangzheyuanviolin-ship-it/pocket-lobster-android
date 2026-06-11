@@ -136,11 +136,13 @@ class PermissionManagerActivity : AppCompatActivity() {
         Thread {
             val cliInstalled = runCatching { serverManager.isCodexInstalled() }.getOrElse { false }
             val binaryInstalled = runCatching { serverManager.isPlatformBinaryInstalled() }.getOrElse { false }
+            val targetVersion = runCatching { serverManager.getTargetCodexVersion() }.getOrElse { "" }
             val codexVersion = if (cliInstalled) {
                 runCatching { serverManager.getInstalledCodexVersion() }.getOrElse { "" }
             } else {
                 ""
             }
+            val cliCurrent = cliInstalled && codexVersionMatches(codexVersion, targetVersion)
             val loggedIn = if (cliInstalled && binaryInstalled) {
                 runCatching { serverManager.isLoggedIn() }.getOrElse { false }
             } else {
@@ -149,27 +151,35 @@ class PermissionManagerActivity : AppCompatActivity() {
             runOnUiThread {
                 val text = when {
                     !cliInstalled -> getString(R.string.codex_install_status_missing)
+                    !cliCurrent -> getString(R.string.codex_install_status_outdated, targetVersion)
                     !binaryInstalled -> getString(R.string.codex_install_status_binary_missing)
                     loggedIn -> getString(R.string.codex_auth_status_logged_in)
                     else -> getString(R.string.codex_auth_status_logged_out)
                 }
                 val textWithVersion = if (codexVersion.isBlank()) text else "$text · CLI $codexVersion"
                 tvCodexAuthStatus.text = getString(R.string.codex_auth_status_template, textWithVersion)
-                btnCodexAuthBrowser.isEnabled = !codexLoginRunning && cliInstalled && binaryInstalled
+                btnCodexAuthBrowser.isEnabled = !codexLoginRunning && cliInstalled && cliCurrent && binaryInstalled
                 btnCodexInstall.isEnabled = !codexInstallRunning
-                btnCodexInstall.text = if (cliInstalled && binaryInstalled) {
-                    getString(R.string.codex_install_repair_text)
-                } else {
-                    getString(R.string.codex_install_button_text)
-                }
+                btnCodexInstall.text =
+                    when {
+                        !cliInstalled -> getString(R.string.codex_install_button_text)
+                        !cliCurrent -> getString(R.string.codex_install_update_text)
+                        else -> getString(R.string.codex_install_repair_text)
+                    }
             }
         }.start()
     }
 
     private fun startCodexBrowserAuth() {
         if (codexLoginRunning) return
+        val installedVersion = runCatching { serverManager.getInstalledCodexVersion() }.getOrElse { "" }
+        val targetVersion = runCatching { serverManager.getTargetCodexVersion() }.getOrElse { "" }
         if (!serverManager.isCodexInstalled() || !serverManager.isPlatformBinaryInstalled()) {
             Toast.makeText(this, getString(R.string.codex_not_installed), Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!codexVersionMatches(installedVersion, targetVersion)) {
+            Toast.makeText(this, getString(R.string.codex_install_update_required), Toast.LENGTH_LONG).show()
             return
         }
         codexLoginRunning = true
@@ -231,15 +241,20 @@ class PermissionManagerActivity : AppCompatActivity() {
         Toast.makeText(this, getString(R.string.codex_install_starting), Toast.LENGTH_SHORT).show()
 
         Thread {
+            val installedVersion = runCatching { serverManager.getInstalledCodexVersion() }.getOrElse { "" }
+            val targetVersion = runCatching { serverManager.getTargetCodexVersion() }.getOrElse { "" }
+            val needsCliInstallOrUpgrade =
+                !serverManager.isCodexInstalled() || !codexVersionMatches(installedVersion, targetVersion)
+
             val cliInstalled =
-                if (serverManager.isCodexInstalled()) {
-                    true
-                } else {
+                if (needsCliInstallOrUpgrade) {
                     serverManager.installCodex { }
+                } else {
+                    true
                 }
 
             val binaryInstalled =
-                if (cliInstalled && serverManager.isPlatformBinaryInstalled()) {
+                if (cliInstalled && !needsCliInstallOrUpgrade && serverManager.isPlatformBinaryInstalled()) {
                     true
                 } else if (cliInstalled) {
                     serverManager.installPlatformBinary { }
@@ -264,6 +279,12 @@ class PermissionManagerActivity : AppCompatActivity() {
                 refreshOptionalAgentInstallStatus()
             }
         }.start()
+    }
+
+    private fun codexVersionMatches(installedVersion: String, targetVersion: String): Boolean {
+        return installedVersion.isNotBlank() &&
+            targetVersion.isNotBlank() &&
+            installedVersion.trim() == targetVersion.trim()
     }
 
     private fun refreshOptionalAgentInstallStatus() {
