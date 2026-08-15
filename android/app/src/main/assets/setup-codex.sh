@@ -16,6 +16,8 @@
 
 set -eu
 
+CODEX_VERSION="0.147.0"
+
 echo "[setup] Updating package index..."
 apt-get update -y || {
     echo "[setup] WARNING: apt-get update failed, continuing anyway"
@@ -30,8 +32,8 @@ apt-get install -y nodejs-lts || {
 echo "[setup] Node.js version: $(node --version)"
 echo "[setup] npm version: $(npm --version)"
 
-echo "[setup] Installing @openai/codex..."
-npm install -g @openai/codex || {
+echo "[setup] Installing @openai/codex ${CODEX_VERSION}..."
+npm install -g @openai/codex@${CODEX_VERSION} || {
     echo "[setup] ERROR: Failed to install @openai/codex"
     exit 2
 }

@@ -26,7 +26,7 @@ class CodexServerManager(private val context: Context) {
         private const val TAG = "CodexServerManager"
         const val SERVER_PORT = 18923
         private const val PROXY_PORT = 18924
-        private const val CODEX_VERSION = "0.137.0"
+        private const val CODEX_VERSION = "0.147.0"
         private const val CLAUDE_CODE_VERSION = "2.1.112"
         const val OPENCLAW_GATEWAY_PORT = 18789
         const val OPENCLAW_CONTROL_UI_PORT = 19001
@@ -2553,7 +2553,7 @@ WEOF
             mkdir -p "$targetPkg" &&
             cp -a package/vendor "$targetPkg/vendor" &&
             cp package/package.json "$targetPkg/package.json" &&
-            find "$targetPkg/vendor" -type f \( -name codex -o -name rg -o -name bwrap -o -name zsh \) -exec chmod 700 {} \; 2>/dev/null || true &&
+            find "$targetPkg/vendor" -type f \( -name codex -o -name codex-code-mode-host -o -name rg -o -name bwrap -o -name zsh \) -exec chmod 700 {} \; 2>/dev/null || true &&
             rm -rf "$prefix/tmp/_codex_bin" &&
             echo "Platform binary installed"
         """.trimIndent()
@@ -3876,11 +3876,26 @@ EOF
         val desired = """
             |approval_policy = "never"
             |sandbox_mode = "danger-full-access"
+            |model = "gpt-5.6"
         """.trimMargin().trim() + "\n"
 
         if (configFile.exists()) {
             val current = configFile.readText()
-            if (current.contains("approval_policy") && current.contains("danger-full-access")) {
+            var updated = current
+            if (!Regex("""(?m)^\s*approval_policy\s*=""").containsMatchIn(updated)) {
+                updated = appendCodexConfigLine(updated, "approval_policy = \"never\"")
+            }
+            if (!Regex("""(?m)^\s*sandbox_mode\s*=""").containsMatchIn(updated)) {
+                updated = appendCodexConfigLine(updated, "sandbox_mode = \"danger-full-access\"")
+            }
+            if (!Regex("""(?m)^\s*model\s*=""").containsMatchIn(updated)) {
+                updated = appendCodexConfigLine(updated, "model = \"gpt-5.6\"")
+            }
+            if (updated != current) {
+                configFile.writeText(updated)
+                Log.i(TAG, "Updated Codex config defaults at $configFile")
+            }
+            if (updated.contains("approval_policy") && updated.contains("danger-full-access")) {
                 ensureShellInitFiles(paths)
                 return
             }
@@ -3888,6 +3903,15 @@ EOF
         configFile.writeText(desired)
         ensureShellInitFiles(paths)
         Log.i(TAG, "Wrote full-access config to $configFile")
+    }
+
+    private fun appendCodexConfigLine(current: String, line: String): String {
+        val trimmedEnd = current.trimEnd()
+        return if (trimmedEnd.isBlank()) {
+            "$line\n"
+        } else {
+            "$trimmedEnd\n$line\n"
+        }
     }
 
     private fun ensureShellInitFiles(paths: BootstrapInstaller.Paths) {
