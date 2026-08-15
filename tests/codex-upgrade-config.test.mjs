@@ -13,5 +13,10 @@ assert.doesNotMatch(serverManager, /private const val CODEX_VERSION = "0\.137\.0
 assert.match(setupScript, /CODEX_VERSION="0\.147\.0"/)
 assert.match(setupScript, /@openai\/codex@\$\{CODEX_VERSION\}/)
 
-assert.match(gradle, /versionCode = 293/)
-assert.match(gradle, /versionName = "1\.0\.53-codex-cli-0\.147\.0-gpt-5\.6-v293"/)
+assert.match(gradle, /versionCode = 294/)
+assert.match(gradle, /versionName = "1\.0\.53-codex-cli-0\.147\.0-gpt-5\.6-v294"/)
+assert.match(gradle, /create\("operator"\)[\s\S]*applicationId = "com\.codex\.mobile\.pocketlobster\.test"/)
+
+assert.match(serverManager, /installedVersion\.isNotBlank\(\) && installedVersion != CODEX_VERSION/)
+assert.match(serverManager, /rm -rf \\"\$prefix\/lib\/node_modules\/@openai\/codex\\"/)
+assert.match(serverManager, /install -g --force @openai\/codex@\$CODEX_VERSION/)
