@@ -494,10 +494,12 @@
               </div>
 
               <ThreadComposer :active-thread-id="composerThreadContextId" :disabled="isSendingMessage"
+                :providers="availableProviders" :selected-provider="selectedProviderId"
                 :models="availableModels" :reasoning-efforts="availableReasoningEfforts" :selected-model="selectedModelId"
                 :selected-reasoning-effort="selectedReasoningEffort" :is-turn-in-progress="false"
                 :is-interrupting-turn="false" @submit="onSubmitThreadMessage"
-                @update:selected-model="onSelectModel" @update:selected-reasoning-effort="onSelectReasoningEffort" />
+                @update:selected-provider="onSelectProvider" @update:selected-model="onSelectModel"
+                @update:selected-reasoning-effort="onSelectReasoningEffort" />
             </div>
           </template>
           <template v-else>
@@ -515,11 +517,13 @@
               </div>
 
               <ThreadComposer :active-thread-id="composerThreadContextId"
-                :disabled="isSendingMessage || isLoadingMessages" :models="availableModels"
+                :disabled="isSendingMessage || isLoadingMessages" :providers="availableProviders"
+                :selected-provider="selectedProviderId" :models="availableModels"
                 :reasoning-efforts="availableReasoningEfforts"
                 :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
                 :is-turn-in-progress="isSelectedThreadInProgress" :is-interrupting-turn="isInterruptingTurn"
-                @submit="onSubmitThreadMessage" @update:selected-model="onSelectModel"
+                @submit="onSubmitThreadMessage" @update:selected-provider="onSelectProvider"
+                @update:selected-model="onSelectModel"
                 @update:selected-reasoning-effort="onSelectReasoningEffort" @interrupt="onInterruptTurn" />
             </div>
           </template>
@@ -572,8 +576,10 @@ const {
   selectedLiveOverlay,
   selectedThreadId,
   availableModels,
+  availableProviders,
   availableReasoningEfforts,
   selectedModelId,
+  selectedProviderId,
   selectedReasoningEffort,
   messages,
   isLoadingThreads,
@@ -593,6 +599,7 @@ const {
   sendMessageToNewThread,
   interruptSelectedThreadTurn,
   setSelectedModelId,
+  setSelectedProviderId,
   setSelectedReasoningEffort,
   respondToPendingServerRequest,
   renameProject,
@@ -976,6 +983,10 @@ function onSelectNewThreadFolder(cwd: string): void {
 
 function onSelectModel(modelId: string): void {
   setSelectedModelId(modelId)
+}
+
+function onSelectProvider(providerId: string): void {
+  setSelectedProviderId(providerId)
 }
 
 function onSelectReasoningEffort(effort: ReasoningEffort | ''): void {

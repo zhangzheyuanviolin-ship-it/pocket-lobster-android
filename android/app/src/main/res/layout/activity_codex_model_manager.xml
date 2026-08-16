@@ -16,7 +16,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="管理支持原生 OpenAI Responses 协议的第三方模型提供商。保存、选中和测试都会执行真实生成验证；推理强度在聊天输入框下方实时选择。"
+        android:text="统一管理 Codex 模型提供商。OpenAI 登录提供商与自定义 Responses 提供商可在聊天输入框下方实时切换；保存和测试都会执行真实生成验证。"
         android:textSize="14sp" />
 
     <LinearLayout
@@ -62,6 +62,13 @@
             android:layout_weight="1"
             android:text="@string/model_manager_fetch_models" />
     </LinearLayout>
+
+    <Button
+        android:id="@+id/btnCodexModelUseOpenAI"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="切换到 OpenAI（ChatGPT 登录）" />
 
     <ProgressBar
         android:id="@+id/progressCodexModel"

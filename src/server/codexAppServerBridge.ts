@@ -1,11 +1,11 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { accessSync, constants as fsConstants, createWriteStream, readFileSync, unlinkSync } from 'node:fs'
-import { mkdtemp, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, dirname, extname } from 'node:path'
-import { handleCodexProviderAdapterRequest } from './codexProviderAdapter.js'
+import { handleCodexProviderAdapterRequest, sanitizeResponsesHistory } from './codexProviderAdapter.js'
 
 const prefixBin = process.env.PREFIX ? join(process.env.PREFIX, 'bin') : ''
 const shellPath = prefixBin ? join(prefixBin, 'sh') : '/bin/sh'
@@ -25,7 +25,9 @@ const codexProviderSecretsHandoffPath = homeDir
 const codexProviderRuntimeStatusPath = homeDir
   ? join(homeDir, '.openclaw-android', 'state', 'codex-provider-runtime-status.json')
   : ''
+const codexSessionsPath = homeDir ? join(homeDir, '.codex', 'sessions') : ''
 const CODEX_PROVIDER_SECRET_PREFIX = 'POCKET_LOBSTER_CODEX_'
+const PROVIDER_MODEL_REFRESH_INTERVAL_MS = 5 * 60_000
 const OPENCLAW_UPLOAD_DIR = homeDir
   ? join(homeDir, '.openclaw', 'workspace', 'uploads')
   : join(process.cwd(), '.openclaw', 'workspace', 'uploads')
@@ -338,6 +340,114 @@ async function readJsonFile(path: string): Promise<Record<string, unknown> | nul
   } catch {
     return null
   }
+}
+
+async function writeJsonFileAtomic(path: string, value: unknown): Promise<void> {
+  await writeTextFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`)
+}
+
+async function writeTextFileAtomic(path: string, value: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  const temp = `${path}.${process.pid}.tmp`
+  await writeFile(temp, value, { encoding: 'utf8', mode: 0o600 })
+  await rename(temp, path)
+}
+
+async function findThreadRolloutPath(directory: string, threadId: string): Promise<string> {
+  if (!directory || !threadId) return ''
+  let entries
+  try {
+    entries = await readdir(directory, { withFileTypes: true })
+  } catch {
+    return ''
+  }
+  for (const entry of entries) {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory()) {
+      const nested = await findThreadRolloutPath(path, threadId)
+      if (nested) return nested
+    } else if (entry.isFile() && entry.name.endsWith('.jsonl') && entry.name.includes(threadId)) {
+      return path
+    }
+  }
+  return ''
+}
+
+type PersistedThreadRouteMigration = {
+  path: string
+  original: string
+  changed: boolean
+  sanitizedReasoningItems: number
+}
+
+async function migratePersistedThreadRoute(
+  threadId: string,
+  providerId: string,
+): Promise<PersistedThreadRouteMigration> {
+  const path = await findThreadRolloutPath(codexSessionsPath, threadId)
+  if (!path) throw new Error(`Persisted thread not found: ${threadId}`)
+  const raw = await readFile(path, 'utf8')
+  let providerMetadataFound = false
+  let changed = false
+  let sanitizedReasoningItems = 0
+  const lines = raw.split('\n').map((line) => {
+    if (!line.trim()) return line
+    try {
+      const row = asRecord(JSON.parse(line) as unknown)
+      if (!row) return line
+      const payload = asRecord(row.payload)
+      let lineChanged = false
+      if (row.type === 'session_meta' && payload) {
+        providerMetadataFound = true
+        if (normalizeText(payload.model_provider) !== providerId) {
+          payload.model_provider = providerId
+          changed = true
+          lineChanged = true
+        }
+      }
+      if (
+        row.type === 'response_item' &&
+        payload &&
+        normalizeText(payload.type) === 'reasoning' &&
+        Array.isArray(payload.content) &&
+        payload.content.length > 0
+      ) {
+        row.payload = sanitizeResponsesHistory(payload)
+        sanitizedReasoningItems += 1
+        changed = true
+        lineChanged = true
+      }
+      return lineChanged ? JSON.stringify(row) : line
+    } catch {
+      return line
+    }
+  })
+  if (!providerMetadataFound) throw new Error(`Thread provider metadata not found: ${threadId}`)
+  if (changed) await writeTextFileAtomic(path, lines.join('\n'))
+  return { path, original: raw, changed, sanitizedReasoningItems }
+}
+
+async function restorePersistedThreadRoute(migration: PersistedThreadRouteMigration): Promise<void> {
+  if (migration.changed) await writeTextFileAtomic(migration.path, migration.original)
+}
+
+async function readPersistedThreadModel(threadId: string): Promise<string> {
+  const path = await findThreadRolloutPath(codexSessionsPath, threadId)
+  if (!path) return ''
+  const lines = (await readFile(path, 'utf8')).split('\n')
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index]
+    if (!line?.trim()) continue
+    try {
+      const row = asRecord(JSON.parse(line) as unknown)
+      if (row?.type !== 'turn_context') continue
+      const model = normalizeText(asRecord(row.payload)?.model)
+      if (model) return model
+    } catch {
+      // Ignore malformed trailing lines and continue to the previous turn context.
+    }
+  }
+  return ''
 }
 
 function normalizeText(value: unknown): string {
@@ -3434,7 +3544,7 @@ async function verifyCodexProviderEndToEnd(
   providerId: string,
   model: string,
 ): Promise<Record<string, unknown>> {
-  const routeInstruction = `This is a host routing verification. Reply with exactly POCKET_LOBSTER_ROUTE_OK. The host selected provider_id=${providerId} model=${model}.`
+  const routeInstruction = `This is a host routing verification. Follow each verification prompt exactly. The host selected provider_id=${providerId} model=${model}.`
   const started = await appServer.rpc('thread/start', {
     model,
     modelProvider: providerId,
@@ -3446,45 +3556,51 @@ async function verifyCodexProviderEndToEnd(
   const threadId = extractThreadId(started)
   if (!threadId) throw new Error('Codex thread/start did not return a thread id')
 
-  let resolveCompleted: (value: unknown) => void = () => undefined
-  let rejectCompleted: (reason?: unknown) => void = () => undefined
-  const completed = new Promise<unknown>((resolve, reject) => {
-    resolveCompleted = resolve
-    rejectCompleted = reject
-  })
-  const stopListening = appServer.onNotification((notification) => {
-    if (notification.method !== 'turn/completed') return
-    const params = asRecord(notification.params)
-    if (normalizeText(params?.threadId) !== threadId) return
-    resolveCompleted(notification.params)
-  })
-  const timeout = setTimeout(
-    () => rejectCompleted(new Error('Codex provider end-to-end test timed out')),
-    120_000,
-  )
-
   try {
-    await appServer.rpc('turn/start', {
-      threadId,
-      input: [{ type: 'text', text: 'Reply with exactly POCKET_LOBSTER_ROUTE_OK.' }],
-      model,
-      effort: 'medium',
-    })
-    const completedPayload = await completed
-    let assistantText = extractCompletedTurnText(completedPayload)
-    if (!assistantText) {
-      const read = await appServer.rpc('thread/read', { threadId, includeTurns: true })
-      const thread = asRecord(asRecord(read)?.thread)
-      const turns = Array.isArray(thread?.turns) ? thread.turns : []
-      assistantText = turns.map(extractCompletedTurnText).filter(Boolean).join('\n').trim()
+    const assistantTexts: string[] = []
+    for (const expected of ['POCKET_LOBSTER_ROUTE_OK_1', 'POCKET_LOBSTER_ROUTE_OK_2']) {
+      let resolveCompleted: (value: unknown) => void = () => undefined
+      let rejectCompleted: (reason?: unknown) => void = () => undefined
+      const completed = new Promise<unknown>((resolve, reject) => {
+        resolveCompleted = resolve
+        rejectCompleted = reject
+      })
+      const stopListening = appServer.onNotification((notification) => {
+        if (notification.method !== 'turn/completed') return
+        const params = asRecord(notification.params)
+        if (normalizeText(params?.threadId) !== threadId) return
+        resolveCompleted(notification.params)
+      })
+      const timeout = setTimeout(
+        () => rejectCompleted(new Error('Codex provider two-turn test timed out')),
+        120_000,
+      )
+      try {
+        await appServer.rpc('turn/start', {
+          threadId,
+          input: [{ type: 'text', text: `Reply with exactly ${expected}.` }],
+          model,
+          effort: 'medium',
+        })
+        const completedPayload = await completed
+        let assistantText = extractCompletedTurnText(completedPayload)
+        if (!assistantText) {
+          const read = await appServer.rpc('thread/read', { threadId, includeTurns: true })
+          const thread = asRecord(asRecord(read)?.thread)
+          const turns = Array.isArray(thread?.turns) ? thread.turns : []
+          assistantText = turns.map(extractCompletedTurnText).filter(Boolean).join('\n').trim()
+        }
+        if (!assistantText.includes(expected)) {
+          throw new Error(`Codex route test returned unexpected content: ${assistantText.slice(0, 240) || 'empty'}`)
+        }
+        assistantTexts.push(assistantText)
+      } finally {
+        clearTimeout(timeout)
+        stopListening()
+      }
     }
-    if (!assistantText.includes('POCKET_LOBSTER_ROUTE_OK')) {
-      throw new Error(`Codex route test returned unexpected content: ${assistantText.slice(0, 240) || 'empty'}`)
-    }
-    return { ok: true, threadId, providerId, model, assistantText }
+    return { ok: true, threadId, providerId, model, assistantTexts, turnsVerified: 2 }
   } finally {
-    clearTimeout(timeout)
-    stopListening()
     try { await appServer.rpc('thread/unsubscribe', { threadId }) } catch { /* best effort */ }
   }
 }
@@ -3623,6 +3739,199 @@ function getSharedBridgeState(): SharedBridgeState {
   return created
 }
 
+function providerDefinitionForConfig(config: Record<string, unknown>): Record<string, unknown> | null {
+  const configId = normalizeText(config.id)
+  const displayName = normalizeText(config.displayName)
+  if (!configId) return null
+  const configuredPort = Number.parseInt(process.env.CODEX_WEB_LOCAL_PORT ?? '', 10)
+  const localPort = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort <= 65_535
+    ? configuredPort
+    : 3000
+  return {
+    name: displayName || normalizeText(config.modelId) || configId,
+    base_url: `http://127.0.0.1:${localPort}/codex-provider-adapter/${encodeURIComponent(configId)}/v1`,
+    wire_api: 'responses',
+    env_key: `POCKET_LOBSTER_CODEX_${configId.toUpperCase().replace(/[^A-Z0-9_]/gu, '_')}_API_KEY`,
+    requires_openai_auth: false,
+  }
+}
+
+async function ensureCodexProviderDefinitions(appServer: AppServerProcess): Promise<number> {
+  const catalog = await readJsonFile(codexModelProvidersPath)
+  const configs = Array.isArray(catalog?.configs) ? catalog.configs.map(asRecord).filter(Boolean) : []
+  const edits: Record<string, unknown>[] = []
+  for (const config of configs) {
+    if (!config) continue
+    const providerId = normalizeText(config.providerId)
+    const definition = providerDefinitionForConfig(config)
+    if (!providerId || !definition) continue
+    edits.push({ keyPath: `model_providers.${providerId}`, value: definition, mergeStrategy: 'upsert' })
+  }
+  if (edits.length > 0) {
+    await appServer.rpc('config/batchWrite', { edits })
+  }
+  return edits.length
+}
+
+async function updateCatalogSelection(providerId: string, model: string): Promise<void> {
+  if (!codexModelProvidersPath) return
+  const catalog = await readJsonFile(codexModelProvidersPath)
+  if (!catalog) return
+  const configs = Array.isArray(catalog.configs) ? catalog.configs : []
+  let currentConfigId = ''
+  for (const item of configs) {
+    const row = asRecord(item)
+    if (!row) continue
+    const selected = normalizeText(row.providerId) === providerId
+    row.isDefault = selected
+    if (selected) {
+      currentConfigId = normalizeText(row.id)
+      row.modelId = model
+    }
+  }
+  catalog.currentConfigId = currentConfigId
+  await writeJsonFileAtomic(codexModelProvidersPath, catalog)
+}
+
+let providerModelRefreshAt = 0
+let providerModelRefreshPromise: Promise<number> | null = null
+
+async function refreshStoredProviderModels(): Promise<number> {
+  const now = Date.now()
+  if (now - providerModelRefreshAt < PROVIDER_MODEL_REFRESH_INTERVAL_MS) return 0
+  if (providerModelRefreshPromise) return providerModelRefreshPromise
+  providerModelRefreshPromise = (async () => {
+    const catalog = await readJsonFile(codexModelProvidersPath)
+    if (!catalog) return 0
+    const configs = Array.isArray(catalog.configs) ? catalog.configs : []
+    let changed = 0
+    for (const item of configs) {
+      const row = asRecord(item)
+      if (!row) continue
+      const configId = normalizeText(row.id)
+      const baseUrl = normalizeText(row.baseUrl).replace(/\/+$/u, '')
+      if (!configId || !baseUrl) continue
+      const envKey = `POCKET_LOBSTER_CODEX_${configId.toUpperCase().replace(/[^A-Z0-9_]/gu, '_')}_API_KEY`
+      const apiKey = normalizeText(process.env[envKey])
+      if (!apiKey) continue
+      try {
+        const response = await fetch(`${baseUrl}/models`, {
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(12_000),
+        })
+        if (!response.ok) continue
+        const payload = asRecord(await response.json() as unknown)
+        const data = Array.isArray(payload?.data) ? payload.data : []
+        const modelIds = Array.from(new Set(data.map(asRecord).map((model) => normalizeText(model?.id)).filter(Boolean)))
+        const configuredModel = normalizeText(row.modelId)
+        if (configuredModel && !modelIds.includes(configuredModel)) modelIds.unshift(configuredModel)
+        if (modelIds.length === 0) continue
+        const previous = Array.isArray(row.availableModelIds)
+          ? row.availableModelIds.map(normalizeText).filter(Boolean)
+          : configuredModel ? [configuredModel] : []
+        if (JSON.stringify(previous) !== JSON.stringify(modelIds)) {
+          row.availableModelIds = modelIds
+          changed += 1
+        }
+      } catch {
+        // Keep the last known model catalog when the provider is temporarily unavailable.
+      }
+    }
+    if (changed > 0) await writeJsonFileAtomic(codexModelProvidersPath, catalog)
+    providerModelRefreshAt = Date.now()
+    return changed
+  })().finally(() => {
+    providerModelRefreshPromise = null
+  })
+  return providerModelRefreshPromise
+}
+
+async function validateCodexProviderModel(providerId: string, model: string): Promise<void> {
+  if (providerId === 'openai') return
+  const catalog = await readJsonFile(codexModelProvidersPath)
+  const configs = Array.isArray(catalog?.configs) ? catalog.configs.map(asRecord).filter(Boolean) : []
+  const selected = configs.find((row) => normalizeText(row?.providerId) === providerId)
+  if (!selected) throw new Error(`Provider configuration not found: ${providerId}`)
+  const modelIds = new Set([
+    normalizeText(selected.modelId),
+    ...(Array.isArray(selected.availableModelIds) ? selected.availableModelIds.map(normalizeText) : []),
+  ].filter(Boolean))
+  if (!modelIds.has(model)) throw new Error(`Model ${model} is not available from provider ${providerId}`)
+}
+
+async function selectCodexModel(
+  appServer: AppServerProcess,
+  providerId: string,
+  model: string,
+): Promise<Record<string, unknown>> {
+  if (!providerId || !model) throw new Error('Missing providerId or model')
+  await validateCodexProviderModel(providerId, model)
+  await ensureCodexProviderDefinitions(appServer)
+  await appServer.rpc('config/batchWrite', {
+    edits: [
+      { keyPath: 'model_provider', value: providerId, mergeStrategy: 'replace' },
+      { keyPath: 'model', value: model, mergeStrategy: 'replace' },
+    ],
+  })
+  await updateCatalogSelection(providerId, model)
+  return { ok: true, providerId, model }
+}
+
+async function switchCodexThreadRoute(
+  appServer: AppServerProcess,
+  threadId: string,
+  providerId: string,
+  model: string,
+): Promise<Record<string, unknown>> {
+  if (!threadId || !providerId || !model) throw new Error('Missing threadId, providerId or model')
+  await validateCodexProviderModel(providerId, model)
+  await ensureCodexProviderDefinitions(appServer)
+  let previousProvider = ''
+  try {
+    const read = asRecord(await appServer.rpc('thread/read', { threadId, includeTurns: false }))
+    previousProvider = normalizeText(asRecord(read?.thread)?.modelProvider)
+  } catch {
+    previousProvider = ''
+  }
+  try {
+    await appServer.rpc('thread/unsubscribe', { threadId })
+  } catch {
+    // A persisted thread may not currently have an active subscription.
+  }
+
+  let migration: PersistedThreadRouteMigration | null = null
+  if (previousProvider && previousProvider !== providerId) {
+    appServer.dispose()
+    migration = await migratePersistedThreadRoute(threadId, providerId)
+  }
+
+  try {
+    await ensureCodexProviderDefinitions(appServer)
+    const routeParams: Record<string, unknown> = { threadId, model, modelProvider: providerId }
+    const injected = await buildInjectedDeveloperInstructions(routeParams)
+    if (injected) routeParams.developerInstructions = injected
+    const resumed = asRecord(await appServer.rpc('thread/resume', routeParams))
+    const actualProvider = normalizeText(asRecord(resumed?.thread)?.modelProvider)
+    if (actualProvider && actualProvider !== providerId) {
+      throw new Error(`Codex route mismatch: expected ${providerId}, received ${actualProvider}`)
+    }
+    return {
+      ok: true,
+      providerId: actualProvider || providerId,
+      model,
+      previousProvider,
+      sanitizedReasoningItems: migration?.sanitizedReasoningItems ?? 0,
+      thread: resumed?.thread,
+    }
+  } catch (error) {
+    if (migration) {
+      appServer.dispose()
+      await restorePersistedThreadRoute(migration)
+    }
+    throw error
+  }
+}
+
 export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
   const { appServer, methodCatalog } = getSharedBridgeState()
 
@@ -3653,6 +3962,10 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         if (!body || typeof body.method !== 'string' || body.method.length === 0) {
           setJson(res, 400, { error: 'Invalid body: expected { method, params? }' })
           return
+        }
+
+        if (body.method === 'thread/start' || body.method === 'thread/resume' || body.method === 'turn/start') {
+          await ensureCodexProviderDefinitions(appServer)
         }
 
         let nextParams: unknown = body.params ?? null
@@ -3687,6 +4000,8 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
         try {
+          await ensureCodexProviderDefinitions(appServer)
+          await refreshStoredProviderModels()
           const parsed = JSON.parse(await readFile(codexModelProvidersPath, 'utf8')) as unknown
           const record = asRecord(parsed)
           const configs = Array.isArray(record?.configs) ? record.configs : []
@@ -3698,6 +4013,38 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         } catch {
           setJson(res, 200, { version: 1, currentConfigId: '', configs: [] })
         }
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/model-selection') {
+        const payload = asRecord(await readJsonBody(req))
+        const providerId = normalizeText(payload?.providerId) || 'openai'
+        const model = normalizeText(payload?.model)
+        const result = await selectCodexModel(appServer, providerId, model)
+        setJson(res, 200, result)
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/thread-route') {
+        const payload = asRecord(await readJsonBody(req))
+        const threadId = normalizeText(payload?.threadId)
+        const providerId = normalizeText(payload?.providerId) || 'openai'
+        const model = normalizeText(payload?.model)
+        const result = await switchCodexThreadRoute(appServer, threadId, providerId, model)
+        setJson(res, 200, result)
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/thread-route') {
+        const threadId = normalizeText(url.searchParams.get('threadId'))
+        if (!threadId) {
+          setJson(res, 400, { error: 'Missing threadId' })
+          return
+        }
+        const read = asRecord(await appServer.rpc('thread/read', { threadId, includeTurns: false }))
+        const providerId = normalizeText(asRecord(read?.thread)?.modelProvider) || 'openai'
+        const model = await readPersistedThreadModel(threadId)
+        setJson(res, 200, { providerId, model })
         return
       }
 

@@ -13,7 +13,7 @@ import type {
   ThreadListResponse,
   ThreadReadResponse,
 } from './appServerDtos'
-import { normalizeCodexApiError } from './codexErrors'
+import { CodexApiError, extractErrorMessage, normalizeCodexApiError } from './codexErrors'
 import { normalizeThreadGroupsV2, normalizeThreadMessagesV2 } from './normalizers/v2'
 import type { CodexModelOption, ReasoningEffort, UiMessage, UiProjectGroup } from '../types/codex'
 
@@ -27,8 +27,17 @@ type StoredCodexModelConfig = {
   id?: string
   providerId?: string
   displayName?: string
+  baseUrl?: string
   modelId?: string
+  availableModelIds?: string[]
   supportedReasoningEfforts?: string[]
+}
+
+type ThreadRouteResponse = {
+  providerId?: string
+  model?: string
+  sanitizedReasoningItems?: number
+  thread?: { modelProvider?: string }
 }
 
 type StoredCodexModelCatalog = {
@@ -91,6 +100,36 @@ async function getStoredCodexModelCatalog(): Promise<StoredCodexModelCatalog> {
   } catch {
     return {}
   }
+}
+
+function inferProviderLabel(row: StoredCodexModelConfig): string {
+  try {
+    const host = new URL(row.baseUrl ?? '').hostname.toLowerCase()
+    if (host === 'api.deepseek.com' || host.endsWith('.deepseek.com')) return 'DeepSeek'
+    if (host.includes('openrouter')) return 'OpenRouter'
+    if (host.includes('anthropic')) return 'Anthropic'
+  } catch {
+    // Fall back to the user-supplied display name.
+  }
+  const displayName = row.displayName?.trim() ?? ''
+  const modelId = row.modelId?.trim() ?? ''
+  return displayName && displayName !== modelId ? displayName.split(' / ')[0] || displayName : displayName || modelId
+}
+
+async function postCodexJson<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const payload = await response.json().catch(() => null) as T | { error?: unknown } | null
+  if (!response.ok) {
+    throw new CodexApiError(
+      extractErrorMessage(payload, `Codex request failed with HTTP ${response.status}`),
+      { code: 'http_error', method: path, status: response.status },
+    )
+  }
+  return payload as T
 }
 
 async function getThreadGroupsV2(): Promise<UiProjectGroup[]> {
@@ -159,6 +198,42 @@ export async function resumeThread(threadId: string, model?: string, modelProvid
   if (model?.trim()) params.model = model.trim()
   if (modelProvider?.trim()) params.modelProvider = modelProvider.trim()
   await callRpc('thread/resume', params)
+}
+
+export async function switchThreadRoute(
+  threadId: string,
+  model: string,
+  providerId: string,
+): Promise<ThreadRouteResponse> {
+  return postCodexJson<ThreadRouteResponse>('/codex-api/thread-route', {
+    threadId: threadId.trim(),
+    model: model.trim(),
+    providerId: providerId.trim() || 'openai',
+  })
+}
+
+export async function getThreadRoute(threadId: string): Promise<{ providerId: string; model: string }> {
+  const response = await fetch(`/codex-api/thread-route?threadId=${encodeURIComponent(threadId.trim())}`, {
+    cache: 'no-store',
+  })
+  const payload = await response.json().catch(() => null) as { providerId?: unknown; model?: unknown; error?: unknown } | null
+  if (!response.ok) {
+    throw new CodexApiError(
+      extractErrorMessage(payload, `Failed to read thread route with HTTP ${response.status}`),
+      { code: 'http_error', method: 'thread-route', status: response.status },
+    )
+  }
+  return {
+    providerId: typeof payload?.providerId === 'string' ? payload.providerId.trim() || 'openai' : 'openai',
+    model: typeof payload?.model === 'string' ? payload.model.trim() : '',
+  }
+}
+
+export async function setActiveModelSelection(providerId: string, model: string): Promise<void> {
+  await postCodexJson('/codex-api/model-selection', {
+    providerId: providerId.trim() || 'openai',
+    model: model.trim(),
+  })
 }
 
 export async function unsubscribeThread(threadId: string): Promise<void> {
@@ -291,6 +366,7 @@ export async function getAvailableModels(): Promise<CodexModelOption[]> {
       value,
       label: row.displayName || candidate,
       providerId: 'openai',
+      providerLabel: 'OpenAI（ChatGPT 登录）',
       modelId: candidate,
       supportedReasoningEfforts: normalizeReasoningEfforts(row.supportedReasoningEfforts),
       defaultReasoningEffort: normalizeReasoningEffort(row.defaultReasoningEffort),
@@ -299,18 +375,27 @@ export async function getAvailableModels(): Promise<CodexModelOption[]> {
   const stored = await getStoredCodexModelCatalog()
   for (const row of stored.configs ?? []) {
     const providerId = row.providerId?.trim() ?? ''
-    const modelId = row.modelId?.trim() ?? ''
-    if (!providerId || !modelId) continue
-    const value = encodeModelValue(providerId, modelId)
-    if (models.some((item) => item.value === value)) continue
-    models.push({
-      value,
-      label: `${row.displayName?.trim() || modelId} · ${modelId}`,
-      providerId,
-      modelId,
-      supportedReasoningEfforts: normalizeReasoningEfforts(row.supportedReasoningEfforts),
-      defaultReasoningEffort: normalizeReasoningEfforts(row.supportedReasoningEfforts)[0] ?? '',
-    })
+    const configuredModel = row.modelId?.trim() ?? ''
+    const modelIds = Array.from(new Set([
+      configuredModel,
+      ...(Array.isArray(row.availableModelIds) ? row.availableModelIds : []),
+    ].map((value) => value?.trim()).filter((value): value is string => !!value)))
+    if (!providerId || modelIds.length === 0) continue
+    const efforts = normalizeReasoningEfforts(row.supportedReasoningEfforts)
+    const providerLabel = inferProviderLabel(row)
+    for (const modelId of modelIds) {
+      const value = encodeModelValue(providerId, modelId)
+      if (models.some((item) => item.value === value)) continue
+      models.push({
+        value,
+        label: modelId,
+        providerId,
+        providerLabel,
+        modelId,
+        supportedReasoningEfforts: efforts,
+        defaultReasoningEffort: efforts.includes('medium') ? 'medium' : efforts[0] ?? '',
+      })
+    }
   }
   return models
 }

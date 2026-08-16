@@ -42,6 +42,7 @@ class CodexModelManagerActivity : AppCompatActivity() {
     private lateinit var btnCreate: Button
     private lateinit var btnTest: Button
     private lateinit var btnFetch: Button
+    private lateinit var btnUseOpenAI: Button
     private lateinit var progress: ProgressBar
     private lateinit var status: TextView
     private lateinit var listView: ListView
@@ -55,6 +56,7 @@ class CodexModelManagerActivity : AppCompatActivity() {
         btnCreate = findViewById(R.id.btnCodexModelCreate)
         btnTest = findViewById(R.id.btnCodexModelTest)
         btnFetch = findViewById(R.id.btnCodexModelFetch)
+        btnUseOpenAI = findViewById(R.id.btnCodexModelUseOpenAI)
         progress = findViewById(R.id.progressCodexModel)
         status = findViewById(R.id.tvCodexModelStatus)
         listView = findViewById(R.id.listCodexModels)
@@ -63,6 +65,7 @@ class CodexModelManagerActivity : AppCompatActivity() {
         btnCreate.setOnClickListener { showEditDialog(null) }
         btnTest.setOnClickListener { CodexModelConfigStore.loadCurrent(this)?.let(::testConnection) }
         btnFetch.setOnClickListener { CodexModelConfigStore.loadCurrent(this)?.let(::fetchModels) }
+        btnUseOpenAI.setOnClickListener { selectOpenAiProvider() }
     }
 
     override fun onResume() {
@@ -103,12 +106,40 @@ class CodexModelManagerActivity : AppCompatActivity() {
         }
         val current = rows.firstOrNull { it.isDefault }
         status.text = when {
-            rows.isEmpty() -> "暂无Codex第三方模型配置"
-            current == null -> "共${rows.size}条配置，尚未选中当前模型"
+            rows.isEmpty() -> "当前提供商：OpenAI（ChatGPT登录）；暂无自定义提供商配置"
+            current == null -> "当前提供商：OpenAI（ChatGPT登录）；已配置${rows.size}个自定义提供商"
             else -> "当前：${current.displayName}，${current.modelId}，${verificationLabel(current)}"
         }
         btnTest.isEnabled = !busy && current != null
         btnFetch.isEnabled = !busy && current != null
+        btnUseOpenAI.isEnabled = !busy && current != null
+    }
+
+    private fun selectOpenAiProvider() {
+        runBusy("正在切换到OpenAI登录提供商…", {
+            val modelList = LocalBridgeClients.callCodexRpc("model/list")
+                .optJSONArray("data") ?: JSONArray()
+            val ids = mutableListOf<String>()
+            for (index in 0 until modelList.length()) {
+                val item = modelList.optJSONObject(index) ?: continue
+                val id = item.optString("id").trim().ifEmpty { item.optString("model").trim() }
+                if (id.isNotEmpty() && id !in ids) ids += id
+            }
+            val preferred = listOf("gpt-5.6-sol", "gpt-5.6", "gpt-5.6-luna")
+                .firstOrNull { it in ids }
+                ?: ids.firstOrNull()
+                ?: throw IllegalStateException("Codex未返回可用的OpenAI模型")
+            val edits = JSONArray()
+                .put(configEdit("model_provider", "openai", "replace"))
+                .put(configEdit("model", preferred, "replace"))
+            LocalBridgeClients.callCodexRpc("config/batchWrite", JSONObject().put("edits", edits))
+            CodexModelConfigStore.setOpenAiDefault(this)
+            val active = LocalBridgeClients.callCodexRpc("config/read").optJSONObject("config")
+            if (active?.optString("model_provider") != "openai") {
+                throw IllegalStateException("Codex没有确认切换到OpenAI提供商")
+            }
+            "已切换到OpenAI（ChatGPT登录）：$preferred"
+        })
     }
 
     private fun showEditDialog(existing: CodexModelConfig?) {
@@ -172,13 +203,16 @@ class CodexModelManagerActivity : AppCompatActivity() {
                     displayName = nameInput.text.toString().trim().ifEmpty { modelId },
                     baseUrl = baseUrl,
                     modelId = modelId,
+                    availableModelIds = existing?.availableModelIds.orEmpty()
+                        .toMutableList()
+                        .apply { if (modelId !in this) add(0, modelId) },
                     supportedReasoningEfforts = listOf("low", "medium", "high", "xhigh"),
                     upstreamProtocol = existing?.upstreamProtocol ?: "responses",
                     verificationStatus = "unknown",
                     lastVerifiedAt = "",
                     verifiedModel = "",
                     verificationMessage = "等待保存验证",
-                    isDefault = existing?.isDefault ?: (rows.none { it.isDefault }),
+                    isDefault = existing?.isDefault ?: false,
                 )
                 runBusy("正在验证上游并配置Codex路由…", {
                     val apiKey = enteredApiKey.ifBlank {
@@ -197,6 +231,9 @@ class CodexModelManagerActivity : AppCompatActivity() {
     private fun select(config: CodexModelConfig) {
         runBusy("正在验证并切换Codex模型…", {
             val previousCurrent = CodexModelConfigStore.loadCurrent(this)
+            val previousCodexConfig = LocalBridgeClients.callCodexRpc("config/read").optJSONObject("config")
+            val previousProviderId = previousCodexConfig?.optString("model_provider").orEmpty().ifBlank { "openai" }
+            val previousModelId = previousCodexConfig?.optString("model").orEmpty()
             val apiKey = CodexModelConfigStore.loadApiKey(this, config.id)
             val probe = probeProvider(config, apiKey)
             val verified = config.withProbe(probe).copy(isDefault = false)
@@ -210,10 +247,12 @@ class CodexModelManagerActivity : AppCompatActivity() {
                 if (previousCurrent != null) {
                     CodexModelConfigStore.setDefault(this, previousCurrent.id)
                     writeProviderConfig(previousCurrent, true)
-                    reloadProviderSecrets()
                 } else {
+                    CodexModelConfigStore.setOpenAiDefault(this)
                     CodexModelConfigStore.saveConfig(this, verified.copy(isDefault = false), null)
+                    restoreCodexRoute(previousProviderId, previousModelId)
                 }
+                reloadProviderSecrets()
                 throw error
             }
             "已选中并验证实际路由：${verified.displayName}，${probe.reportedModel}"
@@ -381,6 +420,13 @@ class CodexModelManagerActivity : AppCompatActivity() {
         return JSONObject().put("keyPath", keyPath).put("value", value).put("mergeStrategy", strategy)
     }
 
+    private fun restoreCodexRoute(providerId: String, modelId: String) {
+        val edits = JSONArray()
+            .put(configEdit("model_provider", providerId.ifBlank { "openai" }, "replace"))
+            .put(configEdit("model", if (modelId.isBlank()) JSONObject.NULL else modelId, "replace"))
+        LocalBridgeClients.callCodexRpc("config/batchWrite", JSONObject().put("edits", edits))
+    }
+
     private fun reloadProviderSecrets() {
         CodexModelConfigStore.writeSecretHandoff(this)
         val result = callLocalApi("/codex-api/model-providers/reload", JSONObject())
@@ -433,6 +479,7 @@ class CodexModelManagerActivity : AppCompatActivity() {
             .setItems(ids.toTypedArray()) { _, index ->
                 val updated = config.copy(
                     modelId = ids[index],
+                    availableModelIds = ids,
                     displayName = "${config.displayName.substringBefore(" / ")} / ${ids[index]}",
                     verificationStatus = "unknown",
                     verifiedModel = "",
@@ -510,7 +557,7 @@ class CodexModelManagerActivity : AppCompatActivity() {
         busy = true
         progress.visibility = View.VISIBLE
         status.text = message
-        listOf(btnCreate, btnRefresh, btnTest, btnFetch).forEach { it.isEnabled = false }
+        listOf(btnCreate, btnRefresh, btnTest, btnFetch, btnUseOpenAI).forEach { it.isEnabled = false }
         Thread {
             val result = runCatching(block)
             runOnUiThread {

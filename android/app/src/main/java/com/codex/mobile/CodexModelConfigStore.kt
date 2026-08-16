@@ -14,6 +14,7 @@ data class CodexModelConfig(
     val displayName: String,
     val baseUrl: String,
     val modelId: String,
+    val availableModelIds: List<String>,
     val supportedReasoningEfforts: List<String>,
     val upstreamProtocol: String,
     val verificationStatus: String,
@@ -37,24 +38,45 @@ object CodexModelConfigStore {
             .getString(KEY_CONFIGS_JSON, "[]")
             .orEmpty()
         val parsed = runCatching { JSONArray(raw) }.getOrElse { JSONArray() }
+        val publicStateFile = stateFile(context, STATE_FILE_NAME)
+        val publicRoot = if (publicStateFile.isFile) {
+            runCatching { JSONObject(publicStateFile.readText()) }.getOrNull()
+        } else {
+            null
+        }
+        val publicConfigs = publicRoot?.optJSONArray("configs") ?: JSONArray()
         val rows = mutableListOf<CodexModelConfig>()
         for (index in 0 until parsed.length()) {
             val row = parsed.optJSONObject(index) ?: continue
             val id = row.optString("id").trim()
+            val publicRow = (0 until publicConfigs.length())
+                .mapNotNull { publicConfigs.optJSONObject(it) }
+                .firstOrNull { it.optString("id").trim() == id }
             val providerId = row.optString("providerId").trim()
             val baseUrl = row.optString("baseUrl").trim().trimEnd('/')
-            val modelId = row.optString("modelId").trim()
+            val modelId = publicRow?.optString("modelId")?.trim().orEmpty()
+                .ifEmpty { row.optString("modelId").trim() }
             if (id.isEmpty() || providerId.isEmpty() || baseUrl.isEmpty() || modelId.isEmpty()) continue
             val efforts = row.optJSONArray("supportedReasoningEfforts")
                 ?.let(::readEfforts)
                 .orEmpty()
-                .ifEmpty { listOf("low", "medium", "high", "xhigh") }
+                .let { stored ->
+                    if (stored.containsAll(listOf("low", "medium", "high", "xhigh"))) stored
+                    else listOf("low", "medium", "high", "xhigh")
+                }
+            val availableModelIds = (publicRow?.optJSONArray("availableModelIds")
+                ?: row.optJSONArray("availableModelIds"))
+                ?.let(::readModelIds)
+                .orEmpty()
+                .toMutableList()
+                .apply { if (modelId !in this) add(0, modelId) }
             rows += CodexModelConfig(
                 id = id,
                 providerId = providerId,
                 displayName = row.optString("displayName").trim().ifEmpty { modelId },
                 baseUrl = baseUrl,
                 modelId = modelId,
+                availableModelIds = availableModelIds,
                 supportedReasoningEfforts = efforts,
                 upstreamProtocol = row.optString("upstreamProtocol", "responses").trim()
                     .ifEmpty { "responses" },
@@ -66,7 +88,13 @@ object CodexModelConfigStore {
                 isDefault = row.optBoolean("isDefault", false),
             )
         }
-        return rows.sortedWith(compareByDescending<CodexModelConfig> { it.isDefault }.thenBy { it.displayName.lowercase() })
+        val publicSelection = publicRoot?.optString("currentConfigId")
+        val synchronized = if (publicSelection != null) {
+            rows.map { it.copy(isDefault = publicSelection.isNotEmpty() && it.id == publicSelection) }
+        } else {
+            rows
+        }
+        return synchronized.sortedWith(compareByDescending<CodexModelConfig> { it.isDefault }.thenBy { it.displayName.lowercase() })
     }
 
     fun loadCurrent(context: Context): CodexModelConfig? {
@@ -107,6 +135,13 @@ object CodexModelConfigStore {
         writeSecretHandoff(context, rows)
     }
 
+    fun setOpenAiDefault(context: Context) {
+        val rows = loadConfigs(context).map { it.copy(isDefault = false) }
+        persistMetadata(context, rows)
+        writePublicState(context, rows)
+        writeSecretHandoff(context, rows)
+    }
+
     fun deleteConfig(context: Context, configId: String) {
         val existing = loadConfigs(context)
         val deletedWasDefault = existing.any { it.id == configId && it.isDefault }
@@ -122,7 +157,10 @@ object CodexModelConfigStore {
     }
 
     fun writeSecretHandoff(context: Context) {
-        writeSecretHandoff(context, loadConfigs(context))
+        val rows = loadConfigs(context)
+        persistMetadata(context, rows)
+        writePublicState(context, rows)
+        writeSecretHandoff(context, rows)
     }
 
     fun createId(): String = "provider_${System.currentTimeMillis()}"
@@ -198,6 +236,7 @@ object CodexModelConfigStore {
             .put("displayName", config.displayName)
             .put("baseUrl", config.baseUrl)
             .put("modelId", config.modelId)
+            .put("availableModelIds", JSONArray(config.availableModelIds.distinct()))
             .put("supportedReasoningEfforts", JSONArray(config.supportedReasoningEfforts))
             .put("upstreamProtocol", config.upstreamProtocol)
             .put("verificationStatus", config.verificationStatus)
@@ -212,6 +251,15 @@ object CodexModelConfigStore {
         for (index in 0 until array.length()) {
             val value = array.optString(index).trim().lowercase(Locale.US)
             if (value in allowedEfforts && value !in rows) rows += value
+        }
+        return rows
+    }
+
+    private fun readModelIds(array: JSONArray): List<String> {
+        val rows = mutableListOf<String>()
+        for (index in 0 until array.length()) {
+            val value = array.optString(index).trim()
+            if (value.isNotEmpty() && value !in rows) rows += value
         }
         return rows
     }

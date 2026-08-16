@@ -122,6 +122,32 @@ function responseError(value: unknown): string {
   return text(error?.message) || text(error?.code)
 }
 
+export function sanitizeResponsesHistory(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeResponsesHistory)
+  const record = asRecord(value)
+  if (!record) return value
+  const sanitized: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(record)) {
+    sanitized[key] = sanitizeResponsesHistory(child)
+  }
+  if (text(record.type) === 'reasoning' && Array.isArray(record.content)) {
+    sanitized.content = []
+  }
+  return sanitized
+}
+
+function sanitizeResponseLine(line: string): string {
+  const normalized = line.trim()
+  if (!normalized.startsWith('data:')) return line
+  const data = normalized.slice(5).trim()
+  if (!data || data === '[DONE]') return line
+  try {
+    return `data: ${JSON.stringify(sanitizeResponsesHistory(JSON.parse(data) as unknown))}`
+  } catch {
+    return line
+  }
+}
+
 function inspectResponseLine(line: string, observed: { model: string; error: string; requestId: string }): void {
   const normalized = line.trim()
   if (!normalized.startsWith('data:')) return
@@ -153,7 +179,7 @@ async function proxyResponses(
   const upstream = await fetch(`${provider.baseUrl}/responses`, {
     method: 'POST',
     headers: { Authorization: authorization, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(sanitizeResponsesHistory(payload)),
   })
 
   if (!upstream.ok || !upstream.body) {
@@ -189,30 +215,41 @@ async function proxyResponses(
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      res.write(Buffer.from(value))
       const decoded = decoder.decode(value, { stream: true })
       if (isEventStream) {
         lineBuffer += decoded
         let lineEnd = lineBuffer.indexOf('\n')
         while (lineEnd >= 0) {
-          inspectResponseLine(lineBuffer.slice(0, lineEnd), observed)
+          const originalLine = lineBuffer.slice(0, lineEnd)
+          const sanitizedLine = sanitizeResponseLine(originalLine)
+          inspectResponseLine(sanitizedLine, observed)
+          res.write(`${sanitizedLine}\n`)
           lineBuffer = lineBuffer.slice(lineEnd + 1)
           lineEnd = lineBuffer.indexOf('\n')
         }
-      } else if (jsonBuffer.length < 2 * 1024 * 1024) {
+      } else {
         jsonBuffer += decoded
       }
     }
-    if (lineBuffer) inspectResponseLine(lineBuffer, observed)
+    const decodedTail = decoder.decode()
+    if (isEventStream) lineBuffer += decodedTail
+    else jsonBuffer += decodedTail
+    if (lineBuffer) {
+      const sanitizedLine = sanitizeResponseLine(lineBuffer)
+      inspectResponseLine(sanitizedLine, observed)
+      res.write(sanitizedLine)
+    }
     if (!isEventStream && jsonBuffer.trim()) {
       try {
-        const parsed = JSON.parse(jsonBuffer) as unknown
+        const parsed = sanitizeResponsesHistory(JSON.parse(jsonBuffer) as unknown)
         observed.model = responseModel(parsed)
         observed.error = responseError(parsed)
         const record = asRecord(parsed)
         observed.requestId = text(record?.id)
+        res.write(JSON.stringify(parsed))
       } catch {
         observed.error = 'Upstream returned invalid Responses JSON'
+        res.write(jsonBuffer)
       }
     }
     res.end()

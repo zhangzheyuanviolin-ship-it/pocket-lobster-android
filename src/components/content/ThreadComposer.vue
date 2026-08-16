@@ -13,6 +13,16 @@
       <div class="thread-composer-controls">
         <ComposerDropdown
           class="thread-composer-control"
+          :model-value="selectedProvider"
+          :options="providers"
+          :placeholder="t('composer_provider')"
+          open-direction="up"
+          :disabled="disabled || !activeThreadId || providers.length === 0 || isTurnInProgress"
+          @update:model-value="onProviderSelect"
+        />
+
+        <ComposerDropdown
+          class="thread-composer-control"
           :model-value="selectedModel"
           :options="modelOptions"
           :placeholder="t('composer_model')"
@@ -57,7 +67,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { CodexModelOption, ReasoningEffort } from '../../types/codex'
+import type { CodexModelOption, CodexProviderOption, ReasoningEffort } from '../../types/codex'
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
 import IconTablerPlayerStopFilled from '../icons/IconTablerPlayerStopFilled.vue'
 import ComposerDropdown from './ComposerDropdown.vue'
@@ -67,9 +77,11 @@ const { t } = useUiI18n()
 
 const props = defineProps<{
   activeThreadId: string
+  providers: CodexProviderOption[]
   models: CodexModelOption[]
   reasoningEfforts: ReasoningEffort[]
   selectedModel: string
+  selectedProvider: string
   selectedReasoningEffort: ReasoningEffort | ''
   isTurnInProgress?: boolean
   isInterruptingTurn?: boolean
@@ -80,6 +92,7 @@ const emit = defineEmits<{
   submit: [text: string]
   interrupt: []
   'update:selected-model': [modelId: string]
+  'update:selected-provider': [providerId: string]
   'update:selected-reasoning-effort': [effort: ReasoningEffort | '']
 }>()
 
@@ -125,6 +138,10 @@ function onModelSelect(value: string): void {
   emit('update:selected-model', value)
 }
 
+function onProviderSelect(value: string): void {
+  emit('update:selected-provider', value)
+}
+
 function onReasoningEffortSelect(value: string): void {
   emit('update:selected-reasoning-effort', value as ReasoningEffort)
 }
@@ -161,11 +178,11 @@ watch(
 }
 
 .thread-composer-controls {
-  @apply mt-3 flex items-center gap-4;
+  @apply mt-3 flex min-w-0 items-center gap-3 overflow-visible;
 }
 
 .thread-composer-control {
-  @apply shrink-0;
+  @apply min-w-0 max-w-[34%] shrink;
 }
 
 .thread-composer-submit {

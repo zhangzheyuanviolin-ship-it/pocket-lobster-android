@@ -112,7 +112,7 @@ onBeforeUnmount(() => {
 }
 
 .composer-dropdown-value {
-  @apply whitespace-nowrap text-left;
+  @apply max-w-28 truncate whitespace-nowrap text-left;
 }
 
 .composer-dropdown-chevron {

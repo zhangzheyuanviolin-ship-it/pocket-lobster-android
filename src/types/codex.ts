@@ -8,9 +8,15 @@ export type CodexModelOption = {
   value: string
   label: string
   providerId: string
+  providerLabel: string
   modelId: string
   supportedReasoningEfforts: ReasoningEffort[]
   defaultReasoningEffort: ReasoningEffort | ''
+}
+
+export type CodexProviderOption = {
+  value: string
+  label: string
 }
 
 export type RpcMethodCatalog = {

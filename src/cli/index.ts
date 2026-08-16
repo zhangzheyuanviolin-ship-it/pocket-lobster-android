@@ -13,6 +13,7 @@ const program = new Command()
 
 const opts = program.opts<{ port: string; password: string | boolean }>()
 const port = parseInt(opts.port, 10)
+process.env.CODEX_WEB_LOCAL_PORT = String(port)
 
 let password: string | undefined
 if (opts.password === false) {

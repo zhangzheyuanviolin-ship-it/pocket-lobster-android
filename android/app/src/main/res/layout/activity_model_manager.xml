@@ -34,7 +34,7 @@
             android:id="@+id/btnCodexModelManager"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Codex 第三方模型管理" />
+            android:text="Codex 模型提供商管理" />
 
         <Button
             android:id="@+id/btnClaudeModelManager"
