@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { accessSync, constants as fsConstants, createWriteStream } from 'node:fs'
+import { accessSync, constants as fsConstants, createWriteStream, readFileSync, unlinkSync } from 'node:fs'
 import { mkdtemp, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -15,6 +15,13 @@ const offlineLinuxRuntimePath = homeDir
   ? join(homeDir, '.openclaw-android', 'state', 'offline-linux-runtime.json')
   : ''
 const runtimeHealthPath = homeDir ? join(homeDir, '.openclaw-android', 'state', 'runtime-health.json') : ''
+const codexModelProvidersPath = homeDir
+  ? join(homeDir, '.openclaw-android', 'state', 'codex-model-providers.json')
+  : ''
+const codexProviderSecretsHandoffPath = homeDir
+  ? join(homeDir, '.openclaw-android', 'state', 'codex-provider-secrets.handoff.json')
+  : ''
+const CODEX_PROVIDER_SECRET_PREFIX = 'POCKET_LOBSTER_CODEX_'
 const OPENCLAW_UPLOAD_DIR = homeDir
   ? join(homeDir, '.openclaw', 'workspace', 'uploads')
   : join(process.cwd(), '.openclaw', 'workspace', 'uploads')
@@ -78,6 +85,38 @@ type JsonRpcCall = {
   id: number
   method: string
   params?: unknown
+}
+
+function reloadCodexProviderSecretEnvironment(): number {
+  if (!codexProviderSecretsHandoffPath) return 0
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(codexProviderSecretsHandoffPath, 'utf8')) as unknown
+  } catch {
+    return 0
+  } finally {
+    try {
+      unlinkSync(codexProviderSecretsHandoffPath)
+    } catch {
+      // The handoff may already have been consumed by another startup path.
+    }
+  }
+
+  const values = asRecord(parsed)
+  if (!values) return 0
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith(CODEX_PROVIDER_SECRET_PREFIX) && key.endsWith('_API_KEY')) {
+      delete process.env[key]
+    }
+  }
+  let loaded = 0
+  for (const [key, value] of Object.entries(values)) {
+    if (!/^POCKET_LOBSTER_CODEX_[A-Z0-9_]+_API_KEY$/u.test(key)) continue
+    if (typeof value !== 'string' || value.trim().length === 0) continue
+    process.env[key] = value.trim()
+    loaded += 1
+  }
+  return loaded
 }
 
 type JsonRpcResponse = {
@@ -3031,7 +3070,11 @@ class AppServerProcess {
     }
 
     this.stopping = false
-    const proc = spawn(this.codexBin, ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'] })
+    reloadCodexProviderSecretEnvironment()
+    const proc = spawn(this.codexBin, ['app-server'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env },
+    })
     this.process = proc
     this.lastStartError = null
 
@@ -3492,6 +3535,34 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           ok: appServer.isCommandAvailable(),
           reason: appServer.getUnavailableReason(),
         })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/model-providers') {
+        if (!codexModelProvidersPath) {
+          setJson(res, 200, { version: 1, currentConfigId: '', configs: [] })
+          return
+        }
+        try {
+          const parsed = JSON.parse(await readFile(codexModelProvidersPath, 'utf8')) as unknown
+          const record = asRecord(parsed)
+          const configs = Array.isArray(record?.configs) ? record.configs : []
+          setJson(res, 200, {
+            version: 1,
+            currentConfigId: normalizeText(record?.currentConfigId),
+            configs,
+          })
+        } catch {
+          setJson(res, 200, { version: 1, currentConfigId: '', configs: [] })
+        }
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/model-providers/reload') {
+        await readJsonBody(req)
+        const loaded = reloadCodexProviderSecretEnvironment()
+        appServer.dispose()
+        setJson(res, 200, { ok: true, loaded })
         return
       }
 

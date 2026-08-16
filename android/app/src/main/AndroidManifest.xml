@@ -44,6 +44,12 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".CodexModelManagerActivity"
+            android:exported="false"
+            android:label="Codex 模型管理"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden"

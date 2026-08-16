@@ -27,7 +27,7 @@
           :options="reasoningOptions"
           :placeholder="t('composer_thinking')"
           open-direction="up"
-          :disabled="disabled || !activeThreadId || isTurnInProgress"
+          :disabled="disabled || !activeThreadId || reasoningEfforts.length === 0 || isTurnInProgress"
           @update:model-value="onReasoningEffortSelect"
         />
 
@@ -57,7 +57,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { ReasoningEffort } from '../../types/codex'
+import type { CodexModelOption, ReasoningEffort } from '../../types/codex'
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
 import IconTablerPlayerStopFilled from '../icons/IconTablerPlayerStopFilled.vue'
 import ComposerDropdown from './ComposerDropdown.vue'
@@ -67,7 +67,8 @@ const { t } = useUiI18n()
 
 const props = defineProps<{
   activeThreadId: string
-  models: string[]
+  models: CodexModelOption[]
+  reasoningEfforts: ReasoningEffort[]
   selectedModel: string
   selectedReasoningEffort: ReasoningEffort | ''
   isTurnInProgress?: boolean
@@ -83,17 +84,20 @@ const emit = defineEmits<{
 }>()
 
 const draft = ref('')
-const reasoningOptions = computed<Array<{ value: ReasoningEffort; label: string }>>(() => [
-  { value: 'none', label: t('thinking_none') },
-  { value: 'minimal', label: t('thinking_minimal') },
-  { value: 'low', label: t('thinking_low') },
-  { value: 'medium', label: t('thinking_medium') },
-  { value: 'high', label: t('thinking_high') },
-  { value: 'xhigh', label: t('thinking_xhigh') },
-])
-const modelOptions = computed(() =>
-  props.models.map((modelId) => ({ value: modelId, label: modelId })),
-)
+const reasoningOptions = computed<Array<{ value: ReasoningEffort; label: string }>>(() => {
+  const labels: Record<ReasoningEffort, string> = {
+    none: t('thinking_none'),
+    minimal: t('thinking_minimal'),
+    low: t('thinking_low'),
+    medium: t('thinking_medium'),
+    high: t('thinking_high'),
+    xhigh: t('thinking_xhigh'),
+    max: t('thinking_max'),
+    ultra: t('thinking_ultra'),
+  }
+  return props.reasoningEfforts.map((value) => ({ value, label: labels[value] }))
+})
+const modelOptions = computed(() => props.models.map(({ value, label }) => ({ value, label })))
 
 const canSubmit = computed(() => {
   if (props.disabled) return false

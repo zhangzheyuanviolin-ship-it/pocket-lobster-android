@@ -494,7 +494,7 @@
               </div>
 
               <ThreadComposer :active-thread-id="composerThreadContextId" :disabled="isSendingMessage"
-                :models="availableModelIds" :selected-model="selectedModelId"
+                :models="availableModels" :reasoning-efforts="availableReasoningEfforts" :selected-model="selectedModelId"
                 :selected-reasoning-effort="selectedReasoningEffort" :is-turn-in-progress="false"
                 :is-interrupting-turn="false" @submit="onSubmitThreadMessage"
                 @update:selected-model="onSelectModel" @update:selected-reasoning-effort="onSelectReasoningEffort" />
@@ -515,7 +515,8 @@
               </div>
 
               <ThreadComposer :active-thread-id="composerThreadContextId"
-                :disabled="isSendingMessage || isLoadingMessages" :models="availableModelIds"
+                :disabled="isSendingMessage || isLoadingMessages" :models="availableModels"
+                :reasoning-efforts="availableReasoningEfforts"
                 :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
                 :is-turn-in-progress="isSelectedThreadInProgress" :is-interrupting-turn="isInterruptingTurn"
                 @submit="onSubmitThreadMessage" @update:selected-model="onSelectModel"
@@ -570,7 +571,8 @@ const {
   selectedThreadServerRequests,
   selectedLiveOverlay,
   selectedThreadId,
-  availableModelIds,
+  availableModels,
+  availableReasoningEfforts,
   selectedModelId,
   selectedReasoningEffort,
   messages,

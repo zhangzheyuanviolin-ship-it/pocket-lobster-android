@@ -28,12 +28,19 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="10dp"
-        android:orientation="horizontal">
+        android:orientation="vertical">
+
+        <Button
+            android:id="@+id/btnCodexModelManager"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Codex 第三方模型管理" />
 
         <Button
             android:id="@+id/btnClaudeModelManager"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
             android:text="@string/model_manager_claude_button_text" />
     </LinearLayout>
 

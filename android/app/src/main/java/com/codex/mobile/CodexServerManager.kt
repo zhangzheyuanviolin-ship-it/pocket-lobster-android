@@ -2435,6 +2435,7 @@ EOF
         }
 
         ensureCodexWrapperScript()
+        ensureCodexBundledRgWrapper()
         return isCodexInstalled() && getInstalledCodexVersion() == CODEX_VERSION
     }
 
@@ -2462,7 +2463,6 @@ EOF
         val codexBin = File(prefix, "bin/codex")
 
         if (!codexJs.exists()) return
-        if (codexBin.exists()) return
 
         val wrapperCmd = """
             rm -f "$prefix/bin/codex"
@@ -2474,7 +2474,47 @@ WEOF
             echo "codex wrapper created"
         """.trimIndent()
         runInPrefix(wrapperCmd)
-        Log.i(TAG, "Created codex wrapper at $codexBin")
+        Log.i(TAG, "Refreshed codex wrapper at $codexBin")
+    }
+
+    /**
+     * Codex prepends its packaged rg directory to PATH. The upstream Linux rg
+     * requires glibc and cannot start on Android, so replace only unusable
+     * copies with a bridge into the bundled Ubuntu runtime.
+     */
+    fun ensureCodexBundledRgWrapper() {
+        val paths = BootstrapInstaller.getPaths(context)
+        val prefix = paths.prefixDir
+        val candidates = listOf(
+            "$prefix/lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/codex-path/rg",
+            "$prefix/lib/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/path/rg",
+            "$prefix/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/codex-path/rg",
+            "$prefix/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/path/rg",
+        )
+        candidates.filter { File(it).exists() }.forEach { candidate ->
+            if (runInPrefix("\"$candidate\" --version >/dev/null 2>&1") == 0) return@forEach
+            val script = """
+                #!/system/bin/sh
+                quote_arg() {
+                  printf "'%s'" "${'$'}(printf "%s" "${'$'}1" | sed "s/'/'\"'\"'/g")"
+                }
+                UBUNTU_BIN="${'$'}{ANYCLAW_UBUNTU_BIN:-${'$'}HOME/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh}"
+                [ -x "${'$'}UBUNTU_BIN" ] || { echo "Ubuntu rg bridge unavailable" >&2; exit 127; }
+                cmd="cd ${'$'}(quote_arg "${'$'}{PWD:-${'$'}HOME}") 2>/dev/null || true; rg"
+                for arg in "${'$'}@"; do
+                  cmd="${'$'}cmd ${'$'}(quote_arg "${'$'}arg")"
+                done
+                exec "${'$'}UBUNTU_BIN" --command "${'$'}cmd"
+            """.trimIndent() + "\n"
+            runCatching {
+                val file = File(candidate)
+                file.writeText(script)
+                file.setExecutable(true, true)
+                Log.i(TAG, "Replaced incompatible bundled rg with Ubuntu bridge: $candidate")
+            }.onFailure { error ->
+                Log.w(TAG, "Failed replacing bundled rg $candidate: ${error.message}")
+            }
+        }
     }
 
     fun installServerBundle(onProgress: (String) -> Unit): Boolean {
@@ -2792,6 +2832,11 @@ WEOF
             Log.i(TAG, "Server already running")
             return true
         }
+
+        ensureCodexWrapperScript()
+        ensureCodexBundledRgWrapper()
+        runCatching { CodexModelConfigStore.writeSecretHandoff(context) }
+            .onFailure { Log.w(TAG, "Failed preparing Codex provider secrets: ${it.message}") }
 
         val paths = BootstrapInstaller.getPaths(context)
         val env = buildEnvironment(paths).toMutableMap()

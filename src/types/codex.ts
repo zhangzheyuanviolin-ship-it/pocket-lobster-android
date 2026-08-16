@@ -2,7 +2,16 @@ export type RpcEnvelope<T> = {
   result: T
 }
 
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'
+
+export type CodexModelOption = {
+  value: string
+  label: string
+  providerId: string
+  modelId: string
+  supportedReasoningEfforts: ReasoningEffort[]
+  defaultReasoningEffort: ReasoningEffort | ''
+}
 
 export type RpcMethodCatalog = {
   data: string[]
@@ -66,6 +75,7 @@ export type UiThread = {
   createdAtIso: string
   updatedAtIso: string
   preview: string
+  modelProvider: string
   unread: boolean
   inProgress: boolean
 }

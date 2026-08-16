@@ -164,6 +164,7 @@ function toUiThread(summary: Thread): UiThread {
     createdAtIso: toIso(summary.createdAt),
     updatedAtIso: toIso(summary.updatedAt),
     preview: summary.preview,
+    modelProvider: summary.modelProvider,
     unread: false,
     inProgress: false,
   }

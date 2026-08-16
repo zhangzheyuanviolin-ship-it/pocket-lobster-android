@@ -10,17 +10,50 @@ import {
 import type {
   ConfigReadResponse,
   ModelListResponse,
-  ReasoningEffort,
   ThreadListResponse,
   ThreadReadResponse,
 } from './appServerDtos'
 import { normalizeCodexApiError } from './codexErrors'
 import { normalizeThreadGroupsV2, normalizeThreadMessagesV2 } from './normalizers/v2'
-import type { UiMessage, UiProjectGroup } from '../types/codex'
+import type { CodexModelOption, ReasoningEffort, UiMessage, UiProjectGroup } from '../types/codex'
 
 type CurrentModelConfig = {
-  model: string
+  modelValue: string
   reasoningEffort: ReasoningEffort | ''
+}
+
+type StoredCodexModelConfig = {
+  id?: string
+  providerId?: string
+  displayName?: string
+  modelId?: string
+  supportedReasoningEfforts?: string[]
+}
+
+type StoredCodexModelCatalog = {
+  currentConfigId?: string
+  configs?: StoredCodexModelConfig[]
+}
+
+const REASONING_EFFORTS: ReasoningEffort[] = [
+  'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
+]
+
+export function encodeModelValue(providerId: string, modelId: string): string {
+  return `${encodeURIComponent(providerId)}::${encodeURIComponent(modelId)}`
+}
+
+export function decodeModelValue(value: string): { providerId: string; modelId: string } {
+  const separator = value.indexOf('::')
+  if (separator < 0) return { providerId: 'openai', modelId: value.trim() }
+  try {
+    return {
+      providerId: decodeURIComponent(value.slice(0, separator)),
+      modelId: decodeURIComponent(value.slice(separator + 2)),
+    }
+  } catch {
+    return { providerId: 'openai', modelId: value.trim() }
+  }
 }
 
 async function callRpc<T>(method: string, params?: unknown): Promise<T> {
@@ -32,10 +65,31 @@ async function callRpc<T>(method: string, params?: unknown): Promise<T> {
 }
 
 function normalizeReasoningEffort(value: unknown): ReasoningEffort | '' {
-  const allowed: ReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
-  return typeof value === 'string' && allowed.includes(value as ReasoningEffort)
+  return typeof value === 'string' && REASONING_EFFORTS.includes(value as ReasoningEffort)
     ? (value as ReasoningEffort)
     : ''
+}
+
+function normalizeReasoningEfforts(values: unknown): ReasoningEffort[] {
+  if (!Array.isArray(values)) return []
+  const rows: ReasoningEffort[] = []
+  for (const value of values) {
+    const effort = typeof value === 'string'
+      ? normalizeReasoningEffort(value)
+      : normalizeReasoningEffort((value as { reasoningEffort?: unknown })?.reasoningEffort)
+    if (effort && !rows.includes(effort)) rows.push(effort)
+  }
+  return rows
+}
+
+async function getStoredCodexModelCatalog(): Promise<StoredCodexModelCatalog> {
+  try {
+    const response = await fetch('/codex-api/model-providers', { cache: 'no-store' })
+    if (!response.ok) return {}
+    return await response.json() as StoredCodexModelCatalog
+  } catch {
+    return {}
+  }
 }
 
 async function getThreadGroupsV2(): Promise<UiProjectGroup[]> {
@@ -99,8 +153,15 @@ export async function getPendingServerRequests(): Promise<unknown[]> {
   return fetchPendingServerRequests()
 }
 
-export async function resumeThread(threadId: string): Promise<void> {
-  await callRpc('thread/resume', { threadId })
+export async function resumeThread(threadId: string, model?: string, modelProvider?: string): Promise<void> {
+  const params: Record<string, unknown> = { threadId }
+  if (model?.trim()) params.model = model.trim()
+  if (modelProvider?.trim()) params.modelProvider = modelProvider.trim()
+  await callRpc('thread/resume', params)
+}
+
+export async function unsubscribeThread(threadId: string): Promise<void> {
+  await callRpc('thread/unsubscribe', { threadId })
 }
 
 export async function archiveThread(threadId: string): Promise<void> {
@@ -152,7 +213,7 @@ function normalizeThreadIdFromPayload(payload: unknown): string {
   return ''
 }
 
-export async function startThread(cwd?: string, model?: string): Promise<string> {
+export async function startThread(cwd?: string, model?: string, modelProvider?: string): Promise<string> {
   try {
     const params: Record<string, unknown> = {}
     if (typeof cwd === 'string' && cwd.trim().length > 0) {
@@ -160,6 +221,9 @@ export async function startThread(cwd?: string, model?: string): Promise<string>
     }
     if (typeof model === 'string' && model.trim().length > 0) {
       params.model = model.trim()
+    }
+    if (typeof modelProvider === 'string' && modelProvider.trim().length > 0) {
+      params.modelProvider = modelProvider.trim()
     }
     const payload = await callRpc<{ thread?: { id?: string } }>('thread/start', params)
     const threadId = normalizeThreadIdFromPayload(payload)
@@ -214,22 +278,56 @@ export async function setDefaultModel(model: string): Promise<void> {
   await callRpc('setDefaultModel', { model })
 }
 
-export async function getAvailableModelIds(): Promise<string[]> {
+export async function getAvailableModels(): Promise<CodexModelOption[]> {
   const payload = await callRpc<ModelListResponse>('model/list', {})
-  const ids: string[] = []
+  const models: CodexModelOption[] = []
   for (const row of payload.data) {
     const candidate = row.id || row.model
-    if (!candidate || ids.includes(candidate)) continue
-    ids.push(candidate)
+    if (!candidate) continue
+    const value = encodeModelValue('openai', candidate)
+    if (models.some((item) => item.value === value)) continue
+    models.push({
+      value,
+      label: row.displayName || candidate,
+      providerId: 'openai',
+      modelId: candidate,
+      supportedReasoningEfforts: normalizeReasoningEfforts(row.supportedReasoningEfforts),
+      defaultReasoningEffort: normalizeReasoningEffort(row.defaultReasoningEffort),
+    })
   }
-  return ids
+  const stored = await getStoredCodexModelCatalog()
+  for (const row of stored.configs ?? []) {
+    const providerId = row.providerId?.trim() ?? ''
+    const modelId = row.modelId?.trim() ?? ''
+    if (!providerId || !modelId) continue
+    const value = encodeModelValue(providerId, modelId)
+    if (models.some((item) => item.value === value)) continue
+    models.push({
+      value,
+      label: `${row.displayName?.trim() || modelId} · ${modelId}`,
+      providerId,
+      modelId,
+      supportedReasoningEfforts: normalizeReasoningEfforts(row.supportedReasoningEfforts),
+      defaultReasoningEffort: normalizeReasoningEfforts(row.supportedReasoningEfforts)[0] ?? '',
+    })
+  }
+  return models
 }
 
 export async function getCurrentModelConfig(): Promise<CurrentModelConfig> {
-  const payload = await callRpc<ConfigReadResponse>('config/read', {})
-  const model = payload.config.model ?? ''
+  const [payload, stored] = await Promise.all([
+    callRpc<ConfigReadResponse>('config/read', {}),
+    getStoredCodexModelCatalog(),
+  ])
+  let providerId = payload.config.model_provider ?? ''
+  let model = payload.config.model ?? ''
+  if (!providerId || !model) {
+    const current = (stored.configs ?? []).find((row) => row.id === stored.currentConfigId)
+    providerId = providerId || current?.providerId?.trim() || 'openai'
+    model = model || current?.modelId?.trim() || ''
+  }
   const reasoningEffort = normalizeReasoningEffort(payload.config.model_reasoning_effort)
-  return { model, reasoningEffort }
+  return { modelValue: model ? encodeModelValue(providerId || 'openai', model) : '', reasoningEffort }
 }
 
 // `thread/loaded/list` returns sessions loaded in memory, not currently running turns.
