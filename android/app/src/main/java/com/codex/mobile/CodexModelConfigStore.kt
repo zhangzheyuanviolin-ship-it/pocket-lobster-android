@@ -15,6 +15,11 @@ data class CodexModelConfig(
     val baseUrl: String,
     val modelId: String,
     val supportedReasoningEfforts: List<String>,
+    val upstreamProtocol: String,
+    val verificationStatus: String,
+    val lastVerifiedAt: String,
+    val verifiedModel: String,
+    val verificationMessage: String,
     val isDefault: Boolean,
 )
 
@@ -51,6 +56,13 @@ object CodexModelConfigStore {
                 baseUrl = baseUrl,
                 modelId = modelId,
                 supportedReasoningEfforts = efforts,
+                upstreamProtocol = row.optString("upstreamProtocol", "responses").trim()
+                    .ifEmpty { "responses" },
+                verificationStatus = row.optString("verificationStatus", "unknown").trim()
+                    .ifEmpty { "unknown" },
+                lastVerifiedAt = row.optString("lastVerifiedAt").trim(),
+                verifiedModel = row.optString("verifiedModel").trim(),
+                verificationMessage = row.optString("verificationMessage").trim(),
                 isDefault = row.optBoolean("isDefault", false),
             )
         }
@@ -58,8 +70,7 @@ object CodexModelConfigStore {
     }
 
     fun loadCurrent(context: Context): CodexModelConfig? {
-        val configs = loadConfigs(context)
-        return configs.firstOrNull { it.isDefault } ?: configs.firstOrNull()
+        return loadConfigs(context).firstOrNull { it.isDefault }
     }
 
     fun loadApiKey(context: Context, configId: String): String {
@@ -77,7 +88,6 @@ object CodexModelConfigStore {
             }
         }
         if (index >= 0) rows[index] = config else rows += config
-        ensureDefault(rows)
         persistMetadata(context, rows)
         if (apiKey != null && apiKey.isNotBlank()) {
             encryptedPreferences(context).edit()
@@ -89,16 +99,22 @@ object CodexModelConfigStore {
     }
 
     fun setDefault(context: Context, configId: String) {
-        val rows = loadConfigs(context).map { it.copy(isDefault = it.id == configId) }.toMutableList()
-        ensureDefault(rows)
+        val existing = loadConfigs(context)
+        if (existing.none { it.id == configId }) return
+        val rows = existing.map { it.copy(isDefault = it.id == configId) }
         persistMetadata(context, rows)
         writePublicState(context, rows)
         writeSecretHandoff(context, rows)
     }
 
     fun deleteConfig(context: Context, configId: String) {
-        val rows = loadConfigs(context).filterNot { it.id == configId }.toMutableList()
-        ensureDefault(rows)
+        val existing = loadConfigs(context)
+        val deletedWasDefault = existing.any { it.id == configId && it.isDefault }
+        val rows = existing.filterNot { it.id == configId }.toMutableList()
+        if (deletedWasDefault) {
+            val fallbackIndex = rows.indexOfFirst { it.verificationStatus == "verified" }
+            if (fallbackIndex >= 0) rows[fallbackIndex] = rows[fallbackIndex].copy(isDefault = true)
+        }
         persistMetadata(context, rows)
         encryptedPreferences(context).edit().remove(SECRET_KEY_PREFIX + configId).apply()
         writePublicState(context, rows)
@@ -183,6 +199,11 @@ object CodexModelConfigStore {
             .put("baseUrl", config.baseUrl)
             .put("modelId", config.modelId)
             .put("supportedReasoningEfforts", JSONArray(config.supportedReasoningEfforts))
+            .put("upstreamProtocol", config.upstreamProtocol)
+            .put("verificationStatus", config.verificationStatus)
+            .put("lastVerifiedAt", config.lastVerifiedAt)
+            .put("verifiedModel", config.verifiedModel)
+            .put("verificationMessage", config.verificationMessage)
             .put("isDefault", config.isDefault)
     }
 
@@ -195,7 +216,4 @@ object CodexModelConfigStore {
         return rows
     }
 
-    private fun ensureDefault(rows: MutableList<CodexModelConfig>) {
-        if (rows.isNotEmpty() && rows.none { it.isDefault }) rows[0] = rows[0].copy(isDefault = true)
-    }
 }

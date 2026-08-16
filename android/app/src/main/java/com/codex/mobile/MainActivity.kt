@@ -269,6 +269,14 @@ class MainActivity : AppCompatActivity() {
         }
         if (setupStarted) {
             updateUiForCurrentTarget()
+            if (::webView.isInitialized && webView.visibility == View.VISIBLE) {
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.dispatchEvent(new CustomEvent('pocketlobster:model-provider-changed'));",
+                        null,
+                    )
+                }
+            }
             val targetUrl = pendingLaunchUrl
             if (targetUrl != null && webView.visibility == View.VISIBLE) {
                 currentUiTarget = when {

@@ -583,6 +583,7 @@ const {
   isAutoRefreshEnabled,
   autoRefreshSecondsLeft,
   refreshAll,
+  refreshModelPreferences,
   selectThread,
   setThreadScrollState,
   archiveThreadById,
@@ -804,15 +805,30 @@ const newThreadFolderOptions = computed(() => {
 
 onMounted(() => {
   window.addEventListener('keydown', onWindowKeyDown)
+  window.addEventListener('focus', onCodexModelPreferencesRefresh)
+  window.addEventListener('pocketlobster:model-provider-changed', onCodexModelPreferencesRefresh)
+  document.addEventListener('visibilitychange', onCodexVisibilityChange)
   void initialize()
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onWindowKeyDown)
+  window.removeEventListener('focus', onCodexModelPreferencesRefresh)
+  window.removeEventListener('pocketlobster:model-provider-changed', onCodexModelPreferencesRefresh)
+  document.removeEventListener('visibilitychange', onCodexVisibilityChange)
   stopPolling()
   stopOpenClawPolling()
   stopClaudePolling()
 })
+
+function onCodexModelPreferencesRefresh(): void {
+  if (!isCodexBridgeAvailable.value) return
+  void refreshModelPreferences()
+}
+
+function onCodexVisibilityChange(): void {
+  if (document.visibilityState === 'visible') onCodexModelPreferencesRefresh()
+}
 
 function toggleSidebarSearch(): void {
   isSidebarSearchVisible.value = !isSidebarSearchVisible.value

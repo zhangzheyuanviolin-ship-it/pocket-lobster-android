@@ -562,6 +562,7 @@ export function useDesktopState() {
   const loadedMessagesByThreadId = ref<Record<string, boolean>>({})
   const resumedThreadById = ref<Record<string, boolean>>({})
   const resumedModelProviderById = ref<Record<string, string>>({})
+  const resumedModelById = ref<Record<string, string>>({})
   const turnSummaryByThreadId = ref<Record<string, TurnSummaryState>>({})
   const turnActivityByThreadId = ref<Record<string, TurnActivityState>>({})
   const turnErrorByThreadId = ref<Record<string, TurnErrorState>>({})
@@ -585,6 +586,7 @@ export function useDesktopState() {
   const pendingThreadMessageRefresh = new Set<string>()
   let activeReasoningItemId = ''
   let shouldAutoScrollOnNextAgentEvent = false
+  let lastModelConfigSignature = ''
   const pendingTurnStartsById = new Map<string, TurnStartedInfo>()
 
   const allThreads = computed(() => flattenThreads(projectGroups.value))
@@ -674,23 +676,29 @@ export function useDesktopState() {
     return [`Model: ${modelLabel}`, `Thinking: ${effortLabel}`]
   }
 
-  function applyModelPreferences(models: CodexModelOption[], currentConfig: { modelValue: string; reasoningEffort: ReasoningEffort | '' }): void {
+  function applyModelPreferences(
+    models: CodexModelOption[],
+    currentConfig: { modelValue: string; reasoningEffort: ReasoningEffort | ''; signature: string },
+  ): void {
     availableModels.value = models
     const modelIds = models.map((model) => model.value)
 
     const hasSelectedModel = selectedModelId.value.length > 0 && modelIds.includes(selectedModelId.value)
-    if (!hasSelectedModel) {
-      if (currentConfig.modelValue && modelIds.includes(currentConfig.modelValue)) {
-        selectedModelId.value = currentConfig.modelValue
-      } else if (modelIds.length > 0) {
+    const configChanged = currentConfig.signature !== lastModelConfigSignature
+    if ((configChanged || !hasSelectedModel) && currentConfig.modelValue && modelIds.includes(currentConfig.modelValue)) {
+      selectedModelId.value = currentConfig.modelValue
+    } else if (!hasSelectedModel) {
+      if (modelIds.length > 0) {
         selectedModelId.value = modelIds[0]
       } else {
         selectedModelId.value = ''
       }
     }
+    lastModelConfigSignature = currentConfig.signature
 
     const selected = models.find((model) => model.value === selectedModelId.value)
     if (
+      configChanged &&
       currentConfig.reasoningEffort &&
       selected?.supportedReasoningEfforts.includes(currentConfig.reasoningEffort)
     ) {
@@ -1774,6 +1782,10 @@ export function useDesktopState() {
         ...resumedModelProviderById.value,
         [threadId]: selectedModel.providerId || 'openai',
       }
+      resumedModelById.value = {
+        ...resumedModelById.value,
+        [threadId]: selectedModel.modelId,
+      }
       setSelectedThreadId(threadId)
       shouldAutoScrollOnNextAgentEvent = true
       setTurnSummaryForThread(threadId, null)
@@ -1809,8 +1821,16 @@ export function useDesktopState() {
 
     try {
       const activeProvider = resumedModelProviderById.value[threadId]
-      if (resumedThreadById.value[threadId] !== true || activeProvider !== selected.providerId) {
-        if (resumedThreadById.value[threadId] === true && activeProvider !== selected.providerId) {
+      const activeModel = resumedModelById.value[threadId]
+      if (
+        resumedThreadById.value[threadId] !== true ||
+        activeProvider !== selected.providerId ||
+        activeModel !== selected.modelId
+      ) {
+        if (
+          resumedThreadById.value[threadId] === true &&
+          (activeProvider !== selected.providerId || activeModel !== selected.modelId)
+        ) {
           await unsubscribeThread(threadId)
         }
         await resumeThread(threadId, selected.modelId || undefined, selected.providerId || undefined)
@@ -1830,6 +1850,10 @@ export function useDesktopState() {
       resumedModelProviderById.value = {
         ...resumedModelProviderById.value,
         [threadId]: selected.providerId || 'openai',
+      }
+      resumedModelById.value = {
+        ...resumedModelById.value,
+        [threadId]: selected.modelId,
       }
 
       pendingThreadMessageRefresh.add(threadId)
@@ -2115,6 +2139,9 @@ export function useDesktopState() {
     turnSummaryByThreadId.value = {}
     turnErrorByThreadId.value = {}
     activeTurnIdByThreadId.value = {}
+    resumedThreadById.value = {}
+    resumedModelProviderById.value = {}
+    resumedModelById.value = {}
   }
 
   return {
@@ -2138,6 +2165,7 @@ export function useDesktopState() {
     autoRefreshSecondsLeft,
     error,
     refreshAll,
+    refreshModelPreferences,
     selectThread,
     setThreadScrollState,
     archiveThreadById,

@@ -20,6 +20,7 @@ import type { CodexModelOption, ReasoningEffort, UiMessage, UiProjectGroup } fro
 type CurrentModelConfig = {
   modelValue: string
   reasoningEffort: ReasoningEffort | ''
+  signature: string
 }
 
 type StoredCodexModelConfig = {
@@ -327,7 +328,9 @@ export async function getCurrentModelConfig(): Promise<CurrentModelConfig> {
     model = model || current?.modelId?.trim() || ''
   }
   const reasoningEffort = normalizeReasoningEffort(payload.config.model_reasoning_effort)
-  return { modelValue: model ? encodeModelValue(providerId || 'openai', model) : '', reasoningEffort }
+  const modelValue = model ? encodeModelValue(providerId || 'openai', model) : ''
+  const signature = [stored.currentConfigId ?? '', providerId || 'openai', model, reasoningEffort].join('|')
+  return { modelValue, reasoningEffort, signature }
 }
 
 // `thread/loaded/list` returns sessions loaded in memory, not currently running turns.

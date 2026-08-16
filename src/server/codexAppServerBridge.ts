@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, dirname, extname } from 'node:path'
+import { handleCodexProviderAdapterRequest } from './codexProviderAdapter.js'
 
 const prefixBin = process.env.PREFIX ? join(process.env.PREFIX, 'bin') : ''
 const shellPath = prefixBin ? join(prefixBin, 'sh') : '/bin/sh'
@@ -20,6 +21,9 @@ const codexModelProvidersPath = homeDir
   : ''
 const codexProviderSecretsHandoffPath = homeDir
   ? join(homeDir, '.openclaw-android', 'state', 'codex-provider-secrets.handoff.json')
+  : ''
+const codexProviderRuntimeStatusPath = homeDir
+  ? join(homeDir, '.openclaw-android', 'state', 'codex-provider-runtime-status.json')
   : ''
 const CODEX_PROVIDER_SECRET_PREFIX = 'POCKET_LOBSTER_CODEX_'
 const OPENCLAW_UPLOAD_DIR = homeDir
@@ -2249,7 +2253,7 @@ function mergeDeveloperInstructions(existing: unknown, injected: string): string
   return `${existingText}\n\n${injectText}`
 }
 
-async function buildInjectedDeveloperInstructions(): Promise<string> {
+async function buildInjectedDeveloperInstructions(routeParams?: Record<string, unknown>): Promise<string> {
   const promptRecord = await readJsonFile(promptInjectionPath)
   const statusRecord = await readJsonFile(shizukuStatusPath)
   const runtimeRecord = await readJsonFile(offlineLinuxRuntimePath)
@@ -2274,6 +2278,27 @@ async function buildInjectedDeveloperInstructions(): Promise<string> {
   const runtimeSummary = buildRuntimeSummary(runtimeRecord, healthRecord)
   if (runtimeSummary) {
     chunks.push(runtimeSummary)
+  }
+
+  const routeProviderId = normalizeText(routeParams?.modelProvider)
+  const routeModel = normalizeText(routeParams?.model)
+  if (routeProviderId || routeModel) {
+    let providerName = routeProviderId || 'openai'
+    let upstreamProtocol = routeProviderId === 'openai' ? 'responses' : ''
+    try {
+      const catalog = await readJsonFile(codexModelProvidersPath)
+      const configs = Array.isArray(catalog?.configs) ? catalog.configs : []
+      const selected = configs
+        .map(asRecord)
+        .find((row) => normalizeText(row?.providerId) === routeProviderId)
+      providerName = normalizeText(selected?.displayName) || providerName
+      upstreamProtocol = normalizeText(selected?.upstreamProtocol) || upstreamProtocol
+    } catch {
+      // Keep the route instruction useful even if the optional catalog is unavailable.
+    }
+    chunks.push(
+      `Host model route for this thread: provider=${providerName} provider_id=${routeProviderId || 'openai'} model=${routeModel || 'default'} upstream_protocol=${upstreamProtocol || 'responses'}. If the user asks which model is active, report these host-provided route values instead of inferring from model self-identification.`,
+    )
   }
 
   return chunks.join('\n\n').trim()
@@ -3080,6 +3105,7 @@ class AppServerProcess {
 
     proc.stdout.setEncoding('utf8')
     proc.stdout.on('data', (chunk: string) => {
+      if (this.process !== proc) return
       this.readBuffer += chunk
 
       let lineEnd = this.readBuffer.indexOf('\n')
@@ -3101,6 +3127,7 @@ class AppServerProcess {
     })
 
     proc.on('error', (error) => {
+      if (this.process !== proc) return
       const failure = new Error(`codex app-server start failed: ${getErrorMessage(error, 'unknown error')}`)
       this.lastStartError = failure
       for (const request of this.pending.values()) {
@@ -3114,6 +3141,7 @@ class AppServerProcess {
     })
 
     proc.on('exit', () => {
+      if (this.process !== proc) return
       const failure = new Error(this.stopping ? 'codex app-server stopped' : 'codex app-server exited unexpectedly')
       this.lastStartError = this.stopping ? null : failure
       for (const request of this.pending.values()) {
@@ -3353,6 +3381,114 @@ class AppServerProcess {
   }
 }
 
+function extractThreadId(value: unknown): string {
+  return normalizeText(asRecord(asRecord(value)?.thread)?.id)
+}
+
+function extractCompletedTurnText(value: unknown): string {
+  const record = asRecord(value)
+  const turn = asRecord(record?.turn) ?? record
+  const items = Array.isArray(turn?.items) ? turn.items : []
+  return items
+    .map(asRecord)
+    .filter((item) => normalizeText(item?.type) === 'agentMessage')
+    .map((item) => normalizeText(item?.text))
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+}
+
+async function waitForProviderRuntimeStatus(
+  configId: string,
+  providerId: string,
+  model: string,
+  startedAtMs: number,
+): Promise<Record<string, unknown>> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const runtime = await readJsonFile(codexProviderRuntimeStatusPath)
+    const status = asRecord(asRecord(runtime?.providers)?.[configId])
+    const checkedAtMs = Date.parse(normalizeText(status?.checkedAt))
+    if (
+      status &&
+      Number.isFinite(checkedAtMs) &&
+      checkedAtMs >= startedAtMs &&
+      normalizeText(status.providerId) === providerId &&
+      normalizeText(status.requestedModel) === model
+    ) {
+      if (status.success !== true) {
+        throw new Error(`Provider runtime request failed: ${normalizeText(status.error) || 'unknown error'}`)
+      }
+      const reportedModel = normalizeText(status.reportedModel)
+      if (reportedModel && reportedModel !== model) {
+        throw new Error(`Provider runtime reported unexpected model: ${reportedModel}`)
+      }
+      return status
+    }
+    await sleepMs(100)
+  }
+  throw new Error('Provider runtime verification status was not observed')
+}
+
+async function verifyCodexProviderEndToEnd(
+  appServer: AppServerProcess,
+  providerId: string,
+  model: string,
+): Promise<Record<string, unknown>> {
+  const routeInstruction = `This is a host routing verification. Reply with exactly POCKET_LOBSTER_ROUTE_OK. The host selected provider_id=${providerId} model=${model}.`
+  const started = await appServer.rpc('thread/start', {
+    model,
+    modelProvider: providerId,
+    approvalPolicy: 'never',
+    sandbox: 'read-only',
+    ephemeral: true,
+    developerInstructions: routeInstruction,
+  })
+  const threadId = extractThreadId(started)
+  if (!threadId) throw new Error('Codex thread/start did not return a thread id')
+
+  let resolveCompleted: (value: unknown) => void = () => undefined
+  let rejectCompleted: (reason?: unknown) => void = () => undefined
+  const completed = new Promise<unknown>((resolve, reject) => {
+    resolveCompleted = resolve
+    rejectCompleted = reject
+  })
+  const stopListening = appServer.onNotification((notification) => {
+    if (notification.method !== 'turn/completed') return
+    const params = asRecord(notification.params)
+    if (normalizeText(params?.threadId) !== threadId) return
+    resolveCompleted(notification.params)
+  })
+  const timeout = setTimeout(
+    () => rejectCompleted(new Error('Codex provider end-to-end test timed out')),
+    120_000,
+  )
+
+  try {
+    await appServer.rpc('turn/start', {
+      threadId,
+      input: [{ type: 'text', text: 'Reply with exactly POCKET_LOBSTER_ROUTE_OK.' }],
+      model,
+      effort: 'medium',
+    })
+    const completedPayload = await completed
+    let assistantText = extractCompletedTurnText(completedPayload)
+    if (!assistantText) {
+      const read = await appServer.rpc('thread/read', { threadId, includeTurns: true })
+      const thread = asRecord(asRecord(read)?.thread)
+      const turns = Array.isArray(thread?.turns) ? thread.turns : []
+      assistantText = turns.map(extractCompletedTurnText).filter(Boolean).join('\n').trim()
+    }
+    if (!assistantText.includes('POCKET_LOBSTER_ROUTE_OK')) {
+      throw new Error(`Codex route test returned unexpected content: ${assistantText.slice(0, 240) || 'empty'}`)
+    }
+    return { ok: true, threadId, providerId, model, assistantText }
+  } finally {
+    clearTimeout(timeout)
+    stopListening()
+    try { await appServer.rpc('thread/unsubscribe', { threadId }) } catch { /* best effort */ }
+  }
+}
+
 class MethodCatalog {
   private methodCache: string[] | null = null
   private notificationCache: string[] | null = null
@@ -3499,6 +3635,13 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
 
       const url = new URL(req.url, 'http://localhost')
 
+      if (await handleCodexProviderAdapterRequest(req, res, url, {
+        catalogPath: codexModelProvidersPath,
+        runtimeStatusPath: codexProviderRuntimeStatusPath,
+      })) {
+        return
+      }
+
       if (req.method === 'POST' && url.pathname === '/codex-api/rpc') {
         if (!appServer.isCommandAvailable()) {
           setJson(res, 503, { error: appServer.getUnavailableReason() || 'Codex CLI not installed' })
@@ -3514,9 +3657,9 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
 
         let nextParams: unknown = body.params ?? null
         if (shouldInjectDeveloperInstructions(body.method)) {
-          const injected = await buildInjectedDeveloperInstructions()
+          const paramsRecord = asRecord(nextParams) ?? {}
+          const injected = await buildInjectedDeveloperInstructions(paramsRecord)
           if (injected.length > 0) {
-            const paramsRecord = asRecord(nextParams) ?? {}
             paramsRecord.developerInstructions = mergeDeveloperInstructions(
               paramsRecord.developerInstructions,
               injected,
@@ -3558,11 +3701,80 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (req.method === 'GET' && url.pathname === '/codex-api/model-provider-status') {
+        const catalog = await readJsonFile(codexModelProvidersPath)
+        const runtime = await readJsonFile(codexProviderRuntimeStatusPath)
+        let codexConfig: Record<string, unknown> = {}
+        let configError = ''
+        try {
+          const read = asRecord(await appServer.rpc('config/read', {}))
+          codexConfig = asRecord(read?.config) ?? {}
+        } catch (error) {
+          configError = getErrorMessage(error, 'Codex config/read failed')
+        }
+        const selectedProviderId = normalizeText(codexConfig.model_provider) || 'openai'
+        const selectedModel = normalizeText(codexConfig.model)
+        const configs = Array.isArray(catalog?.configs) ? catalog.configs : []
+        const selected = configs
+          .map(asRecord)
+          .find((row) => normalizeText(row?.providerId) === selectedProviderId)
+        const configuredModel = normalizeText(selected?.modelId)
+        const runtimeProviders = asRecord(runtime?.providers)
+        const runtimeStatus = selected ? asRecord(runtimeProviders?.[normalizeText(selected.id)]) : null
+        setJson(res, 200, {
+          ok: !configError,
+          providerId: selectedProviderId,
+          providerName: normalizeText(selected?.displayName) || selectedProviderId,
+          model: selectedModel,
+          configuredModel,
+          upstreamProtocol: normalizeText(selected?.upstreamProtocol) || (selectedProviderId === 'openai' ? 'responses' : ''),
+          routeMatches: selectedProviderId === 'openai' || (!!selected && selectedModel === configuredModel),
+          verificationStatus: normalizeText(selected?.verificationStatus),
+          lastVerifiedAt: normalizeText(selected?.lastVerifiedAt),
+          verifiedModel: normalizeText(selected?.verifiedModel),
+          runtime: runtimeStatus,
+          error: configError,
+        })
+        return
+      }
+
       if (req.method === 'POST' && url.pathname === '/codex-api/model-providers/reload') {
         await readJsonBody(req)
         const loaded = reloadCodexProviderSecretEnvironment()
         appServer.dispose()
         setJson(res, 200, { ok: true, loaded })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/model-providers/end-to-end-test') {
+        const payload = asRecord(await readJsonBody(req))
+        const providerId = normalizeText(payload?.providerId)
+        const model = normalizeText(payload?.model)
+        if (!providerId || !model) {
+          setJson(res, 400, { error: 'Missing providerId or model' })
+          return
+        }
+        const catalog = await readJsonFile(codexModelProvidersPath)
+        const configs = Array.isArray(catalog?.configs) ? catalog.configs : []
+        const selected = configs
+          .map(asRecord)
+          .find((row) => normalizeText(row?.providerId) === providerId)
+        if (!selected) {
+          setJson(res, 404, { error: 'Provider configuration not found' })
+          return
+        }
+        const startedAtMs = Date.now()
+        const result = await verifyCodexProviderEndToEnd(appServer, providerId, model)
+        const runtimeStatus = await waitForProviderRuntimeStatus(
+          normalizeText(selected.id),
+          providerId,
+          model,
+          startedAtMs,
+        )
+        setJson(res, 200, {
+          ...result,
+          runtime: runtimeStatus,
+        })
         return
       }
 

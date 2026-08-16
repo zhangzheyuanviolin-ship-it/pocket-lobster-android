@@ -16,7 +16,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="管理支持 OpenAI Responses 协议的第三方模型提供商。"
+        android:text="管理支持原生 OpenAI Responses 协议的第三方模型提供商。保存、选中和测试都会执行真实生成验证；推理强度在聊天输入框下方实时选择。"
         android:textSize="14sp" />
 
     <LinearLayout
