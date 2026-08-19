@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { accessSync, constants as fsConstants, createWriteStream, readFileSync, unlinkSync } from 'node:fs'
-import { mkdtemp, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
+import { appendFile, mkdtemp, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, dirname, extname } from 'node:path'
@@ -26,8 +26,12 @@ const codexProviderRuntimeStatusPath = homeDir
   ? join(homeDir, '.openclaw-android', 'state', 'codex-provider-runtime-status.json')
   : ''
 const codexSessionsPath = homeDir ? join(homeDir, '.codex', 'sessions') : ''
+const codexChatDiagnosticPath = process.env.ANYCLAW_EXPORT_DIR
+  ? join(process.env.ANYCLAW_EXPORT_DIR, 'diagnostics', 'codex-chat-latest.jsonl')
+  : ''
 const CODEX_PROVIDER_SECRET_PREFIX = 'POCKET_LOBSTER_CODEX_'
 const PROVIDER_MODEL_REFRESH_INTERVAL_MS = 5 * 60_000
+const CODEX_DIAGNOSTIC_MAX_BYTES = 2 * 1024 * 1024
 const OPENCLAW_UPLOAD_DIR = homeDir
   ? join(homeDir, '.openclaw', 'workspace', 'uploads')
   : join(process.cwd(), '.openclaw', 'workspace', 'uploads')
@@ -351,6 +355,45 @@ async function writeTextFileAtomic(path: string, value: string): Promise<void> {
   const temp = `${path}.${process.pid}.tmp`
   await writeFile(temp, value, { encoding: 'utf8', mode: 0o600 })
   await rename(temp, path)
+}
+
+let codexDiagnosticWriteChain: Promise<void> = Promise.resolve()
+
+async function appendCodexDiagnostic(event: string, details: Record<string, unknown> = {}): Promise<void> {
+  if (!codexChatDiagnosticPath) return
+  codexDiagnosticWriteChain = codexDiagnosticWriteChain.catch(() => undefined).then(async () => {
+    await mkdir(dirname(codexChatDiagnosticPath), { recursive: true })
+    try {
+      const info = await stat(codexChatDiagnosticPath)
+      if (info.size >= CODEX_DIAGNOSTIC_MAX_BYTES) {
+        const previous = codexChatDiagnosticPath.replace(/\.jsonl$/u, '-previous.jsonl')
+        try { await unlink(previous) } catch { /* No previous diagnostic file. */ }
+        await rename(codexChatDiagnosticPath, previous)
+      }
+    } catch {
+      // The file is created by appendFile on the first event.
+    }
+    await appendFile(codexChatDiagnosticPath, `${JSON.stringify({
+      at: new Date().toISOString(),
+      event,
+      ...details,
+    })}\n`, { encoding: 'utf8', mode: 0o600 })
+  }).catch(() => undefined)
+  await codexDiagnosticWriteChain
+}
+
+function diagnosticRpcFields(method: string, params: unknown, result?: unknown): Record<string, unknown> {
+  const input = asRecord(params)
+  const output = asRecord(result)
+  const inputThread = normalizeText(input?.threadId)
+  const outputThread = asRecord(output?.thread)
+  return {
+    method,
+    threadId: inputThread || normalizeText(outputThread?.id),
+    providerId: normalizeText(input?.modelProvider) || normalizeText(outputThread?.modelProvider),
+    model: normalizeText(input?.model),
+    inputItems: Array.isArray(input?.input) ? input.input.length : 0,
+  }
 }
 
 async function findThreadRolloutPath(directory: string, threadId: string): Promise<string> {
@@ -3206,6 +3249,11 @@ class AppServerProcess {
 
     this.stopping = false
     reloadCodexProviderSecretEnvironment()
+    void appendCodexDiagnostic('engine_initialized', {
+      engine: 'codex app-server',
+      transport: 'json-rpc',
+      pid: process.pid,
+    })
     const proc = spawn(this.codexBin, ['app-server'], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env },
@@ -3311,6 +3359,17 @@ class AppServerProcess {
   }
 
   private emitNotification(notification: { method: string; params: unknown }): void {
+    if (notification.method === 'turn/completed' || notification.method === 'turn/started') {
+      const params = asRecord(notification.params)
+      const turn = asRecord(params?.turn)
+      void appendCodexDiagnostic('codex_notification', {
+        method: notification.method,
+        threadId: normalizeText(params?.threadId),
+        turnId: normalizeText(params?.turnId) || normalizeText(turn?.id),
+        status: normalizeText(turn?.status),
+        error: normalizeText(asRecord(turn?.error)?.message).slice(0, 800),
+      })
+    }
     for (const listener of this.notificationListeners) {
       listener(notification)
     }
@@ -3884,6 +3943,7 @@ async function switchCodexThreadRoute(
   model: string,
 ): Promise<Record<string, unknown>> {
   if (!threadId || !providerId || !model) throw new Error('Missing threadId, providerId or model')
+  await appendCodexDiagnostic('route_switch_request', { threadId, providerId, model })
   await validateCodexProviderModel(providerId, model)
   await ensureCodexProviderDefinitions(appServer)
   let previousProvider = ''
@@ -3915,6 +3975,13 @@ async function switchCodexThreadRoute(
     if (actualProvider && actualProvider !== providerId) {
       throw new Error(`Codex route mismatch: expected ${providerId}, received ${actualProvider}`)
     }
+    await appendCodexDiagnostic('route_switch_success', {
+      threadId,
+      providerId: actualProvider || providerId,
+      model,
+      previousProvider,
+      sanitizedReasoningItems: migration?.sanitizedReasoningItems ?? 0,
+    })
     return {
       ok: true,
       providerId: actualProvider || providerId,
@@ -3928,6 +3995,13 @@ async function switchCodexThreadRoute(
       appServer.dispose()
       await restorePersistedThreadRoute(migration)
     }
+    await appendCodexDiagnostic('route_switch_failure', {
+      threadId,
+      providerId,
+      model,
+      previousProvider,
+      error: getErrorMessage(error, 'Unknown route switch error').slice(0, 800),
+    })
     throw error
   }
 }
@@ -3947,6 +4021,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       if (await handleCodexProviderAdapterRequest(req, res, url, {
         catalogPath: codexModelProvidersPath,
         runtimeStatusPath: codexProviderRuntimeStatusPath,
+        diagnosticPath: codexChatDiagnosticPath,
       })) {
         return
       }
@@ -3964,25 +4039,36 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
 
-        if (body.method === 'thread/start' || body.method === 'thread/resume' || body.method === 'turn/start') {
-          await ensureCodexProviderDefinitions(appServer)
-        }
+        const trackedRpc = body.method === 'thread/start' || body.method === 'thread/resume' || body.method === 'turn/start'
+        if (trackedRpc) await appendCodexDiagnostic('rpc_request', diagnosticRpcFields(body.method, body.params))
+        try {
+          if (trackedRpc) await ensureCodexProviderDefinitions(appServer)
 
-        let nextParams: unknown = body.params ?? null
-        if (shouldInjectDeveloperInstructions(body.method)) {
-          const paramsRecord = asRecord(nextParams) ?? {}
-          const injected = await buildInjectedDeveloperInstructions(paramsRecord)
-          if (injected.length > 0) {
-            paramsRecord.developerInstructions = mergeDeveloperInstructions(
-              paramsRecord.developerInstructions,
-              injected,
-            )
-            nextParams = paramsRecord
+          let nextParams: unknown = body.params ?? null
+          if (shouldInjectDeveloperInstructions(body.method)) {
+            const paramsRecord = asRecord(nextParams) ?? {}
+            const injected = await buildInjectedDeveloperInstructions(paramsRecord)
+            if (injected.length > 0) {
+              paramsRecord.developerInstructions = mergeDeveloperInstructions(
+                paramsRecord.developerInstructions,
+                injected,
+              )
+              nextParams = paramsRecord
+            }
           }
-        }
 
-        const result = await appServer.rpc(body.method, nextParams)
-        setJson(res, 200, { result })
+          const result = await appServer.rpc(body.method, nextParams)
+          if (trackedRpc) await appendCodexDiagnostic('rpc_success', diagnosticRpcFields(body.method, body.params, result))
+          setJson(res, 200, { result })
+        } catch (error) {
+          if (trackedRpc) {
+            await appendCodexDiagnostic('rpc_failure', {
+              ...diagnosticRpcFields(body.method, body.params),
+              error: getErrorMessage(error, 'Unknown Codex RPC error').slice(0, 800),
+            })
+          }
+          throw error
+        }
         return
       }
 

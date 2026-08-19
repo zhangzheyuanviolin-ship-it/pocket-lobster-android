@@ -1843,19 +1843,15 @@ export function useDesktopState() {
     let threadId = ''
 
     try {
-      threadId = await startThread(
+      const started = await startThread(
         targetCwd || undefined,
         selectedModel.modelId || undefined,
         selectedModel.providerId || undefined,
       )
+      threadId = started.threadId
       if (!threadId) return ''
 
-      const route = await switchThreadRoute(
-        threadId,
-        selectedModel.modelId,
-        selectedModel.providerId || 'openai',
-      )
-      const actualProvider = route.providerId?.trim() || selectedModel.providerId || 'openai'
+      const actualProvider = started.modelProvider.trim() || selectedModel.providerId || 'openai'
       if (actualProvider !== (selectedModel.providerId || 'openai')) {
         throw new Error(`New thread route mismatch: expected ${selectedModel.providerId}, received ${actualProvider}`)
       }

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname } from 'node:path'
 
@@ -29,6 +29,7 @@ type RuntimeStatus = {
 type AdapterOptions = {
   catalogPath: string
   runtimeStatusPath: string
+  diagnosticPath?: string
 }
 
 let statusWriteChain: Promise<void> = Promise.resolve()
@@ -69,7 +70,7 @@ async function readProviderConfig(path: string, configId: string): Promise<Provi
   return null
 }
 
-async function recordRuntimeStatus(path: string, status: RuntimeStatus): Promise<void> {
+async function recordRuntimeStatus(path: string, status: RuntimeStatus, diagnosticPath = ''): Promise<void> {
   if (!path) return
   statusWriteChain = statusWriteChain.then(async () => {
     let providers: Record<string, unknown> = {}
@@ -85,6 +86,22 @@ async function recordRuntimeStatus(path: string, status: RuntimeStatus): Promise
     const temp = `${path}.${process.pid}.tmp`
     await writeFile(temp, output, { encoding: 'utf8', mode: 0o600 })
     await rename(temp, path)
+    if (diagnosticPath) {
+      await mkdir(dirname(diagnosticPath), { recursive: true })
+      await appendFile(diagnosticPath, `${JSON.stringify({
+        at: status.checkedAt,
+        event: 'provider_response',
+        providerId: status.providerId,
+        configuredModel: status.configuredModel,
+        requestedModel: status.requestedModel,
+        reportedModel: status.reportedModel,
+        protocol: status.upstreamProtocol,
+        success: status.success,
+        statusCode: status.statusCode,
+        requestId: status.requestId,
+        error: status.error,
+      })}\n`, { encoding: 'utf8', mode: 0o600 })
+    }
   }).catch(() => undefined)
   await statusWriteChain
 }
@@ -197,7 +214,7 @@ async function proxyResponses(
       requestId: localRequestId,
       checkedAt: new Date().toISOString(),
       error: error.slice(0, 500),
-    })
+    }, options.diagnosticPath)
     setJson(res, upstream.status || 502, { error: { message: error || `Upstream HTTP ${upstream.status}` } })
     return
   }
@@ -266,7 +283,7 @@ async function proxyResponses(
       requestId: observed.requestId || localRequestId,
       checkedAt: new Date().toISOString(),
       error: observed.error,
-    })
+    }, options.diagnosticPath)
   } catch (error) {
     if (!res.writableEnded) res.end()
     await recordRuntimeStatus(options.runtimeStatusPath, {
@@ -282,7 +299,7 @@ async function proxyResponses(
       requestId: observed.requestId || localRequestId,
       checkedAt: new Date().toISOString(),
       error: error instanceof Error ? error.message : String(error),
-    })
+    }, options.diagnosticPath)
   }
 }
 
@@ -327,7 +344,7 @@ export async function handleCodexProviderAdapterRequest(
       requestId: '',
       checkedAt: new Date().toISOString(),
       error: message.slice(0, 500),
-    })
+    }, options.diagnosticPath)
     if (!res.headersSent) setJson(res, 502, { error: { message } })
     else if (!res.writableEnded) res.end()
   }

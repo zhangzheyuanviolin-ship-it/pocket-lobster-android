@@ -491,6 +491,7 @@
                   :options="newThreadFolderOptions" :placeholder="t('home_choose_folder')"
                   :disabled="newThreadFolderOptions.length === 0" @update:model-value="onSelectNewThreadFolder" />
                 <p class="new-thread-guide">{{ t('home_quick_guide') }}</p>
+                <p v-if="codexError" class="new-thread-error" aria-live="assertive">{{ codexError }}</p>
               </div>
 
               <ThreadComposer :active-thread-id="composerThreadContextId" :disabled="isSendingMessage"
@@ -586,6 +587,7 @@ const {
   isLoadingMessages,
   isSendingMessage,
   isInterruptingTurn,
+  error: codexError,
   isAutoRefreshEnabled,
   autoRefreshSecondsLeft,
   refreshAll,
@@ -969,12 +971,14 @@ function onWindowKeyDown(event: KeyboardEvent): void {
   setSidebarCollapsed(!isSidebarCollapsed.value)
 }
 
-function onSubmitThreadMessage(text: string): void {
-  if (isHomeRoute.value) {
-    void submitFirstMessageForNewThread(text)
-    return
+async function onSubmitThreadMessage(text: string, complete: (success: boolean) => void): Promise<void> {
+  try {
+    if (isHomeRoute.value) await submitFirstMessageForNewThread(text)
+    else await sendMessageToSelectedThread(text)
+    complete(true)
+  } catch {
+    complete(false)
   }
-  void sendMessageToSelectedThread(text)
 }
 
 function onSelectNewThreadFolder(cwd: string): void {
@@ -1441,13 +1445,9 @@ watch(
 )
 
 async function submitFirstMessageForNewThread(text: string): Promise<void> {
-  try {
-    const threadId = await sendMessageToNewThread(text, newThreadCwd.value)
-    if (!threadId) return
-    await router.replace({ name: 'thread', params: { threadId } })
-  } catch {
-    // Error is already reflected in state.
-  }
+  const threadId = await sendMessageToNewThread(text, newThreadCwd.value)
+  if (!threadId) throw new Error('Codex did not create a thread for the first message')
+  await router.replace({ name: 'thread', params: { threadId } })
 }
 </script>
 
@@ -1549,6 +1549,10 @@ async function submitFirstMessageForNewThread(text: string): Promise<void> {
 
 .new-thread-guide {
   @apply mt-3 max-w-xl text-center text-sm leading-6 text-zinc-500;
+}
+
+.new-thread-error {
+  @apply mt-2 max-w-xl text-center text-sm leading-6 text-red-700;
 }
 
 .openclaw-dashboard-link {

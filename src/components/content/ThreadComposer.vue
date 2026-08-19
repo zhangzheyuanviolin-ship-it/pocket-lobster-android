@@ -89,7 +89,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  submit: [text: string]
+  submit: [text: string, complete: (success: boolean) => void]
   interrupt: []
   'update:selected-model': [modelId: string]
   'update:selected-provider': [providerId: string]
@@ -126,8 +126,9 @@ const placeholderText = computed(() =>
 function onSubmit(): void {
   const text = draft.value.trim()
   if (!text || !canSubmit.value) return
-  emit('submit', text)
-  draft.value = ''
+  emit('submit', text, (success) => {
+    if (success && draft.value.trim() === text) draft.value = ''
+  })
 }
 
 function onInterrupt(): void {

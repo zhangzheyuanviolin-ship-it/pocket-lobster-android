@@ -289,7 +289,11 @@ function normalizeThreadIdFromPayload(payload: unknown): string {
   return ''
 }
 
-export async function startThread(cwd?: string, model?: string, modelProvider?: string): Promise<string> {
+export async function startThread(
+  cwd?: string,
+  model?: string,
+  modelProvider?: string,
+): Promise<{ threadId: string; modelProvider: string }> {
   try {
     const params: Record<string, unknown> = {}
     if (typeof cwd === 'string' && cwd.trim().length > 0) {
@@ -301,12 +305,15 @@ export async function startThread(cwd?: string, model?: string, modelProvider?: 
     if (typeof modelProvider === 'string' && modelProvider.trim().length > 0) {
       params.modelProvider = modelProvider.trim()
     }
-    const payload = await callRpc<{ thread?: { id?: string } }>('thread/start', params)
+    const payload = await callRpc<{ thread?: { id?: string; modelProvider?: string } }>('thread/start', params)
     const threadId = normalizeThreadIdFromPayload(payload)
     if (!threadId) {
       throw new Error('thread/start did not return a thread id')
     }
-    return threadId
+    return {
+      threadId,
+      modelProvider: payload.thread?.modelProvider?.trim() || modelProvider?.trim() || 'openai',
+    }
   } catch (error) {
     throw normalizeCodexApiError(error, 'Failed to start a new thread', 'thread/start')
   }

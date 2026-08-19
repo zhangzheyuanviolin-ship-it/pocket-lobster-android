@@ -196,6 +196,8 @@ async function listRolloutFiles(directory) {
 try {
   await mkdir(stateDir, { recursive: true })
   await mkdir(codexDir, { recursive: true })
+  const exportDir = process.env.E2E_DIAGNOSTICS_BLOCKED === '1' ? join(home, 'blocked-export') : join(home, 'shared')
+  if (process.env.E2E_DIAGNOSTICS_BLOCKED === '1') await writeFile(exportDir, 'not-a-directory')
   if (process.env.E2E_OPENAI_AUTH_PATH) {
     await copyFile(process.env.E2E_OPENAI_AUTH_PATH, join(codexDir, 'auth.json'))
   }
@@ -212,6 +214,7 @@ try {
     env: {
       ...process.env,
       HOME: home,
+      ANYCLAW_EXPORT_DIR: exportDir,
       POCKET_LOBSTER_CODEX_PROVIDER_ALPHA_API_KEY: 'alpha-key',
       POCKET_LOBSTER_CODEX_PROVIDER_BETA_API_KEY: 'beta-key',
     },
@@ -264,6 +267,15 @@ try {
   assert.equal(rolloutFiles.length, 1)
   const rollout = (await readFile(rolloutFiles[0], 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
   for (const content of reasoningContents(rollout)) assert.deepEqual(content, [])
+  if (process.env.E2E_DIAGNOSTICS_BLOCKED !== '1') {
+    await sleep(200)
+    const diagnostics = (await readFile(join(exportDir, 'diagnostics', 'codex-chat-latest.jsonl'), 'utf8'))
+      .trim().split('\n').map((line) => JSON.parse(line))
+    assert.ok(diagnostics.some((event) => event.event === 'engine_initialized' && event.engine === 'codex app-server'))
+    assert.ok(diagnostics.some((event) => event.event === 'rpc_success' && event.method === 'thread/start'))
+    assert.equal(diagnostics.filter((event) => event.event === 'provider_response' && event.success === true).length, 4)
+    assert.ok(diagnostics.some((event) => event.event === 'codex_notification' && event.method === 'turn/completed'))
+  }
   console.log(JSON.stringify({ ok: true, turns: finalThread.turns.length, models: requests.map((request) => request.model), finalRoute }))
 } finally {
   if (app && app.exitCode === null) app.kill('SIGTERM')

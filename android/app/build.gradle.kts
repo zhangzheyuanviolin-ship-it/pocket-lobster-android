@@ -45,8 +45,8 @@ android {
         // Android 10+ (targetSdk 29+) enforces W^X which blocks this via SELinux.
         // Termux (F-Droid) uses the same approach.
         targetSdk = 28
-        versionCode = 297
-        versionName = "1.0.56-codex-cli-0.147.0-gpt-5.6-responses-v297"
+        versionCode = 298
+        versionName = "1.0.57-codex-cli-0.147.0-gpt-5.6-responses-v298"
     }
 
     flavorDimensions += "channel"
