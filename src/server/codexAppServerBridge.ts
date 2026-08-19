@@ -5,7 +5,7 @@ import { appendFile, mkdtemp, mkdir, readFile, readdir, rename, stat, unlink, wr
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, dirname, extname } from 'node:path'
-import { handleCodexProviderAdapterRequest, sanitizeResponsesHistory } from './codexProviderAdapter.js'
+import { handleCodexProviderAdapterRequest } from './codexProviderAdapter.js'
 
 const prefixBin = process.env.PREFIX ? join(process.env.PREFIX, 'bin') : ''
 const shellPath = prefixBin ? join(prefixBin, 'sh') : '/bin/sh'
@@ -421,6 +421,7 @@ type PersistedThreadRouteMigration = {
   original: string
   changed: boolean
   sanitizedReasoningItems: number
+  removedCompactionItems: number
 }
 
 async function migratePersistedThreadRoute(
@@ -433,7 +434,8 @@ async function migratePersistedThreadRoute(
   let providerMetadataFound = false
   let changed = false
   let sanitizedReasoningItems = 0
-  const lines = raw.split('\n').map((line) => {
+  let removedCompactionItems = 0
+  const lines = raw.split('\n').flatMap((line) => {
     if (!line.trim()) return line
     try {
       const row = asRecord(JSON.parse(line) as unknown)
@@ -448,17 +450,15 @@ async function migratePersistedThreadRoute(
           lineChanged = true
         }
       }
-      if (
-        row.type === 'response_item' &&
-        payload &&
-        normalizeText(payload.type) === 'reasoning' &&
-        Array.isArray(payload.content) &&
-        payload.content.length > 0
-      ) {
-        row.payload = sanitizeResponsesHistory(payload)
+      if (row.type === 'response_item' && normalizeText(payload?.type) === 'reasoning') {
         sanitizedReasoningItems += 1
         changed = true
-        lineChanged = true
+        return []
+      }
+      if (row.type === 'response_item' && normalizeText(payload?.type) === 'compaction') {
+        removedCompactionItems += 1
+        changed = true
+        return []
       }
       return lineChanged ? JSON.stringify(row) : line
     } catch {
@@ -467,7 +467,7 @@ async function migratePersistedThreadRoute(
   })
   if (!providerMetadataFound) throw new Error(`Thread provider metadata not found: ${threadId}`)
   if (changed) await writeTextFileAtomic(path, lines.join('\n'))
-  return { path, original: raw, changed, sanitizedReasoningItems }
+  return { path, original: raw, changed, sanitizedReasoningItems, removedCompactionItems }
 }
 
 async function restorePersistedThreadRoute(migration: PersistedThreadRouteMigration): Promise<void> {
@@ -3981,6 +3981,7 @@ async function switchCodexThreadRoute(
       model,
       previousProvider,
       sanitizedReasoningItems: migration?.sanitizedReasoningItems ?? 0,
+      removedCompactionItems: migration?.removedCompactionItems ?? 0,
     })
     return {
       ok: true,
@@ -3988,6 +3989,7 @@ async function switchCodexThreadRoute(
       model,
       previousProvider,
       sanitizedReasoningItems: migration?.sanitizedReasoningItems ?? 0,
+      removedCompactionItems: migration?.removedCompactionItems ?? 0,
       thread: resumed?.thread,
     }
   } catch (error) {

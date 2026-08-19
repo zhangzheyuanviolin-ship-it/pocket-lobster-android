@@ -20,7 +20,7 @@ function responseEnvelope(model, text) {
     type: 'reasoning',
     summary: [],
     content: [{ type: 'reasoning_text', text: `private-${sequence}` }],
-    encrypted_content: null,
+    encrypted_content: `foreign-encrypted-content-${sequence}`,
     status: 'completed',
   }
   const message = {
@@ -146,7 +146,7 @@ async function waitForServer() {
 }
 
 async function waitForTurn(threadId, expectedTurns) {
-  const deadline = Date.now() + 45_000
+  const deadline = Date.now() + 120_000
   while (Date.now() < deadline) {
     try {
       const result = await rpc('thread/read', { threadId, includeTurns: true })
@@ -179,6 +179,20 @@ function reasoningContents(value, found = []) {
   } else if (value && typeof value === 'object') {
     if (value.type === 'reasoning' && Array.isArray(value.content)) found.push(value.content)
     for (const item of Object.values(value)) reasoningContents(item, found)
+  }
+  return found
+}
+
+function encryptedResponseItems(value, found = []) {
+  if (Array.isArray(value)) {
+    for (const item of value) encryptedResponseItems(item, found)
+  } else if (value && typeof value === 'object') {
+    if (
+      (value.type === 'reasoning' || value.type === 'compaction') &&
+      typeof value.encrypted_content === 'string' &&
+      value.encrypted_content.length > 0
+    ) found.push(value)
+    for (const item of Object.values(value)) encryptedResponseItems(item, found)
   }
   return found
 }
@@ -234,46 +248,90 @@ try {
   await rpc('turn/start', { threadId, input: [{ type: 'text', text: 'turn two' }], model: 'deepseek-v4-pro', effort: 'high' })
   await waitForTurn(threadId, 2)
 
+  let expectedTurns = 2
+  let removedReasoningTotal = 0
   if (process.env.E2E_OPENAI_AUTH_PATH) {
-    const openAiRoute = await switchRoute(threadId, 'openai', 'gpt-5.6-sol')
+    const openAiModel = process.env.E2E_OPENAI_MODEL || 'gpt-5.6-luna'
+    const openAiRoute = await switchRoute(threadId, 'openai', openAiModel)
     assert.equal(openAiRoute.providerId, 'openai')
+    assert.ok(openAiRoute.sanitizedReasoningItems >= 2)
+    removedReasoningTotal += openAiRoute.sanitizedReasoningItems
     const confirmedOpenAiRoute = await requestJson(`/codex-api/thread-route?threadId=${encodeURIComponent(threadId)}`)
     assert.equal(confirmedOpenAiRoute.providerId, 'openai')
+    await rpc('turn/start', {
+      threadId,
+      input: [{ type: 'text', text: 'Reply with exactly OPENAI_ROUTE_RETURN_OK.' }],
+      model: openAiModel,
+      effort: 'low',
+    })
+    await waitForTurn(threadId, ++expectedTurns)
     const returnedRoute = await switchRoute(threadId, 'pocket_provider_alpha', 'deepseek-v4-pro')
     assert.equal(returnedRoute.providerId, 'pocket_provider_alpha')
+    removedReasoningTotal += returnedRoute.sanitizedReasoningItems
+    await rpc('turn/start', {
+      threadId,
+      input: [{ type: 'text', text: 'turn after OpenAI' }],
+      model: 'deepseek-v4-pro',
+      effort: 'medium',
+    })
+    await waitForTurn(threadId, ++expectedTurns)
+    const secondOpenAiRoute = await switchRoute(threadId, 'openai', openAiModel)
+    assert.equal(secondOpenAiRoute.providerId, 'openai')
+    assert.ok(secondOpenAiRoute.sanitizedReasoningItems >= 1)
+    removedReasoningTotal += secondOpenAiRoute.sanitizedReasoningItems
+    await rpc('turn/start', {
+      threadId,
+      input: [{ type: 'text', text: 'Reply with exactly OPENAI_SECOND_RETURN_OK.' }],
+      model: openAiModel,
+      effort: 'low',
+    })
+    await waitForTurn(threadId, ++expectedTurns)
+    const secondReturnedRoute = await switchRoute(threadId, 'pocket_provider_alpha', 'deepseek-v4-pro')
+    assert.equal(secondReturnedRoute.providerId, 'pocket_provider_alpha')
+    removedReasoningTotal += secondReturnedRoute.sanitizedReasoningItems
   }
 
-  await switchRoute(threadId, 'pocket_provider_beta', 'deepseek-v4-pro')
+  const betaRoute = await switchRoute(threadId, 'pocket_provider_beta', 'deepseek-v4-pro')
+  removedReasoningTotal += betaRoute.sanitizedReasoningItems
   await rpc('turn/start', { threadId, input: [{ type: 'text', text: 'turn three' }], model: 'deepseek-v4-pro', effort: 'low' })
-  await waitForTurn(threadId, 3)
+  await waitForTurn(threadId, ++expectedTurns)
 
-  await switchRoute(threadId, 'pocket_provider_alpha', 'deepseek-v4-flash')
+  const finalAlphaRoute = await switchRoute(threadId, 'pocket_provider_alpha', 'deepseek-v4-flash')
+  assert.ok(finalAlphaRoute.sanitizedReasoningItems >= 1)
+  removedReasoningTotal += finalAlphaRoute.sanitizedReasoningItems
   await rpc('turn/start', { threadId, input: [{ type: 'text', text: 'turn four' }], model: 'deepseek-v4-flash', effort: 'xhigh' })
-  const finalThread = await waitForTurn(threadId, 4)
+  const finalThread = await waitForTurn(threadId, ++expectedTurns)
   const finalRoute = await requestJson(`/codex-api/thread-route?threadId=${encodeURIComponent(threadId)}`)
 
-  assert.deepEqual(requests.map((request) => request.model), [
+  const expectedModels = [
     'deepseek-v4-flash',
     'deepseek-v4-pro',
+    ...(process.env.E2E_OPENAI_AUTH_PATH ? ['deepseek-v4-pro'] : []),
     'deepseek-v4-pro',
     'deepseek-v4-flash',
-  ])
+  ]
+  assert.deepEqual(requests.map((request) => request.model), expectedModels)
   for (const request of requests.slice(1)) {
     for (const content of reasoningContents(request.input)) assert.deepEqual(content, [])
   }
   assert.equal(finalThread.modelProvider, 'pocket_provider_alpha')
+  assert.ok(removedReasoningTotal >= 3)
   assert.deepEqual(finalRoute, { providerId: 'pocket_provider_alpha', model: 'deepseek-v4-flash' })
   const rolloutFiles = await listRolloutFiles(join(home, '.codex', 'sessions'))
   assert.equal(rolloutFiles.length, 1)
   const rollout = (await readFile(rolloutFiles[0], 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
   for (const content of reasoningContents(rollout)) assert.deepEqual(content, [])
+  assert.equal(encryptedResponseItems(rollout).length, 1)
   if (process.env.E2E_DIAGNOSTICS_BLOCKED !== '1') {
     await sleep(200)
     const diagnostics = (await readFile(join(exportDir, 'diagnostics', 'codex-chat-latest.jsonl'), 'utf8'))
       .trim().split('\n').map((line) => JSON.parse(line))
     assert.ok(diagnostics.some((event) => event.event === 'engine_initialized' && event.engine === 'codex app-server'))
     assert.ok(diagnostics.some((event) => event.event === 'rpc_success' && event.method === 'thread/start'))
-    assert.equal(diagnostics.filter((event) => event.event === 'provider_response' && event.success === true).length, 4)
+    assert.equal(
+      diagnostics.filter((event) => event.event === 'provider_response' && event.success === true).length,
+      expectedModels.length,
+    )
     assert.ok(diagnostics.some((event) => event.event === 'codex_notification' && event.method === 'turn/completed'))
   }
   console.log(JSON.stringify({ ok: true, turns: finalThread.turns.length, models: requests.map((request) => request.model), finalRoute }))
