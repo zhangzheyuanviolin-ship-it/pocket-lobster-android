@@ -2,15 +2,15 @@
 
 ## 中文介绍
 
-口袋大龙虾是一款运行在普通 Android 手机上面的双智能体原生 AI 助手应用。它把 OpenAI 旗下的编码智能体 Codex 与 2026 年以来最具代表性的全能私人 AI 智能体形态之一 OpenClaw 同时带到一台非 root 安卓手机上，并让它们共享安卓原生终端、完整 Ubuntu Linux 运行时和通过 Shizuku 打通的 system shell 三条执行链路。
+口袋大龙虾是一款运行在普通 Android 手机上的多智能体原生 AI 助手应用。当前稳定运行 Codex、Claude Code 与 OpenClaw，并已从 v300 开始以可回滚方式接入 OpenMinis 1.12 上游源码，为后续使用 Minis 替代 OpenClaw、共享可视浏览器和增加 Alpine Linux 终端建立基础。
 
 ## English Overview
 
-Pocket Lobster is a dual-agent native AI assistant for ordinary Android phones. It brings OpenAI Codex, one of the strongest coding agents in the field, together with OpenClaw, one of the most representative general-purpose personal AI agent systems of 2026, onto a non-root Android device and gives them three shared execution paths: an Android-native terminal, a full Ubuntu Linux runtime, and a Shizuku-enabled system shell.
+Pocket Lobster is a multi-agent native AI assistant for ordinary Android phones. The current stable product runs Codex, Claude Code, and OpenClaw. Starting with v300, the repository pins OpenMinis 1.12 as a reversible upstream foundation for replacing OpenClaw with Minis, sharing a visible browser, and adding an Alpine Linux terminal in later phases.
 
 ## 当前核心能力 Core Capabilities
 
-- 双智能体协作：Codex 负责强工程与代码执行，OpenClaw 负责更广义的任务代理与交付。 English: Dual-agent collaboration, with Codex focused on engineering and code execution, and OpenClaw focused on broader task orchestration and delivery.
+- 多智能体协作：Codex、Claude Code 与 OpenClaw 当前保持稳定，Minis 替换工作按独立测试阶段推进。 English: Multi-agent collaboration with Codex, Claude Code, and OpenClaw kept stable while the Minis replacement proceeds through isolated test phases.
 - 双终端环境：同时提供安卓原生终端与完整 Ubuntu Linux 开发环境。 English: Dual terminal environments, including an Android-native terminal and a full Ubuntu Linux development runtime.
 - 系统级链路：通过 Shizuku 打通 system shell，并具备 UI 自动化基础能力。 English: A system-level execution path through a Shizuku-backed system shell, with a foundation for UI automation.
 - 全局文件访问：支持共享存储全局文件处理与结果直接交付。 English: Global shared-storage file access so agents can read, process, and deliver results directly in user-visible locations.
@@ -26,13 +26,19 @@ Pocket Lobster is a dual-agent native AI assistant for ordinary Android phones. 
 - [上游血缘与许可证说明 Upstream And License](docs/pocket-lobster/UPSTREAM_AND_LICENSE_2026-03-25.md)
 - [云端资产备份方案 Cloud Backup Policy](docs/pocket-lobster/CLOUD_BACKUP_POLICY_2026-03-25.md)
 - [版本谱系与稳定基线 Version Lineage](docs/pocket-lobster/VERSION_LINEAGE_2026-03-25.md)
+- [OpenMinis 第一阶段基线 OpenMinis Phase 1 Baseline](docs/minis/PHASE_1_FOUNDATION_2026-08-20.md)
 
 ## 项目血缘 Project Lineage
 
 - 官方源头 Official source: `openclaw/openclaw`
 - 直接安卓实现上游 Direct Android upstream: `friuns2/openclaw-android-assistant`
 - 当前项目 Current project: `zhangzheyuanviolin-ship-it/pocket-lobster-android`
+- Minis replacement upstream: `OpenMinis/OpenMinis` tag `1.12`, commit `09fc199928de0f26685e766c34e6d541c7a69e5a`
 
 ## 当前稳定基线 Current Stable Baseline
 
-当前已经通过覆盖更新与重新安装双重验证、确认两个智能体都能稳定使用三条执行链路的验证基线，是 `cloud_run162_sidecar_v163_codex_ubuntu_fix.apk`，对应提交 `84f3bbdcf1735e6eb8def5d38c069b44f48dbe9d`。 English: The currently verified stable baseline, confirmed through both in-place upgrade testing and clean reinstall testing with all three execution paths working for both agents, is `cloud_run162_sidecar_v163_codex_ubuntu_fix.apk`, built from commit `84f3bbdcf1735e6eb8def5d38c069b44f48dbe9d`.
+当前黄金测试基线是 `1.0.58-codex-cli-0.147.0-gpt-5.6-responses-v299-beta`，对应提交 `9bbaba40efe308373090ad3552d6126f9c568075` 与标签 `golden-beta-v299-20260820`。该版本已经完成 Codex 官方授权与第三方 Responses 提供商在同一会话内双向切换验证。English: The current golden beta baseline is v299 at commit `9bbaba40efe308373090ad3552d6126f9c568075`, protected by tag `golden-beta-v299-20260820`.
+
+## License
+
+Pocket Lobster is distributed under GNU GPL v3 starting with the OpenMinis integration line. Earlier MIT attribution is preserved in `LICENSES/Pocket-Lobster-MIT-history.txt`; OpenMinis and bundled dependency notices are preserved under `LICENSES/` and inside the APK assets.

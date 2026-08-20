@@ -1,0 +1,18 @@
+Pocket Lobster
+Copyright and licensing notice
+
+Pocket Lobster is distributed under the GNU General Public License version 3.
+The complete license text is in LICENSE and is bundled in the Android APK.
+
+OpenMinis integration baseline:
+Repository: https://github.com/OpenMinis/OpenMinis
+Tag: 1.12
+Commit: 09fc199928de0f26685e766c34e6d541c7a69e5a
+License: GNU GPL version 3
+
+Pocket Lobster evolved from MIT-licensed work including OpenClaw and the
+openclaw-android-assistant Android implementation. Those notices and the
+historical Pocket Lobster MIT license are preserved under LICENSES/.
+
+Additional third-party notices from OpenMinis are preserved in
+LICENSES/OpenMinis-THIRD_PARTY_LICENSES.md and in the APK assets.

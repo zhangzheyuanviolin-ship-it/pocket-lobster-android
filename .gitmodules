@@ -1,0 +1,5 @@
+[submodule "third_party/OpenMinis"]
+	path = third_party/OpenMinis
+	url = https://github.com/OpenMinis/OpenMinis.git
+	branch = main
+	shallow = true

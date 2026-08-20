@@ -11,7 +11,7 @@
 
 当前项目仓库是 `zhangzheyuanviolin-ship-it/pocket-lobster-android`。它是在上述安卓实现基础上继续进行双智能体整合、双终端扩展、Shizuku system shell 打通、共享存储访问、项目恢复归档、发布治理与无障碍协作演进后的独立安卓项目。
 
-因此，正式血缘表述固定为：官方源头来自 `openclaw/openclaw`，直接安卓实现上游来自 `friuns2/openclaw-android-assistant`，口袋大龙虾是在该基础上持续深度演进出的独立 Android 项目。整个上游链路均在 MIT 许可框架内，当前项目在遵守许可证与来源标注的前提下继续发布与演进。
+自 v300 起，项目增加 `OpenMinis/OpenMinis` 作为 Minis 替换路线的直接上游，并固定到 1.12 标签与提交 `09fc199928de0f26685e766c34e6d541c7a69e5a`。由于后续组合发行物将包含 GPLv3 的 OpenMinis 代码，口袋大龙虾从该集成线开始按 GNU GPL v3 分发；原有 MIT 上游与历史许可证仍完整保留在 `LICENSES/`，不抹除原作者归属。
 
 ## English Version
 
@@ -23,4 +23,4 @@ The direct Android implementation upstream is `friuns2/openclaw-android-assistan
 
 The current project repository is `zhangzheyuanviolin-ship-it/pocket-lobster-android`. It evolves beyond that Android implementation through dual-agent integration, dual-terminal runtime support, Shizuku-backed system-shell access, shared-storage access, recovery-oriented asset archiving, release governance, and accessibility-focused collaboration.
 
-The formal lineage statement is therefore fixed as follows: the official upstream source is `openclaw/openclaw`, the direct Android upstream is `friuns2/openclaw-android-assistant`, and Pocket Lobster is an independently evolved Android project built on top of that chain. The upstream lineage remains within the MIT licensing path, so ongoing distribution and modification are permitted as long as attribution and license obligations are respected.
+Starting with v300, `OpenMinis/OpenMinis` is added as the direct upstream for the Minis replacement path, pinned to tag 1.12 and commit `09fc199928de0f26685e766c34e6d541c7a69e5a`. Because later combined distributions will include GPLv3 OpenMinis code, Pocket Lobster is distributed under GNU GPL v3 from this integration line onward. Historical MIT licenses and attribution remain preserved under `LICENSES/`.

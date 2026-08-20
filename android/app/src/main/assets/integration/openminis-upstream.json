@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "integrationPhase": "foundation",
+  "runtimeEnabled": false,
+  "upstreamRepository": "https://github.com/OpenMinis/OpenMinis",
+  "upstreamTag": "1.12",
+  "upstreamCommit": "09fc199928de0f26685e766c34e6d541c7a69e5a",
+  "upstreamLicense": "GPL-3.0",
+  "licenseSha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+  "thirdPartyNoticesSha256": "7998ec155c04ff96d87d4f2cd1f594f5c3bd7447c729351249c2471ccafdeae9",
+  "androidRequirements": {
+    "abi": "arm64-v8a",
+    "jdk": 17,
+    "compileSdk": 36,
+    "minSdk": 26,
+    "ndk": "28.0.12433566",
+    "cmake": "3.22.1"
+  },
+  "goldenRollback": {
+    "tag": "golden-beta-v299-20260820",
+    "commit": "9bbaba40efe308373090ad3552d6126f9c568075",
+    "versionName": "1.0.58-codex-cli-0.147.0-gpt-5.6-responses-v299-beta",
+    "apkSha256": "d57589bd40555736a2234b5b0f70832e0870df7583c16a3a094155fb6ba2b5c4"
+  }
+}
