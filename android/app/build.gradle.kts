@@ -150,5 +150,6 @@ dependencies {
     implementation("org.nanohttpd:nanohttpd:2.3.1")
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("org.tukaani:xz:1.10")
+    implementation("io.coil-kt:coil:2.7.0")
     testImplementation("junit:junit:4.13.2")
 }

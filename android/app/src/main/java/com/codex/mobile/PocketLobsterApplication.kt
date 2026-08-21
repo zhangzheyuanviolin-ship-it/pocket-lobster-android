@@ -65,7 +65,7 @@ private object BetaStartupDiagnostics {
                 .put("timestampMs", System.currentTimeMillis())
                 .put("event", event)
                 .put("packageName", context.packageName)
-                .put("versionName", BuildConfig.VERSION_NAME)
+                .put("versionName", installedVersionName(context))
                 .put("processName", processName)
                 .put("minisRuntimeProcess", processName.endsWith(":minis"))
             if (error != null) {
@@ -79,5 +79,11 @@ private object BetaStartupDiagnostics {
         }.onFailure { failure ->
             Log.w(TAG, "shared startup diagnostic unavailable: ${failure.message}")
         }
+    }
+
+    private fun installedVersionName(context: Context): String {
+        return runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
+        }.getOrDefault("unknown")
     }
 }
