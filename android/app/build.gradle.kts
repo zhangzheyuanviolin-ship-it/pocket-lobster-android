@@ -45,8 +45,8 @@ android {
         // Android 10+ (targetSdk 29+) enforces W^X which blocks this via SELinux.
         // Termux (F-Droid) uses the same approach.
         targetSdk = 28
-        versionCode = 304
-        versionName = "1.0.63-codex-cli-0.147.0-gpt-5.6-openminis-1.12-runtime-v304"
+        versionCode = 305
+        versionName = "1.0.64-codex-cli-0.147.0-gpt-5.6-openminis-1.12-isolated-runtime-v305"
     }
 
     flavorDimensions += "channel"
@@ -56,17 +56,20 @@ android {
             dimension = "channel"
             applicationId = "com.codex.mobile.pocketlobster"
             resValue("string", "app_name", "\"口袋大龙虾\"")
+            resValue("string", "pocket_lobster_app_name", "\"口袋大龙虾\"")
         }
         create("operator") {
             dimension = "channel"
             applicationId = "com.codex.mobile.pocketlobster.test"
             resValue("string", "app_name", "\"口袋大龙虾\"")
+            resValue("string", "pocket_lobster_app_name", "\"口袋大龙虾\"")
         }
         create("beta") {
             dimension = "channel"
             applicationId = "com.codex.mobile.pocketlobster.beta"
             versionNameSuffix = "-beta"
             resValue("string", "app_name", "\"口袋大龙虾测试版\"")
+            resValue("string", "pocket_lobster_app_name", "\"口袋大龙虾测试版\"")
         }
     }
 
@@ -147,4 +150,5 @@ dependencies {
     implementation("org.nanohttpd:nanohttpd:2.3.1")
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("org.tukaani:xz:1.10")
+    testImplementation("junit:junit:4.13.2")
 }

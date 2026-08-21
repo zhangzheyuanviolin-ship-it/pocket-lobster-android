@@ -10,6 +10,13 @@ val openMinisRoot = rootProject.file("../third_party/OpenMinis")
 val openMinisAndroid = openMinisRoot.resolve("src/android/app")
 val generatedAssets = layout.buildDirectory.dir("generated/openminis-assets")
 val generatedSources = layout.buildDirectory.dir("generated/openminis-sources")
+val generatedResources = layout.buildDirectory.dir("generated/openminis-resources")
+
+fun File.replaceRequired(oldValue: String, newValue: String) {
+    val source = readText()
+    check(source.contains(oldValue)) { "OpenMinis integration anchor missing in $path: $oldValue" }
+    writeText(source.replace(oldValue, newValue))
+}
 
 android {
     namespace = "com.openminis.app"
@@ -45,7 +52,7 @@ android {
     sourceSets.getByName("main") {
         java.srcDir(generatedSources)
         java.srcDir("src/main/java")
-        res.srcDir(openMinisAndroid.resolve("src/main/res"))
+        res.srcDir(generatedResources)
         assets.srcDir(openMinisAndroid.resolve("src/main/assets"))
         assets.srcDir(generatedAssets)
         jniLibs.srcDir(openMinisAndroid.resolve("src/main/jniLibs"))
@@ -81,16 +88,94 @@ val stageOpenMinisSharedAssets by tasks.registering(Copy::class) {
     into(generatedAssets.map { it.dir("bashism") })
 }
 
+val stageOpenMinisResources by tasks.registering(Sync::class) {
+    from(openMinisAndroid.resolve("src/main/res"))
+    into(generatedResources)
+    doLast {
+        var declarationCount = 0
+        generatedResources.get().asFile.walkTopDown()
+            .filter { it.isFile && it.extension == "xml" }
+            .forEach { file ->
+                val source = file.readText()
+                val transformed = source
+                    .replace("name=\"app_name\"", "name=\"minis_app_name\"")
+                    .replace("@string/app_name", "@string/minis_app_name")
+                if (transformed != source) {
+                    declarationCount += "name=\"app_name\"".toRegex().findAll(source).count()
+                    file.writeText(transformed)
+                }
+            }
+        check(declarationCount > 0) { "OpenMinis app_name resource anchor missing" }
+    }
+}
+
 val stageOpenMinisSources by tasks.registering(Sync::class) {
     from(openMinisAndroid.resolve("src/main/java")) {
         exclude("com/openminis/app/ui/settings/CheckUpdateSection.kt")
     }
     into(generatedSources)
+    doLast {
+        generatedSources.get().file("com/openminis/app/MinisApp.kt").asFile.replaceRequired(
+            "class MinisApp : Application(), ImageLoaderFactory {",
+            """open class MinisApp : Application(), ImageLoaderFactory {
+    protected open fun shouldInitializeMinisRuntime(): Boolean = true""",
+        )
+        generatedSources.get().file("com/openminis/app/MinisApp.kt").asFile.replaceRequired(
+            """    override fun onCreate() {
+        super.onCreate()""",
+            """    override fun onCreate() {
+        super.onCreate()
+        if (!shouldInitializeMinisRuntime()) return""",
+        )
+        generatedSources.get().file("com/openminis/app/sandbox/NativeOffload.kt").asFile.apply {
+            replaceRequired(
+                "private const val SOCKET_NAME = \"native-offload\"",
+                "private val SOCKET_NAME = \"native-offload-${'$'}{android.os.Process.myUid()}\"",
+            )
+            replaceRequired(
+                "const val socketName: String = SOCKET_NAME",
+                "val socketName: String = SOCKET_NAME",
+            )
+        }
+        var appNameReferenceCount = 0
+        generatedSources.get().asFile.walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .forEach { file ->
+                val source = file.readText()
+                appNameReferenceCount += "R.string.app_name".toRegex().findAll(source).count()
+                if ("R.string.app_name" in source) {
+                    file.writeText(source.replace("R.string.app_name", "R.string.minis_app_name"))
+                }
+            }
+        check(appNameReferenceCount > 0) { "OpenMinis app_name source anchor missing" }
+    }
+}
+
+val verifyOpenMinisIntegrationSources by tasks.registering {
+    dependsOn(stageOpenMinisSources)
+    dependsOn(stageOpenMinisResources)
+    doLast {
+        val minisApp = generatedSources.get().file("com/openminis/app/MinisApp.kt").asFile.readText()
+        val nativeOffload = generatedSources.get()
+            .file("com/openminis/app/sandbox/NativeOffload.kt").asFile.readText()
+        check("open class MinisApp" in minisApp)
+        check("if (!shouldInitializeMinisRuntime()) return" in minisApp)
+        check("native-offload-${'$'}{android.os.Process.myUid()}" in nativeOffload)
+        check("const val socketName" !in nativeOffload)
+        check(generatedSources.get().asFile.walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .none { "R.string.app_name" in it.readText() })
+        check(generatedResources.get().asFile.walkTopDown()
+            .filter { it.isFile && it.extension == "xml" }
+            .none { "name=\"app_name\"" in it.readText() || "@string/app_name" in it.readText() })
+    }
 }
 
 tasks.named("preBuild") {
     dependsOn(stageOpenMinisSharedAssets)
     dependsOn(stageOpenMinisSources)
+    dependsOn(stageOpenMinisResources)
+    dependsOn(verifyOpenMinisIntegrationSources)
 }
 
 dependencies {

@@ -120,7 +120,7 @@ jobs:
             APK_NAME="pocket-lobster-test.apk"
             PACKAGE_ID="com.codex.mobile.pocketlobster.test"
           else
-            ./gradlew assembleBetaDebug
+            ./gradlew :openminis:verifyOpenMinisIntegrationSources :app:testBetaDebugUnitTest assembleBetaDebug
             APK_SOURCE="app/build/outputs/apk/beta/debug/app-beta-debug.apk"
             APK_NAME="pocket-lobster-beta.apk"
             PACKAGE_ID="com.codex.mobile.pocketlobster.beta"
@@ -154,14 +154,33 @@ jobs:
             exit 1
           fi
           APK_PATH="android/app/build/outputs/apk/debug/$APK_NAME"
-          BADGING="$("$AAPT_BIN" dump badging "$APK_PATH" | head -n 1)"
-          echo "$BADGING"
-          echo "$BADGING" | grep -F "name='$EXPECTED_PACKAGE_ID'"
-          echo "$BADGING" | grep -F "versionCode='304'"
+          BADGING="$("$AAPT_BIN" dump badging "$APK_PATH")"
+          PACKAGE_LINE="$(echo "$BADGING" | head -n 1)"
+          echo "$PACKAGE_LINE"
+          echo "$PACKAGE_LINE" | grep -F "name='$EXPECTED_PACKAGE_ID'"
+          echo "$PACKAGE_LINE" | grep -F "versionCode='305'"
+          test "$(echo "$BADGING" | grep -c '^launchable-activity:')" -eq 1
+          echo "$BADGING" | grep -F "launchable-activity: name='com.codex.mobile.MainActivity'"
+          if echo "$BADGING" | grep -E "^application-label[^:]*:'Minis'$"; then
+            echo "OpenMinis must not replace the Pocket Lobster launcher label"
+            exit 1
+          fi
           if [ "$RELEASE_CHANNEL" = "beta" ]; then
-            echo "$BADGING" | grep -F "versionName='1.0.63-codex-cli-0.147.0-gpt-5.6-openminis-1.12-runtime-v304-beta'"
+            echo "$PACKAGE_LINE" | grep -F "versionName='1.0.64-codex-cli-0.147.0-gpt-5.6-openminis-1.12-isolated-runtime-v305-beta'"
+            echo "$BADGING" | grep -F "application-label:'口袋大龙虾测试版'"
             test "$EXPECTED_PACKAGE_ID" = "com.codex.mobile.pocketlobster.beta"
           fi
+
+      - name: Verify Pocket Lobster and OpenMinis process isolation
+        env:
+          APK_NAME: ${{ steps.build_apk.outputs.apk_name }}
+        run: |
+          AAPT_BIN="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          APK_PATH="android/app/build/outputs/apk/debug/$APK_NAME"
+          "$AAPT_BIN" dump xmltree "$APK_PATH" AndroidManifest.xml > /tmp/merged-manifest.txt
+          grep -F 'com.codex.mobile.PocketLobsterApplication' /tmp/merged-manifest.txt
+          grep -F 'com.codex.mobile.MainActivity' /tmp/merged-manifest.txt
+          test "$(grep -c ':minis' /tmp/merged-manifest.txt)" -ge 10
 
       - name: Verify OpenMinis runtime payload
         env:

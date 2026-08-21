@@ -37,12 +37,26 @@ grep -q '"officialChatRuntime": true' "$MANIFEST"
 grep -q '"legacyOpenClawRuntimeBundled": false' "$MANIFEST"
 grep -q 'golden-beta-v299-20260820' "$MANIFEST"
 grep -q 'implementation(project(":openminis"))' "$ROOT_DIR/android/app/build.gradle.kts"
-grep -q 'versionCode = 304' "$ROOT_DIR/android/app/build.gradle.kts"
+grep -q 'versionCode = 305' "$ROOT_DIR/android/app/build.gradle.kts"
 grep -q 'third_party/OpenMinis/src/android/app/src/main/assets' "$ROOT_DIR/android/app/build.gradle.kts"
 grep -q 'MinisLauncher.openHome' "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/AgentHubActivity.kt"
 grep -q 'minis://settings/providers' "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/MinisLauncher.kt"
-grep -q 'com.openminis.app.MinisApp' "$ROOT_DIR/android/app/src/main/AndroidManifest.xml"
+grep -q 'android:name=".PocketLobsterApplication"' "$ROOT_DIR/android/app/src/main/AndroidManifest.xml"
+grep -q 'android:label="@string/pocket_lobster_app_name"' "$ROOT_DIR/android/app/src/main/AndroidManifest.xml"
+grep -q 'android:icon="@mipmap/pocket_lobster_launcher"' "$ROOT_DIR/android/app/src/main/AndroidManifest.xml"
+grep -q 'pocket_lobster_app_name' "$ROOT_DIR/android/app/build.gradle.kts"
+grep -q 'class PocketLobsterApplication : MinisApp()' \
+  "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt"
+grep -q 'processName == "\$packageName:minis"' \
+  "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt"
+grep -q '口袋大龙虾测试版-启动诊断.jsonl' \
+  "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt"
+grep -q 'open class MinisApp' "$ROOT_DIR/android/openminis/build.gradle.kts"
+grep -q 'native-offload-.*Process.myUid' "$ROOT_DIR/android/openminis/build.gradle.kts"
+grep -q 'minis_app_name' "$ROOT_DIR/android/openminis/build.gradle.kts"
+test "$(grep -c 'android:process=":minis"' "$ROOT_DIR/android/openminis/src/main/AndroidManifest.xml")" -eq 10
 test -f "$ROOT_DIR/android/openminis/build.gradle.kts"
+test -f "$ROOT_DIR/android/app/src/main/res/mipmap-anydpi-v26/pocket_lobster_launcher.xml"
 test -f "$ROOT_DIR/android/app/src/main/jniLibs/arm64-v8a/libubuntu_proot.so"
 
 printf 'OpenMinis integration verified: tag=%s commit=%s runtime_enabled=true\n' "$actual_tag" "$actual_commit"

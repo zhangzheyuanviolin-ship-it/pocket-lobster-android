@@ -57,7 +57,6 @@
     </queries>
 
     <application
-        android:name="com.openminis.app.MinisApp"
         android:extractNativeLibs="true"
         android:largeHeap="true"
         android:networkSecurityConfig="@xml/network_security_config"
@@ -68,6 +67,7 @@
             android:name="com.openminis.app.MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:process=":minis"
             android:theme="@style/Theme.Minis"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -87,6 +87,7 @@
         <activity
             android:name="com.openminis.app.share.ShareReceiverActivity"
             android:exported="true"
+            android:process=":minis"
             android:theme="@style/Theme.Minis">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
@@ -123,6 +124,7 @@
             android:exported="true"
             android:label="@string/webapp_activity_label"
             android:launchMode="singleInstance"
+            android:process=":minis"
             android:taskAffinity=""
             android:theme="@style/Theme.Minis">
             <intent-filter>
@@ -135,6 +137,7 @@
             android:name="com.openminis.app.auth.OAuthRedirectActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:process=":minis"
             android:theme="@android:style/Theme.NoDisplay">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -177,20 +180,29 @@
         <service
             android:name="com.openminis.app.service.AgentForegroundService"
             android:exported="false"
+            android:process=":minis"
             android:foregroundServiceType="mediaPlayback" />
         <receiver
             android:name="com.openminis.app.offload.AlarmReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:process=":minis">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
-        <receiver android:name="com.openminis.app.offload.ScheduledNotificationReceiver" android:exported="false" />
-        <receiver android:name="com.openminis.app.scheduled.ScheduledTaskAlarmReceiver" android:exported="false" />
+        <receiver
+            android:name="com.openminis.app.offload.ScheduledNotificationReceiver"
+            android:exported="false"
+            android:process=":minis" />
+        <receiver
+            android:name="com.openminis.app.scheduled.ScheduledTaskAlarmReceiver"
+            android:exported="false"
+            android:process=":minis" />
         <service
             android:name="com.openminis.app.offload.MinisNotificationListenerService"
             android:exported="true"
             android:label="Minis"
+            android:process=":minis"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
@@ -200,6 +212,7 @@
             android:name="com.openminis.app.accessibility.MinisAccessibilityService"
             android:exported="true"
             android:label="@string/a11y_service_label"
+            android:process=":minis"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
