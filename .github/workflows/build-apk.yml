@@ -215,6 +215,7 @@ jobs:
         with:
           tag_name: v${{ github.run_number }}-${{ steps.build_apk.outputs.release_channel }}
           name: "Pocket Lobster ${{ steps.build_apk.outputs.release_channel }} v${{ github.run_number }} (${{ github.ref_name }})"
+          target_commitish: ${{ github.sha }}
           body: |
             🦞 **Pocket Lobster** — multi-agent AI on Android
 
