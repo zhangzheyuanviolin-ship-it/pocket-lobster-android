@@ -45,8 +45,8 @@ android {
         // Android 10+ (targetSdk 29+) enforces W^X which blocks this via SELinux.
         // Termux (F-Droid) uses the same approach.
         targetSdk = 28
-        versionCode = 302
-        versionName = "1.0.61-codex-cli-0.147.0-gpt-5.6-openminis-1.12-runtime-v302"
+        versionCode = 303
+        versionName = "1.0.62-codex-cli-0.147.0-gpt-5.6-openminis-1.12-runtime-v303"
     }
 
     flavorDimensions += "channel"
@@ -125,7 +125,12 @@ android {
 
     // Don't compress bootstrap zip or server bundle in assets
     androidResources {
-        noCompress += listOf("zip", "tar", "node")
+        noCompress += listOf("zip", "tar", "tar.gz", "node", "proot-aarch64")
+    }
+
+    sourceSets.getByName("main") {
+        // Library assets were not propagated into the final APK on AGP 8.7.
+        assets.srcDir(rootProject.file("../third_party/OpenMinis/src/android/app/src/main/assets"))
     }
 
 }

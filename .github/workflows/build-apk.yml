@@ -151,9 +151,9 @@ jobs:
           BADGING="$("$AAPT_BIN" dump badging "$APK_PATH" | head -n 1)"
           echo "$BADGING"
           echo "$BADGING" | grep -F "name='$EXPECTED_PACKAGE_ID'"
-          echo "$BADGING" | grep -F "versionCode='302'"
+          echo "$BADGING" | grep -F "versionCode='303'"
           if [ "$RELEASE_CHANNEL" = "beta" ]; then
-            echo "$BADGING" | grep -F "versionName='1.0.61-codex-cli-0.147.0-gpt-5.6-openminis-1.12-runtime-v302-beta'"
+            echo "$BADGING" | grep -F "versionName='1.0.62-codex-cli-0.147.0-gpt-5.6-openminis-1.12-runtime-v303-beta'"
             test "$EXPECTED_PACKAGE_ID" = "com.codex.mobile.pocketlobster.beta"
           fi
 
