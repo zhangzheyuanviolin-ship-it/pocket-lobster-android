@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 1,
-  "integrationPhase": "foundation",
-  "runtimeEnabled": false,
+  "schemaVersion": 2,
+  "integrationPhase": "interactive-runtime",
+  "runtimeEnabled": true,
   "upstreamRepository": "https://github.com/OpenMinis/OpenMinis",
   "upstreamTag": "1.12",
   "upstreamCommit": "09fc199928de0f26685e766c34e6d541c7a69e5a",
@@ -15,6 +15,14 @@
     "minSdk": 26,
     "ndk": "28.0.12433566",
     "cmake": "3.22.1"
+  },
+  "integratedCapabilities": {
+    "officialProviderManagement": true,
+    "officialChatRuntime": true,
+    "visibleBrowser": true,
+    "alpineTerminal": true,
+    "legacyOpenClawRuntimeBundled": false,
+    "hostManagedUpdates": true
   },
   "goldenRollback": {
     "tag": "golden-beta-v299-20260820",

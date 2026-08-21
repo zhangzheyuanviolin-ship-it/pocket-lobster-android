@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          submodules: true
+          submodules: recursive
 
       - name: Verify OpenMinis foundation baseline
         run: bash scripts/verify-openminis-baseline.sh
@@ -50,64 +50,6 @@ jobs:
       - name: Download Termux bootstrap
         run: bash android/scripts/download-bootstrap.sh
 
-      - name: Download offline OpenClaw runtime assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p android/app/src/main/assets/runtime
-          # Keep bundled runtime files committed in repo (e.g. Ubuntu rootfs/proot).
-          # Only refresh OpenClaw-specific blobs downloaded from release.
-          rm -f android/app/src/main/assets/runtime/openclaw-runtime-2026.3.2.tar
-          rm -f android/app/src/main/assets/runtime/openclaw_installed_2026_3_2.tar.gz
-          rm -f android/app/src/main/assets/runtime/davey.android-arm64.node
-          python3 - <<'PY'
-          import json
-          import os
-          import urllib.request
-
-          repo = os.environ["GITHUB_REPOSITORY"]
-          token = os.environ["GH_TOKEN"]
-          target_dir = "android/app/src/main/assets/runtime"
-          tag = "runtime-assets-2026-03-19-r1"
-          wanted = {
-              "openclaw_installed_2026_3_2.tar.gz",
-              "davey.android-arm64.node",
-          }
-
-          api_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
-          req = urllib.request.Request(
-              api_url,
-              headers={
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": f"Bearer {token}",
-              },
-          )
-          with urllib.request.urlopen(req) as resp:
-              release = json.load(resp)
-
-          assets = {asset["name"]: asset for asset in release.get("assets", [])}
-          missing = sorted(wanted - set(assets))
-          if missing:
-              raise SystemExit(f"Missing runtime release assets: {', '.join(missing)}")
-
-          for name in sorted(wanted):
-              asset = assets[name]
-              out_path = os.path.join(target_dir, name)
-              download_req = urllib.request.Request(
-                  asset["url"],
-                  headers={
-                      "Accept": "application/octet-stream",
-                      "Authorization": f"Bearer {token}",
-                  },
-              )
-              with urllib.request.urlopen(download_req) as resp, open(out_path, "wb") as out:
-                  out.write(resp.read())
-              print(f"Downloaded {name} -> {out_path}")
-          PY
-          mv android/app/src/main/assets/runtime/openclaw_installed_2026_3_2.tar.gz \
-            android/app/src/main/assets/runtime/openclaw-runtime-2026.3.2.tar
-          ls -lh android/app/src/main/assets/runtime
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -119,6 +61,18 @@ jobs:
 
       - name: Prepare OpenMinis Android toolchain
         run: sdkmanager "platforms;android-36" "ndk;28.0.12433566" "cmake;3.22.1"
+
+      - name: Build OpenMinis Alpine runtime
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.0.12433566"
+          cd third_party/OpenMinis
+          ./deps/build_proot.sh
+          ./scripts/prepare_android_sandbox.sh
+          test -s src/android/app/src/main/assets/alpine-minirootfs.tar.gz
+          test -x src/android/app/src/main/assets/proot-aarch64
+          test -x src/android/app/src/main/jniLibs/arm64-v8a/libproot.so
+          test -x src/android/app/src/main/jniLibs/arm64-v8a/libproot-loader.so
+          test -x src/android/app/src/main/jniLibs/arm64-v8a/libproot-loader32.so
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -197,10 +151,28 @@ jobs:
           BADGING="$("$AAPT_BIN" dump badging "$APK_PATH" | head -n 1)"
           echo "$BADGING"
           echo "$BADGING" | grep -F "name='$EXPECTED_PACKAGE_ID'"
-          echo "$BADGING" | grep -F "versionCode='300'"
+          echo "$BADGING" | grep -F "versionCode='301'"
           if [ "$RELEASE_CHANNEL" = "beta" ]; then
-            echo "$BADGING" | grep -F "versionName='1.0.59-codex-cli-0.147.0-gpt-5.6-openminis-1.12-foundation-v300-beta'"
+            echo "$BADGING" | grep -F "versionName='1.0.60-codex-cli-0.147.0-gpt-5.6-openminis-1.12-runtime-v301-beta'"
             test "$EXPECTED_PACKAGE_ID" = "com.codex.mobile.pocketlobster.beta"
+          fi
+
+      - name: Verify OpenMinis runtime payload
+        env:
+          APK_NAME: ${{ steps.build_apk.outputs.apk_name }}
+        run: |
+          APK_PATH="android/app/build/outputs/apk/debug/$APK_NAME"
+          unzip -l "$APK_PATH" > /tmp/apk-entries.txt
+          grep -F "assets/alpine-minirootfs.tar.gz" /tmp/apk-entries.txt
+          grep -F "assets/proot-aarch64" /tmp/apk-entries.txt
+          grep -F "lib/arm64-v8a/libproot.so" /tmp/apk-entries.txt
+          grep -F "lib/arm64-v8a/libproot-loader.so" /tmp/apk-entries.txt
+          grep -F "lib/arm64-v8a/libproot-loader32.so" /tmp/apk-entries.txt
+          grep -F "lib/arm64-v8a/libubuntu_proot.so" /tmp/apk-entries.txt
+          grep -F "lib/arm64-v8a/libpty_bridge.so" /tmp/apk-entries.txt
+          if grep -F "assets/runtime/openclaw-runtime" /tmp/apk-entries.txt; then
+            echo "Legacy OpenClaw runtime must not ship in the Minis replacement build"
+            exit 1
           fi
 
       - name: Verify APK signature
@@ -246,7 +218,7 @@ jobs:
           body: |
             🦞 **Pocket Lobster** — multi-agent AI on Android
 
-            📱 Install the APK on any ARM64 Android 7.0+ device. No root required.
+            📱 Install the APK on any ARM64 Android 8.0+ device. No root required.
 
             Source and license: GNU GPL v3. OpenMinis foundation is pinned in the repository.
 

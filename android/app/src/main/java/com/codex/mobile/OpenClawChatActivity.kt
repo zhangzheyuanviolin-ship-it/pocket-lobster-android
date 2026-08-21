@@ -123,7 +123,11 @@ class OpenClawChatActivity : AppCompatActivity() {
         btnHeartbeat.setOnClickListener { onHeartbeatPressed() }
         btnAbort.setOnClickListener { onAbortPressed() }
 
-        btnTabOpenClaw.isEnabled = false
+        btnTabOpenClaw.isEnabled = true
+        btnTabOpenClaw.setOnClickListener {
+            MinisLauncher.openHome(this)
+            finish()
+        }
         btnTabCodex.setOnClickListener {
             startActivity(
                 Intent(this, MainActivity::class.java).apply {

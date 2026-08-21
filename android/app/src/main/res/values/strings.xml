@@ -28,7 +28,8 @@
     <string name="permission_center_button_desc">打开权限管理中心</string>
     <string name="agent_hub_title">口袋大龙虾</string>
     <string name="agent_hub_subtitle">请选择要进入的智能体聊天入口，也可以先进入权限管理中心完成组件安装与授权。</string>
-    <string name="agent_hub_openclaw">OpenClaw 聊天</string>
+    <string name="agent_hub_openclaw">Minis 聊天</string>
+    <string name="model_manager_minis_button_text">Minis 模型提供商管理</string>
     <string name="agent_hub_codex">Codex 聊天</string>
     <string name="agent_hub_claude">Claude Code 聊天</string>
     <string name="agent_hub_permission_center">权限管理中心</string>
@@ -46,7 +47,7 @@
     <string name="conversation_manager_button_desc">打开对话管理页面</string>
     <string name="conversation_source_all">全部会话</string>
     <string name="conversation_source_codex">Codex 会话</string>
-    <string name="conversation_source_openclaw">大龙虾会话</string>
+    <string name="conversation_source_openclaw">OpenClaw 历史会话</string>
     <string name="conversation_source_claude">Claude Code 会话</string>
     <string name="conversation_state_active">活跃</string>
     <string name="conversation_state_archived">归档</string>
@@ -72,7 +73,7 @@
     <string name="conversation_update_failed">更新失败。</string>
     <string name="conversation_delete_failed">删除失败。</string>
     <string name="model_manager_title">模型管理</string>
-    <string name="model_manager_subtitle">支持令牌鉴权与 API 密钥两种模式，并可快速切换当前主模型。</string>
+    <string name="model_manager_subtitle">分别进入 Codex、Minis 与 Claude Code 的模型提供商管理页面。</string>
     <string name="model_manager_button_text">模型管理</string>
     <string name="model_manager_button_desc">打开模型管理页面</string>
     <string name="codex_skills_manager_button_text">Skills 管理</string>
@@ -187,8 +188,8 @@
     <string name="gateway_toggle_disconnect_failed">网关断开失败。</string>
     <string name="back_to_codex_button_text">返回聊天页</string>
     <string name="back_to_codex_button_desc">返回 Codex 聊天主页面</string>
-    <string name="openclaw_new_chat_button_text">进入新版聊天页</string>
-    <string name="openclaw_new_chat_button_desc">切换到新版大龙虾聊天页面</string>
+    <string name="openclaw_new_chat_button_text">新建 Minis 会话</string>
+    <string name="openclaw_new_chat_button_desc">进入 Minis 并新建会话</string>
     <string name="chat_send_button_text">发送</string>
     <string name="chat_new_session_button_text">新建会话</string>
     <string name="prompt_add_button_text">新建提示词</string>

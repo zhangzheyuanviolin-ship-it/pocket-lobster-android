@@ -3,4 +3,13 @@
     <cache-path
         name="attachments"
         path="attachments/" />
+    <cache-path name="shared" path="shared/" />
+    <cache-path name="rpc-attachments" path="rpc-attachments/" />
+    <cache-path name="share" path="share/" />
+    <files-path name="camera-photos" path="camera-photos/" />
+    <files-path name="rootfs" path="alpine-rootfs/" />
+    <files-path name="sessions" path="minis-sessions/" />
+    <files-path name="global" path="minis-global/" />
+    <files-path name="updates" path="updates/" />
+    <files-path name="logs" path="logs/" />
 </paths>

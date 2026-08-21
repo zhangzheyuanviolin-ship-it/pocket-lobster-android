@@ -58,6 +58,7 @@ class ModelManagerActivity : AppCompatActivity() {
     private lateinit var btnTestConnection: Button
     private lateinit var btnFetchModels: Button
     private lateinit var btnCodexModelManager: Button
+    private lateinit var btnMinisModelManager: Button
     private lateinit var btnClaudeModelManager: Button
     private lateinit var tvCurrentModel: TextView
     private lateinit var progressBar: ProgressBar
@@ -84,6 +85,7 @@ class ModelManagerActivity : AppCompatActivity() {
         btnTestConnection = findViewById(R.id.btnModelTestConnection)
         btnFetchModels = findViewById(R.id.btnModelFetchModels)
         btnCodexModelManager = findViewById(R.id.btnCodexModelManager)
+        btnMinisModelManager = findViewById(R.id.btnMinisModelManager)
         btnClaudeModelManager = findViewById(R.id.btnClaudeModelManager)
         tvCurrentModel = findViewById(R.id.tvCurrentModel)
         progressBar = findViewById(R.id.progressModel)
@@ -97,6 +99,9 @@ class ModelManagerActivity : AppCompatActivity() {
         btnCodexModelManager.setOnClickListener {
             startActivity(android.content.Intent(this, CodexModelManagerActivity::class.java))
         }
+        btnMinisModelManager.setOnClickListener {
+            MinisLauncher.openProviders(this)
+        }
         btnClaudeModelManager.setOnClickListener {
             startActivity(
                 android.content.Intent(this, AgentModelManagerActivity::class.java).apply {
@@ -104,11 +109,16 @@ class ModelManagerActivity : AppCompatActivity() {
                 },
             )
         }
+
+        findViewById<View>(R.id.layoutModelActions).visibility = View.GONE
+        tvCurrentModel.visibility = View.GONE
+        progressBar.visibility = View.GONE
+        tvStatus.visibility = View.GONE
+        listView.visibility = View.GONE
     }
 
     override fun onResume() {
         super.onResume()
-        loadModelsAndConfig()
     }
 
     private fun loadModelsAndConfig() {

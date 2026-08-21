@@ -202,15 +202,10 @@ class MainActivity : AppCompatActivity() {
             updateUiForCurrentTarget()
         }
         openClawNewChatButton.setOnClickListener {
-            currentUiTarget = OPEN_TARGET_OPENCLAW_SESSION
-            webView.loadUrl(buildOpenClawChatPageUrl(null))
-            updateUiForCurrentTarget()
+            MinisLauncher.openNewChat(this)
         }
         tabOpenClawButton.setOnClickListener {
-            currentUiTarget = OPEN_TARGET_OPENCLAW_SESSION
-            val sessionKey = extractSessionFromCurrentUrl()
-            webView.loadUrl(buildOpenClawChatPageUrl(sessionKey))
-            updateUiForCurrentTarget()
+            MinisLauncher.openHome(this)
         }
         tabCodexButton.setOnClickListener {
             currentUiTarget = OPEN_TARGET_CODEX_HOME
@@ -640,7 +635,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun runSetup() {
         val explicitTarget = hasExplicitTargetIntent(intent)
-        val explicitOpenClawTarget = isOpenClawTargetIntent(intent)
         if (explicitTarget) {
             updateStatus("Checking local server…")
             val warmReady = serverManager.waitForServer(timeoutMs = 3500)
@@ -650,19 +644,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 return
             }
-            if (explicitOpenClawTarget && isOpenClawLightweightOnlyMode()) {
-                val quickStarted = runOpenClawLightweightQuickStart()
-                if (quickStarted) {
-                    runOnUiThread {
-                        showReadyUi(explicitTarget = true)
-                    }
-                    return
-                }
-                throw RuntimeException("OpenClaw local service did not start in lightweight mode")
-            }
         }
-
-        val hadOpenClawAtStart = serverManager.isOpenClawInstalled()
 
         // Step 1: Extract bootstrap
         if (!BootstrapInstaller.isBootstrapInstalled(this)) {
@@ -722,42 +704,9 @@ class MainActivity : AppCompatActivity() {
         // Step 2c: Install bionic-compat.js (Android platform shim for Node.js)
         serverManager.ensureBionicCompat()
 
-        // Step 2d: Install OpenClaw from offline runtime assets
-        var openClawAvailable = serverManager.isOpenClawInstalled()
-        if (!openClawAvailable) {
-            updateStatus("Installing OpenClaw (offline runtime)…", "Using bundled runtime assets")
-            val offlineOk = OfflineOpenClawRuntimeInstaller.install(this) { msg -> updateDetail(msg) }
-            if (!offlineOk) {
-                throw RuntimeException("Failed to install bundled OpenClaw runtime")
-            }
+        updateStatus("Minis runtime integrated", "Open Minis 1.12 official Android runtime")
 
-            updateStatus("Preparing OpenClaw runtime…")
-            val prepared = serverManager.prepareOfflineOpenClawRuntime { msg -> updateDetail(msg) }
-            if (!prepared) {
-                throw RuntimeException("Failed to prepare bundled OpenClaw runtime")
-            }
-            openClawAvailable = serverManager.isOpenClawInstalled()
-        }
-        updateStatus("OpenClaw runtime ready")
-
-        if (openClawAvailable) {
-            updateStatus("Checking OpenClaw version…")
-            val versionOk = serverManager.ensureOpenClawVersion { msg -> updateDetail(msg) }
-            if (!versionOk) {
-                throw RuntimeException("Failed to align bundled OpenClaw runtime")
-            }
-            if (openClawAvailable) {
-                updateStatus("Validating OpenClaw runtime…")
-                val runtimeReady = serverManager.ensureOpenClawRuntimeReady { msg -> updateDetail(msg) }
-                if (!runtimeReady) {
-                    throw RuntimeException("Bundled OpenClaw runtime failed validation")
-                } else {
-                    updateStatus("OpenClaw runtime ready")
-                }
-            }
-        }
-
-        // Step 3: Codex is optional on first run. Do not block OpenClaw-only users.
+        // Step 3: Codex is optional on first run. Do not block Minis-only users.
         val codexCliInstalled = serverManager.isCodexInstalled()
         if (codexCliInstalled) {
             serverManager.ensureCodexWrapperScript()
@@ -774,7 +723,7 @@ class MainActivity : AppCompatActivity() {
         when {
             codexCliInstalled && codexBinaryInstalled -> updateStatus("Codex ready")
             codexCliInstalled -> updateStatus("Codex native binary not installed", "You can complete it later in Permission Center")
-            else -> updateStatus("Codex optional install skipped", "OpenClaw mode is ready")
+            else -> updateStatus("Codex optional install skipped", "Minis mode is ready")
         }
 
         // Step 3c: Write full-access config, create default workspace, and bridge shared storage paths
@@ -791,30 +740,18 @@ class MainActivity : AppCompatActivity() {
             updateStatus("Network proxy unavailable", "Continuing in reduced mode")
         }
 
-        // Step 5: Codex auth is optional. Do not block startup for OpenClaw-only users.
+        // Step 5: Codex auth is optional. Do not block startup for Minis-only users.
         if (codexCliInstalled && codexBinaryInstalled) {
             updateStatus("Checking Codex authentication…")
             val codexLoggedIn = serverManager.isLoggedIn()
             if (!codexLoggedIn) {
-                updateStatus("Codex not logged in", "Continuing in OpenClaw mode")
+                updateStatus("Codex not logged in", "Continuing in Minis mode")
             } else {
                 // Keep startup fast and non-blocking even when Codex network is unavailable.
                 updateStatus("Codex authenticated")
             }
         } else {
-            updateStatus("Codex not installed", "Continuing in OpenClaw mode")
-        }
-
-        // Step 7: Prepare OpenClaw local runtime and force-disconnect gateway to
-        // avoid session lock contention in native chat mode.
-        if (openClawAvailable && !isOpenClawLightweightOnlyMode()) {
-            val isFreshOpenClawInstall = !hadOpenClawAtStart
-            if (isFreshOpenClawInstall) {
-                updateStatus("Finalizing OpenClaw…", "Preparing gateway runtime")
-            } else {
-                updateStatus("Refreshing OpenClaw runtime…", "Switching to gateway mode")
-            }
-            startOpenClawServicesSync()
+            updateStatus("Codex not installed", "Continuing in Minis mode")
         }
 
         // Step 8: Start web server
@@ -930,6 +867,9 @@ class MainActivity : AppCompatActivity() {
         val target = intent?.getStringExtra(EXTRA_OPEN_TARGET)?.trim().orEmpty()
         val sessionId = intent?.getStringExtra(EXTRA_SESSION_KEY)?.trim().orEmpty()
         when (target) {
+            OPEN_TARGET_OPENCLAW_SESSION -> {
+                MinisLauncher.openHome(this)
+            }
             OPEN_TARGET_CLAUDE_SESSION -> {
                 startActivity(
                     Intent(this, CliAgentChatActivity::class.java).apply {

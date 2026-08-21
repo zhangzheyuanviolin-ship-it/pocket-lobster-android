@@ -36,17 +36,17 @@ val hasFixedSigning =
 
 android {
     namespace = "com.codex.mobile"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.codex.mobile.pocketlobster"
-        minSdk = 24
+        minSdk = 26
         // targetSdk 28 allows executing binaries from app data directory.
         // Android 10+ (targetSdk 29+) enforces W^X which blocks this via SELinux.
         // Termux (F-Droid) uses the same approach.
         targetSdk = 28
-        versionCode = 300
-        versionName = "1.0.59-codex-cli-0.147.0-gpt-5.6-openminis-1.12-foundation-v300"
+        versionCode = 301
+        versionName = "1.0.60-codex-cli-0.147.0-gpt-5.6-openminis-1.12-runtime-v301"
     }
 
     flavorDimensions += "channel"
@@ -130,6 +130,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":openminis"))
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.webkit:webkit:1.12.1")

@@ -230,12 +230,7 @@ class CliAgentChatActivity : AppCompatActivity() {
         }
 
         btnOpenClaw.setOnClickListener {
-            startActivity(
-                Intent(this, MainActivity::class.java).apply {
-                    putExtra(MainActivity.EXTRA_OPEN_TARGET, MainActivity.OPEN_TARGET_OPENCLAW_SESSION)
-                },
-            )
-            finish()
+            MinisLauncher.openHome(this)
         }
         btnCodex.setOnClickListener {
             startActivity(

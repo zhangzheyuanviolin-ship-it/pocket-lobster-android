@@ -2,15 +2,15 @@
 
 ## 中文介绍
 
-口袋大龙虾是一款运行在普通 Android 手机上的多智能体原生 AI 助手应用。当前稳定运行 Codex、Claude Code 与 OpenClaw，并已从 v300 开始以可回滚方式接入 OpenMinis 1.12 上游源码，为后续使用 Minis 替代 OpenClaw、共享可视浏览器和增加 Alpine Linux 终端建立基础。
+口袋大龙虾是一款运行在普通 Android 手机上的多智能体原生 AI 助手应用。v301 测试版将 OpenMinis 1.12 官方安卓运行时接入应用并替代可见的 OpenClaw 入口，提供官方模型提供商管理、真实聊天、可视浏览器和 Alpine Linux 终端；Codex 与 Claude Code 保持原有独立运行链路。
 
 ## English Overview
 
-Pocket Lobster is a multi-agent native AI assistant for ordinary Android phones. The current stable product runs Codex, Claude Code, and OpenClaw. Starting with v300, the repository pins OpenMinis 1.12 as a reversible upstream foundation for replacing OpenClaw with Minis, sharing a visible browser, and adding an Alpine Linux terminal in later phases.
+Pocket Lobster is a multi-agent native AI assistant for ordinary Android phones. The v301 beta embeds the official OpenMinis 1.12 Android runtime and replaces the visible OpenClaw entry points with official provider management, real chat, a visible browser, and an Alpine Linux terminal. Codex and Claude Code retain their existing independent runtime paths.
 
 ## 当前核心能力 Core Capabilities
 
-- 多智能体协作：Codex、Claude Code 与 OpenClaw 当前保持稳定，Minis 替换工作按独立测试阶段推进。 English: Multi-agent collaboration with Codex, Claude Code, and OpenClaw kept stable while the Minis replacement proceeds through isolated test phases.
+- 多智能体协作：Codex、Claude Code 与 Minis 在同一测试版中提供独立入口和运行时。 English: Codex, Claude Code, and Minis expose independent entry points and runtimes in the beta application.
 - 双终端环境：同时提供安卓原生终端与完整 Ubuntu Linux 开发环境。 English: Dual terminal environments, including an Android-native terminal and a full Ubuntu Linux development runtime.
 - 系统级链路：通过 Shizuku 打通 system shell，并具备 UI 自动化基础能力。 English: A system-level execution path through a Shizuku-backed system shell, with a foundation for UI automation.
 - 全局文件访问：支持共享存储全局文件处理与结果直接交付。 English: Global shared-storage file access so agents can read, process, and deliver results directly in user-visible locations.
@@ -27,6 +27,7 @@ Pocket Lobster is a multi-agent native AI assistant for ordinary Android phones.
 - [云端资产备份方案 Cloud Backup Policy](docs/pocket-lobster/CLOUD_BACKUP_POLICY_2026-03-25.md)
 - [版本谱系与稳定基线 Version Lineage](docs/pocket-lobster/VERSION_LINEAGE_2026-03-25.md)
 - [OpenMinis 第一阶段基线 OpenMinis Phase 1 Baseline](docs/minis/PHASE_1_FOUNDATION_2026-08-20.md)
+- [OpenMinis 可交互运行时 OpenMinis Interactive Runtime](docs/minis/PHASE_1_INTERACTIVE_RUNTIME_2026-08-21.md)
 
 ## 项目血缘 Project Lineage
 

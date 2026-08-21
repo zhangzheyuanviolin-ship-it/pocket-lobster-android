@@ -266,8 +266,8 @@ object OfflineLinuxRuntimeInstaller {
         binDir: File,
     ) {
         val nativeLibDir = File(context.applicationInfo.nativeLibraryDir)
-        installNativeBinary(nativeLibDir, binDir, "libproot.so", "proot", executable = true)
-        installNativeBinary(nativeLibDir, binDir, "libproot.so", "proot-static", executable = true)
+        installNativeBinary(nativeLibDir, binDir, "libubuntu_proot.so", "proot", executable = true)
+        installNativeBinary(nativeLibDir, binDir, "libubuntu_proot.so", "proot-static", executable = true)
         installNativeBinary(nativeLibDir, binDir, "libloader.so", "loader", executable = true)
         installNativeBinary(nativeLibDir, binDir, "libbash.so", "bash", executable = true)
         installNativeBinary(nativeLibDir, binDir, "libbusybox.so", "busybox", executable = true)
