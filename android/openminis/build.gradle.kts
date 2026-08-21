@@ -14,6 +14,7 @@ val generatedSources = layout.buildDirectory.dir("generated/openminis-sources")
 android {
     namespace = "com.openminis.app"
     compileSdk = 36
+    ndkVersion = "28.0.12433566"
 
     defaultConfig {
         minSdk = 26
