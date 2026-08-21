@@ -136,6 +136,12 @@ jobs:
           echo "release_channel=$CHANNEL" >> "$GITHUB_OUTPUT"
           echo "package_id=$PACKAGE_ID" >> "$GITHUB_OUTPUT"
 
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocket-lobster-${{ steps.build_apk.outputs.release_channel }}
+          path: android/app/build/outputs/apk/debug/${{ steps.build_apk.outputs.apk_name }}
+
       - name: Verify APK identity and version
         env:
           APK_NAME: ${{ steps.build_apk.outputs.apk_name }}
@@ -151,9 +157,9 @@ jobs:
           BADGING="$("$AAPT_BIN" dump badging "$APK_PATH" | head -n 1)"
           echo "$BADGING"
           echo "$BADGING" | grep -F "name='$EXPECTED_PACKAGE_ID'"
-          echo "$BADGING" | grep -F "versionCode='303'"
+          echo "$BADGING" | grep -F "versionCode='304'"
           if [ "$RELEASE_CHANNEL" = "beta" ]; then
-            echo "$BADGING" | grep -F "versionName='1.0.62-codex-cli-0.147.0-gpt-5.6-openminis-1.12-runtime-v303-beta'"
+            echo "$BADGING" | grep -F "versionName='1.0.63-codex-cli-0.147.0-gpt-5.6-openminis-1.12-runtime-v304-beta'"
             test "$EXPECTED_PACKAGE_ID" = "com.codex.mobile.pocketlobster.beta"
           fi
 
@@ -163,7 +169,7 @@ jobs:
         run: |
           APK_PATH="android/app/build/outputs/apk/debug/$APK_NAME"
           unzip -l "$APK_PATH" > /tmp/apk-entries.txt
-          grep -F "assets/alpine-minirootfs.tar.gz" /tmp/apk-entries.txt
+          grep -E 'assets/alpine-minirootfs\.tar(\.gz)?$' /tmp/apk-entries.txt
           grep -F "assets/proot-aarch64" /tmp/apk-entries.txt
           grep -F "lib/arm64-v8a/libproot.so" /tmp/apk-entries.txt
           grep -F "lib/arm64-v8a/libproot-loader.so" /tmp/apk-entries.txt
@@ -186,12 +192,6 @@ jobs:
           fi
           APK_PATH="android/app/build/outputs/apk/debug/$APK_NAME"
           "$APKSIGNER_BIN" verify --verbose --print-certs "$APK_PATH"
-
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pocket-lobster-${{ steps.build_apk.outputs.release_channel }}
-          path: android/app/build/outputs/apk/debug/${{ steps.build_apk.outputs.apk_name }}
 
       - name: Generate changelog
         if: github.ref_type == 'branch'

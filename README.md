@@ -2,11 +2,11 @@
 
 ## 中文介绍
 
-口袋大龙虾是一款运行在普通 Android 手机上的多智能体原生 AI 助手应用。v303 测试版将 OpenMinis 1.12 官方安卓运行时接入应用并替代可见的 OpenClaw 入口，提供官方模型提供商管理、真实聊天、可视浏览器和 Alpine Linux 终端；Codex 与 Claude Code 保持原有独立运行链路。
+口袋大龙虾是一款运行在普通 Android 手机上的多智能体原生 AI 助手应用。v304 测试版将 OpenMinis 1.12 官方安卓运行时接入应用并替代可见的 OpenClaw 入口，提供官方模型提供商管理、真实聊天、可视浏览器和 Alpine Linux 终端；Codex 与 Claude Code 保持原有独立运行链路。
 
 ## English Overview
 
-Pocket Lobster is a multi-agent native AI assistant for ordinary Android phones. The v303 beta embeds the official OpenMinis 1.12 Android runtime and replaces the visible OpenClaw entry points with official provider management, real chat, a visible browser, and an Alpine Linux terminal. Codex and Claude Code retain their existing independent runtime paths.
+Pocket Lobster is a multi-agent native AI assistant for ordinary Android phones. The v304 beta embeds the official OpenMinis 1.12 Android runtime and replaces the visible OpenClaw entry points with official provider management, real chat, a visible browser, and an Alpine Linux terminal. Codex and Claude Code retain their existing independent runtime paths.
 
 ## 当前核心能力 Core Capabilities
 
