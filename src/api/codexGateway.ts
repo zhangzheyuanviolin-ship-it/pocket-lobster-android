@@ -2,6 +2,7 @@ import {
   fetchRpcMethodCatalog,
   fetchRpcNotificationCatalog,
   fetchPendingServerRequests,
+  fetchWithTimeout,
   rpcCall,
   respondServerRequest,
   subscribeRpcNotifications,
@@ -101,7 +102,7 @@ function normalizeReasoningEfforts(values: unknown): ReasoningEffort[] {
 
 async function getStoredCodexModelCatalog(): Promise<StoredCodexModelCatalog> {
   try {
-    const response = await fetch('/codex-api/model-providers', { cache: 'no-store' })
+    const response = await fetchWithTimeout('/codex-api/model-providers', { cache: 'no-store' })
     if (!response.ok) return {}
     return await response.json() as StoredCodexModelCatalog
   } catch {
@@ -124,7 +125,7 @@ function inferProviderLabel(row: StoredCodexModelConfig): string {
 }
 
 async function postCodexJson<T>(path: string, body: Record<string, unknown>): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetchWithTimeout(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -191,8 +192,11 @@ export async function getNotificationCatalog(): Promise<string[]> {
   return fetchRpcNotificationCatalog()
 }
 
-export function subscribeCodexNotifications(onNotification: (value: RpcNotification) => void): () => void {
-  return subscribeRpcNotifications(onNotification)
+export function subscribeCodexNotifications(
+  onNotification: (value: RpcNotification) => void,
+  onStateChange?: (state: 'open' | 'error') => void,
+): () => void {
+  return subscribeRpcNotifications(onNotification, onStateChange)
 }
 
 export type { RpcNotification }
@@ -231,7 +235,7 @@ export async function switchThreadRoute(
 }
 
 export async function getThreadRoute(threadId: string): Promise<{ providerId: string; model: string }> {
-  const response = await fetch(`/codex-api/thread-route?threadId=${encodeURIComponent(threadId.trim())}`, {
+  const response = await fetchWithTimeout(`/codex-api/thread-route?threadId=${encodeURIComponent(threadId.trim())}`, {
     cache: 'no-store',
   })
   const payload = await response.json().catch(() => null) as { providerId?: unknown; model?: unknown; error?: unknown } | null

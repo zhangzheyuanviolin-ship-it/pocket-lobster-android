@@ -20,6 +20,8 @@ import {
   switchThreadRoute,
   type RpcNotification,
 } from '../api/codexGateway'
+import { normalizeThreadItemV2 } from '../api/normalizers/v2'
+import type { ThreadItem } from '../api/appServerDtos'
 import type {
   CodexModelOption,
   CodexProviderOption,
@@ -362,13 +364,9 @@ function removeRedundantLiveAgentMessages(previous: UiMessage[], incoming: UiMes
       .filter((text) => text.length > 0),
   )
 
-  if (incomingAssistantTexts.size === 0) {
-    return previous
-  }
-
   const next = previous.filter((message) => {
-    if (message.messageType !== 'agentMessage.live') return true
     if (incomingIds.has(message.id)) return false
+    if (message.messageType !== 'agentMessage.live') return true
     const normalized = normalizeMessageText(message.text)
     if (normalized.length === 0) return false
     return !incomingAssistantTexts.has(normalized)
@@ -548,6 +546,7 @@ function pruneThreadStateMap<T>(stateMap: Record<string, T>, threadIds: Set<stri
 function mergeThreadGroups(
   previous: UiProjectGroup[],
   incoming: UiProjectGroup[],
+  preserveThreadIds: Set<string> = new Set(),
 ): UiProjectGroup[] {
   const previousGroupsByName = new Map(previous.map((group) => [group.projectName, group]))
   const mergedGroups: UiProjectGroup[] = incoming.map((incomingGroup) => {
@@ -575,6 +574,23 @@ function mergeThreadGroups(
       threads: mergedThreads,
     }
   })
+
+  if (preserveThreadIds.size > 0) {
+    const incomingThreadIds = new Set(flattenThreads(mergedGroups).map((thread) => thread.id))
+    for (const previousGroup of previous) {
+      const preserved = previousGroup.threads.filter(
+        (thread) => preserveThreadIds.has(thread.id) && !incomingThreadIds.has(thread.id),
+      )
+      if (preserved.length === 0) continue
+      const groupIndex = mergedGroups.findIndex((group) => group.projectName === previousGroup.projectName)
+      if (groupIndex >= 0) {
+        const group = mergedGroups[groupIndex]
+        mergedGroups.splice(groupIndex, 1, { ...group, threads: [...preserved, ...group.threads] })
+      } else {
+        mergedGroups.push({ projectName: previousGroup.projectName, threads: preserved })
+      }
+    }
+  }
 
   return areGroupArraysEqual(previous, mergedGroups) ? previous : mergedGroups
 }
@@ -613,7 +629,6 @@ export function useDesktopState() {
   const isSendingMessage = ref(false)
   const isInterruptingTurn = ref(false)
   const error = ref('')
-  const isPolling = ref(false)
   const hasLoadedThreads = ref(false)
   const isAutoRefreshEnabled = ref(loadAutoRefreshEnabled())
   const autoRefreshSecondsLeft = ref(Math.floor(AUTO_REFRESH_INTERVAL_MS / 1000))
@@ -635,9 +650,12 @@ export function useDesktopState() {
   const messageLoadRevisionByThreadId = new Map<string, number>()
   const pendingAgentDeltasByThreadId = new Map<string, Map<string, string>>()
   const pendingReasoningDeltasByThreadId = new Map<string, string>()
+  const pendingToolDeltasByThreadId = new Map<string, Map<string, string>>()
   const lastSnapshotTurnIdByThreadId = new Map<string, string>()
   let threadLoadRevision = 0
   let optimisticMessageSequence = 0
+  let statusSyncInFlight = false
+  let notificationSyncInFlight = false
 
   const allThreads = computed(() => flattenThreads(projectGroups.value))
   const selectedThread = computed(() =>
@@ -850,6 +868,44 @@ export function useDesktopState() {
       }),
     }))
     projectGroups.value = mergeThreadGroups(projectGroups.value, flaggedGroups)
+  }
+
+  function registerProvisionalThread(
+    threadId: string,
+    cwd: string,
+    preview: string,
+    modelProvider: string,
+  ): void {
+    const normalizedCwd = cwd.trim() || 'codex'
+    const projectName = normalizedCwd.split('/').filter(Boolean).at(-1) || normalizedCwd
+    const nowIso = new Date().toISOString()
+    const normalizedPreview = normalizeMessageText(preview)
+    const thread: UiThread = {
+      id: threadId,
+      title: normalizedPreview.slice(0, 80) || '新会话',
+      projectName,
+      cwd: normalizedCwd,
+      createdAtIso: nowIso,
+      updatedAtIso: nowIso,
+      preview: normalizedPreview,
+      modelProvider,
+      unread: false,
+      inProgress: true,
+    }
+    const nextGroups = sourceGroups.value.map((group) => (
+      group.projectName === projectName
+        ? { ...group, threads: [thread, ...group.threads.filter((row) => row.id !== threadId)] }
+        : group
+    ))
+    if (!nextGroups.some((group) => group.projectName === projectName)) {
+      nextGroups.unshift({ projectName, threads: [thread] })
+    }
+    sourceGroups.value = nextGroups
+    if (!projectOrder.value.includes(projectName)) {
+      projectOrder.value = [projectName, ...projectOrder.value]
+      saveProjectOrder(projectOrder.value)
+    }
+    applyThreadFlags()
   }
 
   function pruneThreadScopedState(flatThreads: UiThread[]): void {
@@ -1176,6 +1232,22 @@ export function useDesktopState() {
       appendLiveReasoningText(threadId, delta)
     }
     pendingReasoningDeltasByThreadId.clear()
+
+    for (const [threadId, byMessageId] of pendingToolDeltasByThreadId.entries()) {
+      for (const [messageId, delta] of byMessageId.entries()) {
+        const existing = (liveAgentMessagesByThreadId.value[threadId] ?? [])
+          .find((message) => message.id === messageId)
+        const prefix = existing?.text ?? '执行步骤'
+        const text = `${prefix}\n${delta}`
+        upsertLiveAgentMessage(threadId, {
+          id: messageId,
+          role: 'system',
+          text: text.length > 12_000 ? `${text.slice(0, 12_000)}\n…实时输出已截断` : text,
+          messageType: 'activity.live',
+        })
+      }
+    }
+    pendingToolDeltasByThreadId.clear()
   }
 
   function scheduleLiveDeltaFlush(): void {
@@ -1195,6 +1267,14 @@ export function useDesktopState() {
       threadId,
       `${pendingReasoningDeltasByThreadId.get(threadId) ?? ''}${delta}`,
     )
+    scheduleLiveDeltaFlush()
+  }
+
+  function queueLiveToolDelta(threadId: string, messageId: string, delta: string): void {
+    if (!threadId || !messageId || !delta) return
+    const byMessageId = pendingToolDeltasByThreadId.get(threadId) ?? new Map<string, string>()
+    byMessageId.set(messageId, `${byMessageId.get(messageId) ?? ''}${delta}`)
+    pendingToolDeltasByThreadId.set(threadId, byMessageId)
     scheduleLiveDeltaFlush()
   }
 
@@ -1389,6 +1469,28 @@ export function useDesktopState() {
           activity: {
             label: 'Writing response',
             details: [],
+          },
+        }
+      }
+      const labels: Record<string, string> = {
+        commandexecution: '正在执行终端命令',
+        filechange: '正在修改文件',
+        mcptoolcall: '正在调用工具',
+        collabagenttoolcall: '正在调用协作智能体',
+        websearch: '正在使用浏览器',
+        imageview: '正在查看图片',
+        plan: '正在更新计划',
+      }
+      const label = labels[itemType]
+      if (label) {
+        const command = readString(item?.command)
+        const tool = readString(item?.tool)
+        const query = readString(item?.query)
+        return {
+          threadId,
+          activity: {
+            label,
+            details: [command || tool || query].filter(Boolean),
           },
         }
       }
@@ -1610,6 +1712,33 @@ export function useDesktopState() {
     return false
   }
 
+  function readLiveActivityMessage(notification: RpcNotification): UiMessage | null {
+    if (notification.method !== 'item/started' && notification.method !== 'item/completed') return null
+    const params = asRecord(notification.params)
+    const item = asRecord(params?.item)
+    const itemType = readString(item?.type)
+    if (!item || !itemType || itemType === 'userMessage' || itemType === 'agentMessage' || itemType === 'reasoning') {
+      return null
+    }
+    const turnId = readString(params?.turnId)
+    const message = normalizeThreadItemV2(item as unknown as ThreadItem, turnId, -1)[0]
+    return message ? { ...message, messageType: 'activity.live' } : null
+  }
+
+  function readToolOutputDelta(notification: RpcNotification): { itemId: string; delta: string } | null {
+    if (
+      notification.method !== 'item/commandExecution/outputDelta' &&
+      notification.method !== 'item/fileChange/outputDelta' &&
+      notification.method !== 'item/mcpToolCall/progress'
+    ) {
+      return null
+    }
+    const params = asRecord(notification.params)
+    const itemId = readString(params?.itemId)
+    const delta = readString(params?.delta) || readString(params?.message)
+    return itemId && delta ? { itemId, delta } : null
+  }
+
   function applyRealtimeUpdates(notification: RpcNotification): void {
     if (handleServerRequestNotification(notification)) {
       return
@@ -1680,6 +1809,16 @@ export function useDesktopState() {
 
     const notificationThreadId = extractThreadIdFromNotification(notification)
     if (!notificationThreadId || notificationThreadId !== selectedThreadId.value) return
+
+    const activityMessage = readLiveActivityMessage(notification)
+    if (activityMessage) {
+      upsertLiveAgentMessage(notificationThreadId, activityMessage)
+    }
+
+    const toolOutputDelta = readToolOutputDelta(notification)
+    if (toolOutputDelta) {
+      queueLiveToolDelta(notificationThreadId, toolOutputDelta.itemId, toolOutputDelta.delta)
+    }
 
     const startedAgentMessageId = readAgentMessageStartedId(notification)
     if (startedAgentMessageId) {
@@ -1816,7 +1955,14 @@ export function useDesktopState() {
       }
 
       const orderedGroups = orderGroupsByProjectOrder(groups, projectOrder.value)
-      sourceGroups.value = mergeThreadGroups(sourceGroups.value, orderedGroups)
+      const pendingThreadIds = new Set<string>()
+      for (const [threadId, rows] of Object.entries(optimisticUserMessagesByThreadId.value)) {
+        if (rows.length > 0) pendingThreadIds.add(threadId)
+      }
+      for (const [threadId, active] of Object.entries(inProgressById.value)) {
+        if (active) pendingThreadIds.add(threadId)
+      }
+      sourceGroups.value = mergeThreadGroups(sourceGroups.value, orderedGroups, pendingThreadIds)
       inProgressById.value = pruneThreadStateMap(
         inProgressById.value,
         new Set(flattenThreads(sourceGroups.value).map((thread) => thread.id)),
@@ -1868,10 +2014,6 @@ export function useDesktopState() {
           ...resumedModelProviderById.value,
           [threadId]: thread?.modelProvider || 'openai',
         }
-      }
-
-      if (!alreadyLoaded) {
-        await syncSelectionToThreadRoute(threadId)
       }
 
       const snapshot = await getThreadSnapshot(threadId)
@@ -1953,6 +2095,16 @@ export function useDesktopState() {
     error.value = ''
 
     try {
+      const activeThreadId = selectedThreadId.value
+      if (hasLoadedThreads.value && activeThreadId) {
+        const [messageResult] = await Promise.allSettled([
+          loadMessages(activeThreadId, { silent: true }),
+          loadThreads(),
+          refreshModelPreferences(),
+        ])
+        if (messageResult.status === 'rejected') throw messageResult.reason
+        return
+      }
       await Promise.all([
         loadThreads(),
         refreshModelPreferences(),
@@ -1968,7 +2120,9 @@ export function useDesktopState() {
 
     try {
       await loadMessages(threadId)
-      await syncSelectionToThreadRoute(threadId)
+      void syncSelectionToThreadRoute(threadId).catch(() => {
+        // Message rendering must not depend on route metadata refresh.
+      })
     } catch (unknownError) {
       error.value = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
     }
@@ -2145,6 +2299,7 @@ export function useDesktopState() {
         [threadId]: selectedModel.modelId,
       }
       setSelectedThreadId(threadId)
+      registerProvisionalThread(threadId, targetCwd, nextText, actualProvider)
       optimisticMessageId = queueOptimisticUserMessage(threadId, nextText)
       shouldAutoScrollOnNextAgentEvent = true
       setTurnSummaryForThread(threadId, null)
@@ -2230,7 +2385,7 @@ export function useDesktopState() {
 
       pendingThreadMessageRefresh.add(threadId)
       pendingThreadsRefresh = true
-      await syncFromNotifications()
+      void syncFromNotifications()
     } catch (unknownError) {
       throw unknownError
     }
@@ -2326,34 +2481,40 @@ export function useDesktopState() {
   }
 
   async function syncThreadStatus(): Promise<void> {
-    if (isPolling.value) return
-    isPolling.value = true
+    if (statusSyncInFlight) return
+    statusSyncInFlight = true
 
     try {
-      await loadThreads()
-
-      if (!selectedThreadId.value) return
-
       const threadId = selectedThreadId.value
-      const currentVersion = currentThreadVersion(threadId)
-      const loadedVersion = loadedVersionByThreadId.value[threadId] ?? ''
-      const hasVersionChange = currentVersion.length > 0 && currentVersion !== loadedVersion
-      const isInProgress = inProgressById.value[threadId] === true
-      const hasOptimisticMessage =
-        (optimisticUserMessagesByThreadId.value[threadId] ?? []).length > 0
+      if (threadId) {
+        const currentVersion = currentThreadVersion(threadId)
+        const loadedVersion = loadedVersionByThreadId.value[threadId] ?? ''
+        const hasVersionChange = currentVersion.length > 0 && currentVersion !== loadedVersion
+        const isInProgress = inProgressById.value[threadId] === true
+        const hasOptimisticMessage =
+          (optimisticUserMessagesByThreadId.value[threadId] ?? []).length > 0
 
-      if (isInProgress || hasVersionChange || hasOptimisticMessage) {
-        await loadMessages(threadId, { silent: true })
+        if (isInProgress || hasVersionChange || hasOptimisticMessage) {
+          try {
+            await loadMessages(threadId, { silent: true })
+          } catch {
+            pendingThreadMessageRefresh.add(threadId)
+          }
+        }
       }
-    } catch {
-      // ignore poll failures and keep last known state
+
+      try {
+        await loadThreads()
+      } catch {
+        pendingThreadsRefresh = true
+      }
     } finally {
-      isPolling.value = false
+      statusSyncInFlight = false
     }
   }
 
   async function syncFromNotifications(): Promise<void> {
-    if (isPolling.value) {
+    if (notificationSyncInFlight) {
       if (typeof window !== 'undefined' && eventSyncTimer === null) {
         eventSyncTimer = window.setTimeout(() => {
           eventSyncTimer = null
@@ -2363,7 +2524,7 @@ export function useDesktopState() {
       return
     }
 
-    isPolling.value = true
+    notificationSyncInFlight = true
 
     const shouldRefreshThreads = pendingThreadsRefresh
     const threadIdsToRefresh = new Set(pendingThreadMessageRefresh)
@@ -2371,33 +2532,40 @@ export function useDesktopState() {
     pendingThreadsRefresh = false
     pendingThreadMessageRefresh.clear()
 
+    const activeThreadId = selectedThreadId.value
+    let messageSyncFailed = false
+    let threadSyncFailed = false
     try {
-      if (shouldRefreshThreads) {
-        await loadThreads()
-      }
-
-      const activeThreadId = selectedThreadId.value
-      if (!activeThreadId) return
-
       const isActiveDirty = threadIdsToRefresh.has(activeThreadId)
       const isInProgress = inProgressById.value[activeThreadId] === true
       const currentVersion = currentThreadVersion(activeThreadId)
       const loadedVersion = loadedVersionByThreadId.value[activeThreadId] ?? ''
       const hasVersionChange = currentVersion.length > 0 && currentVersion !== loadedVersion
 
-      if (isActiveDirty || isInProgress || hasVersionChange || shouldRefreshThreads) {
-        await loadMessages(activeThreadId, { silent: true })
+      const tasks: Promise<void>[] = []
+      if (activeThreadId && (isActiveDirty || isInProgress || hasVersionChange || shouldRefreshThreads)) {
+        tasks.push(loadMessages(activeThreadId, { silent: true }).catch(() => {
+          messageSyncFailed = true
+        }))
       }
+      if (shouldRefreshThreads) {
+        tasks.push(loadThreads().catch(() => {
+          threadSyncFailed = true
+        }))
+      }
+      await Promise.all(tasks)
+
+      syncFailed = messageSyncFailed || threadSyncFailed
+      if (threadSyncFailed) pendingThreadsRefresh = true
+      if (messageSyncFailed && activeThreadId) pendingThreadMessageRefresh.add(activeThreadId)
     } catch {
       syncFailed = true
-      if (shouldRefreshThreads) {
-        pendingThreadsRefresh = true
-      }
+      if (shouldRefreshThreads) pendingThreadsRefresh = true
       for (const threadId of threadIdsToRefresh) {
         pendingThreadMessageRefresh.add(threadId)
       }
     } finally {
-      isPolling.value = false
+      notificationSyncInFlight = false
 
       if (
         (pendingThreadsRefresh || pendingThreadMessageRefresh.size > 0) &&
@@ -2420,10 +2588,19 @@ export function useDesktopState() {
       startAutoRefreshTimer()
     }
     void loadPendingServerRequestsFromBridge()
-    stopNotificationStream = subscribeCodexNotifications((notification) => {
-      applyRealtimeUpdates(notification)
-      queueEventDrivenSync(notification)
-    })
+    stopNotificationStream = subscribeCodexNotifications(
+      (notification) => {
+        applyRealtimeUpdates(notification)
+        queueEventDrivenSync(notification)
+      },
+      (state) => {
+        if (state !== 'error') return
+        const activeThreadId = selectedThreadId.value
+        if (activeThreadId) pendingThreadMessageRefresh.add(activeThreadId)
+        pendingThreadsRefresh = true
+        void syncFromNotifications()
+      },
+    )
     if (reliabilitySyncTimer === null) {
       reliabilitySyncTimer = window.setInterval(() => {
         const hasInProgressThread = Object.values(inProgressById.value).some((value) => value === true)
@@ -2519,6 +2696,7 @@ export function useDesktopState() {
     }
     pendingAgentDeltasByThreadId.clear()
     pendingReasoningDeltasByThreadId.clear()
+    pendingToolDeltasByThreadId.clear()
 
     if (stopNotificationStream) {
       stopNotificationStream()

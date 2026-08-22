@@ -1235,6 +1235,7 @@ async function initialize(): Promise<void> {
   isCodexBridgeAvailable.value = await checkCodexAvailability()
   if (isCodexBridgeAvailable.value) {
     await refreshAll()
+    startPolling()
   }
   try {
     await initializeOpenClaw(routeOpenClawSessionKey.value)
@@ -1248,9 +1249,6 @@ async function initialize(): Promise<void> {
   }
   hasInitialized.value = true
   await syncThreadSelectionWithRoute()
-  if (isCodexBridgeAvailable.value) {
-    startPolling()
-  }
   if (isOpenClawRoute.value) {
     startOpenClawPolling()
   }

@@ -9,7 +9,14 @@
       {{ t('conversation_empty') }}
     </p>
 
-    <ul v-else ref="conversationListRef" class="conversation-list" @scroll="onConversationScroll">
+    <ul
+      v-else
+      ref="conversationListRef"
+      class="conversation-list"
+      aria-live="polite"
+      aria-relevant="additions text"
+      @scroll="onConversationScroll"
+    >
       <li
         v-for="request in pendingRequests"
         :key="`server-request:${request.id}`"
@@ -174,8 +181,11 @@
       <li v-if="liveOverlay" class="conversation-item conversation-item-overlay">
         <div class="message-row">
           <div class="message-stack">
-            <article class="live-overlay-inline" aria-live="polite">
+            <article class="live-overlay-inline" role="status" aria-live="polite">
               <p class="live-overlay-label">{{ liveOverlay.activityLabel }}</p>
+              <ul v-if="liveOverlay.activityDetails.length > 0" class="live-overlay-details">
+                <li v-for="detail in liveOverlay.activityDetails" :key="detail">{{ detail }}</li>
+              </ul>
               <p
                 v-if="liveOverlay.reasoningText"
                 class="live-overlay-reasoning"
@@ -824,6 +834,10 @@ onBeforeUnmount(() => {
 
 .conversation-list {
   @apply h-full min-h-0 list-none m-0 px-6 py-0 overflow-y-auto overflow-x-visible flex flex-col gap-3;
+}
+
+.live-overlay-details {
+  @apply m-0 pl-5 text-sm text-zinc-600;
 }
 
 .conversation-item {

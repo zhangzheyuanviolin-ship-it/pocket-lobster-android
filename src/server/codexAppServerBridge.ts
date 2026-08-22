@@ -26,12 +26,18 @@ const codexProviderRuntimeStatusPath = homeDir
   ? join(homeDir, '.openclaw-android', 'state', 'codex-provider-runtime-status.json')
   : ''
 const codexSessionsPath = homeDir ? join(homeDir, '.codex', 'sessions') : ''
-const codexChatDiagnosticPath = process.env.ANYCLAW_EXPORT_DIR
-  ? join(process.env.ANYCLAW_EXPORT_DIR, 'diagnostics', 'codex-chat-latest.jsonl')
+const codexChatDiagnosticPath = homeDir
+  ? join(homeDir, '.openclaw-android', 'state', 'codex-chat-latest.jsonl')
+  : ''
+const codexChatSharedDiagnosticPath = process.env.ANYCLAW_EXPORT_DIR
+  ? join(process.env.ANYCLAW_EXPORT_DIR, 'codex-chat-latest.jsonl')
   : ''
 const CODEX_PROVIDER_SECRET_PREFIX = 'POCKET_LOBSTER_CODEX_'
 const PROVIDER_MODEL_REFRESH_INTERVAL_MS = 5 * 60_000
 const CODEX_DIAGNOSTIC_MAX_BYTES = 2 * 1024 * 1024
+const CODEX_RPC_TIMEOUT_MS = 30_000
+const CODEX_INITIALIZE_TIMEOUT_MS = 45_000
+const CODEX_NOTIFICATION_HISTORY_LIMIT = 500
 const OPENCLAW_UPLOAD_DIR = homeDir
   ? join(homeDir, '.openclaw', 'workspace', 'uploads')
   : join(process.cwd(), '.openclaw', 'workspace', 'uploads')
@@ -158,6 +164,12 @@ type PendingServerRequest = {
   method: string
   params: unknown
   receivedAtIso: string
+}
+
+type SequencedNotification = {
+  sequence: number
+  method: string
+  params: unknown
 }
 
 type LightweightContentItem = {
@@ -358,28 +370,45 @@ async function writeTextFileAtomic(path: string, value: string): Promise<void> {
 }
 
 let codexDiagnosticWriteChain: Promise<void> = Promise.resolve()
+let codexSharedDiagnosticWriteChain: Promise<void> = Promise.resolve()
+
+async function appendDiagnosticLine(path: string, line: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  try {
+    const info = await stat(path)
+    if (info.size >= CODEX_DIAGNOSTIC_MAX_BYTES) {
+      const previous = path.replace(/\.jsonl$/u, '-previous.jsonl')
+      try { await unlink(previous) } catch { /* No previous diagnostic file. */ }
+      await rename(path, previous)
+    }
+  } catch {
+    // The file is created by appendFile on the first event.
+  }
+  await appendFile(path, line, { encoding: 'utf8', mode: 0o600 })
+}
 
 async function appendCodexDiagnostic(event: string, details: Record<string, unknown> = {}): Promise<void> {
   if (!codexChatDiagnosticPath) return
+  const line = `${JSON.stringify({
+    at: new Date().toISOString(),
+    event,
+    ...details,
+  })}\n`
   codexDiagnosticWriteChain = codexDiagnosticWriteChain.catch(() => undefined).then(async () => {
-    await mkdir(dirname(codexChatDiagnosticPath), { recursive: true })
-    try {
-      const info = await stat(codexChatDiagnosticPath)
-      if (info.size >= CODEX_DIAGNOSTIC_MAX_BYTES) {
-        const previous = codexChatDiagnosticPath.replace(/\.jsonl$/u, '-previous.jsonl')
-        try { await unlink(previous) } catch { /* No previous diagnostic file. */ }
-        await rename(codexChatDiagnosticPath, previous)
-      }
-    } catch {
-      // The file is created by appendFile on the first event.
-    }
-    await appendFile(codexChatDiagnosticPath, `${JSON.stringify({
-      at: new Date().toISOString(),
-      event,
-      ...details,
-    })}\n`, { encoding: 'utf8', mode: 0o600 })
+    await appendDiagnosticLine(codexChatDiagnosticPath, line)
   }).catch(() => undefined)
   await codexDiagnosticWriteChain
+
+  if (codexChatSharedDiagnosticPath) {
+    codexSharedDiagnosticWriteChain = codexSharedDiagnosticWriteChain.catch(() => undefined).then(async () => {
+    try {
+      await appendDiagnosticLine(codexChatSharedDiagnosticPath, line)
+    } catch {
+      const command = `mkdir -p ${shellQuote(dirname(codexChatSharedDiagnosticPath))} && printf %s ${shellQuote(line)} >> ${shellQuote(codexChatSharedDiagnosticPath)}`
+      await runSystemShellCommand(command)
+    }
+    }).catch(() => undefined)
+  }
 }
 
 function diagnosticRpcFields(method: string, params: unknown, result?: unknown): Record<string, unknown> {
@@ -387,12 +416,18 @@ function diagnosticRpcFields(method: string, params: unknown, result?: unknown):
   const output = asRecord(result)
   const inputThread = normalizeText(input?.threadId)
   const outputThread = asRecord(output?.thread)
+  const turns = Array.isArray(outputThread?.turns) ? outputThread.turns : []
+  const latestTurn = asRecord(turns.at(-1))
   return {
     method,
     threadId: inputThread || normalizeText(outputThread?.id),
     providerId: normalizeText(input?.modelProvider) || normalizeText(outputThread?.modelProvider),
     model: normalizeText(input?.model),
     inputItems: Array.isArray(input?.input) ? input.input.length : 0,
+    turnCount: turns.length,
+    latestTurnId: normalizeText(latestTurn?.id),
+    latestTurnStatus: normalizeText(latestTurn?.status),
+    latestItemCount: Array.isArray(latestTurn?.items) ? latestTurn.items.length : 0,
   }
 }
 
@@ -3214,8 +3249,14 @@ class AppServerProcess {
   private nextId = 1
   private stopping = false
   private lastStartError: Error | null = null
-  private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (reason?: unknown) => void }>()
-  private readonly notificationListeners = new Set<(value: { method: string; params: unknown }) => void>()
+  private readonly pending = new Map<number, {
+    resolve: (value: unknown) => void
+    reject: (reason?: unknown) => void
+    timeout: ReturnType<typeof setTimeout>
+  }>()
+  private readonly notificationListeners = new Set<(value: SequencedNotification) => void>()
+  private readonly notificationHistory: SequencedNotification[] = []
+  private notificationSequence = 0
   private readonly pendingServerRequests = new Map<number, PendingServerRequest>()
   private readonly codexBin = prefixBin ? join(prefixBin, 'codex') : 'codex'
 
@@ -3290,6 +3331,7 @@ class AppServerProcess {
       const failure = new Error(`codex app-server start failed: ${getErrorMessage(error, 'unknown error')}`)
       this.lastStartError = failure
       for (const request of this.pending.values()) {
+        clearTimeout(request.timeout)
         request.reject(failure)
       }
       this.pending.clear()
@@ -3304,6 +3346,7 @@ class AppServerProcess {
       const failure = new Error(this.stopping ? 'codex app-server stopped' : 'codex app-server exited unexpectedly')
       this.lastStartError = this.stopping ? null : failure
       for (const request of this.pending.values()) {
+        clearTimeout(request.timeout)
         request.reject(failure)
       }
 
@@ -3336,6 +3379,7 @@ class AppServerProcess {
       this.pending.delete(message.id)
 
       if (!pendingRequest) return
+      clearTimeout(pendingRequest.timeout)
 
       if (message.error) {
         pendingRequest.reject(new Error(message.error.message))
@@ -3371,8 +3415,16 @@ class AppServerProcess {
         error: normalizeText(asRecord(turn?.error)?.message).slice(0, 800),
       })
     }
+    const sequenced: SequencedNotification = {
+      sequence: ++this.notificationSequence,
+      ...notification,
+    }
+    this.notificationHistory.push(sequenced)
+    if (this.notificationHistory.length > CODEX_NOTIFICATION_HISTORY_LIMIT) {
+      this.notificationHistory.splice(0, this.notificationHistory.length - CODEX_NOTIFICATION_HISTORY_LIMIT)
+    }
     for (const listener of this.notificationListeners) {
-      listener(notification)
+      listener(sequenced)
     }
   }
 
@@ -3438,14 +3490,24 @@ class AppServerProcess {
     const id = this.nextId++
 
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
-
-      this.sendLine({
-        jsonrpc: '2.0',
-        id,
-        method,
-        params,
-      } satisfies JsonRpcCall)
+      const timeoutMs = method === 'initialize' ? CODEX_INITIALIZE_TIMEOUT_MS : CODEX_RPC_TIMEOUT_MS
+      const timeout = setTimeout(() => {
+        if (!this.pending.delete(id)) return
+        reject(new Error(`Codex RPC ${method} timed out after ${String(timeoutMs)}ms`))
+      }, timeoutMs)
+      this.pending.set(id, { resolve, reject, timeout })
+      try {
+        this.sendLine({
+          jsonrpc: '2.0',
+          id,
+          method,
+          params,
+        } satisfies JsonRpcCall)
+      } catch (error) {
+        clearTimeout(timeout)
+        this.pending.delete(id)
+        reject(error)
+      }
     })
   }
 
@@ -3467,11 +3529,19 @@ class AppServerProcess {
     return this.call(method, params)
   }
 
-  onNotification(listener: (value: { method: string; params: unknown }) => void): () => void {
+  onNotification(listener: (value: SequencedNotification) => void): () => void {
     this.notificationListeners.add(listener)
     return () => {
       this.notificationListeners.delete(listener)
     }
+  }
+
+  getNotificationSequence(): number {
+    return this.notificationSequence
+  }
+
+  listNotificationsAfter(sequence: number): SequencedNotification[] {
+    return this.notificationHistory.filter((notification) => notification.sequence > sequence)
   }
 
   async respondToServerRequest(payload: unknown): Promise<void> {
@@ -3521,6 +3591,7 @@ class AppServerProcess {
 
     const failure = new Error('codex app-server stopped')
     for (const request of this.pending.values()) {
+      clearTimeout(request.timeout)
       request.reject(failure)
     }
     this.pending.clear()
@@ -4042,10 +4113,11 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
 
-        const trackedRpc = body.method === 'thread/start' || body.method === 'thread/resume' || body.method === 'turn/start'
+        const trackedRpc = body.method === 'thread/start' || body.method === 'thread/resume' || body.method === 'thread/read' || body.method === 'turn/start'
+        const requiresProviderDefinitions = body.method === 'thread/start' || body.method === 'thread/resume' || body.method === 'turn/start'
         if (trackedRpc) await appendCodexDiagnostic('rpc_request', diagnosticRpcFields(body.method, body.params))
         try {
-          if (trackedRpc) await ensureCodexProviderDefinitions(appServer)
+          if (requiresProviderDefinitions) await ensureCodexProviderDefinitions(appServer)
 
           let nextParams: unknown = body.params ?? null
           if (shouldInjectDeveloperInstructions(body.method)) {
@@ -5268,16 +5340,32 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         res.setHeader('Connection', 'keep-alive')
         res.setHeader('X-Accel-Buffering', 'no')
 
-        const unsubscribe = appServer.onNotification((notification) => {
+        let lastSentSequence = 0
+        const writeNotification = (notification: SequencedNotification) => {
           if (res.writableEnded || res.destroyed) return
+          if (notification.sequence <= lastSentSequence) return
+          lastSentSequence = notification.sequence
           const payload = {
-            ...notification,
+            method: notification.method,
+            params: notification.params,
             atIso: new Date().toISOString(),
           }
-          res.write(`data: ${JSON.stringify(payload)}\n\n`)
-        })
+          res.write(`id: ${String(notification.sequence)}\ndata: ${JSON.stringify(payload)}\n\n`)
+        }
 
-        res.write(`event: ready\ndata: ${JSON.stringify({ ok: true })}\n\n`)
+        const lastEventIdHeader = req.headers['last-event-id']
+        const requestedSequence = Number(Array.isArray(lastEventIdHeader) ? lastEventIdHeader[0] : lastEventIdHeader)
+        const hasReplayCursor = Number.isInteger(requestedSequence) && requestedSequence >= 0
+        lastSentSequence = hasReplayCursor ? requestedSequence : appServer.getNotificationSequence()
+
+        const unsubscribe = appServer.onNotification(writeNotification)
+        if (hasReplayCursor) {
+          for (const notification of appServer.listNotificationsAfter(requestedSequence)) {
+            writeNotification(notification)
+          }
+        }
+
+        res.write(`id: ${String(lastSentSequence)}\nevent: ready\ndata: ${JSON.stringify({ ok: true })}\n\n`)
         const keepAlive = setInterval(() => {
           res.write(': ping\n\n')
         }, 15000)

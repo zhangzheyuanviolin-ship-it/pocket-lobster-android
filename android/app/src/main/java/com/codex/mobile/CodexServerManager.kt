@@ -4284,7 +4284,7 @@ EOF
             "ANDROID_ROOT" to "/system",
             "ANDROID_STORAGE" to "/sdcard",
             "EXTERNAL_STORAGE" to "/sdcard",
-            "ANYCLAW_EXPORT_DIR" to "/sdcard/Download/AnyClaw",
+            "ANYCLAW_EXPORT_DIR" to "/sdcard/Download/口袋大龙虾本地归档/诊断",
             "APT_CONFIG" to "${paths.prefixDir}/etc/apt/apt.conf",
             "DPKG_ADMINDIR" to "${paths.prefixDir}/var/lib/dpkg",
             "SSL_CERT_FILE" to "${paths.prefixDir}/etc/tls/cert.pem",

@@ -21,6 +21,30 @@ type ServerRequestReplyBody = {
   }
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000
+const RPC_TIMEOUT_BY_METHOD: Record<string, number> = {
+  initialize: 30_000,
+  'thread/start': 30_000,
+  'thread/resume': 30_000,
+  'thread/read': 12_000,
+  'thread/list': 12_000,
+  'turn/start': 30_000,
+}
+
+export async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -32,17 +56,20 @@ export async function rpcCall<T>(method: string, params?: unknown): Promise<T> {
 
   let response: Response
   try {
-    response = await fetch('/codex-api/rpc', {
+    response = await fetchWithTimeout('/codex-api/rpc', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-    })
+    }, RPC_TIMEOUT_BY_METHOD[method] ?? DEFAULT_REQUEST_TIMEOUT_MS)
   } catch (error) {
+    const timedOut = error instanceof DOMException && error.name === 'AbortError'
     throw new CodexApiError(
-      error instanceof Error ? error.message : `RPC ${method} failed before request was sent`,
-      { code: 'network_error', method },
+      timedOut
+        ? `RPC ${method} timed out`
+        : error instanceof Error ? error.message : `RPC ${method} failed before request was sent`,
+      { code: timedOut ? 'timeout' : 'network_error', method },
     )
   }
 
@@ -76,7 +103,7 @@ export async function rpcCall<T>(method: string, params?: unknown): Promise<T> {
 }
 
 export async function fetchRpcMethodCatalog(): Promise<string[]> {
-  const response = await fetch('/codex-api/meta/methods')
+  const response = await fetchWithTimeout('/codex-api/meta/methods')
 
   let payload: unknown = null
   try {
@@ -101,7 +128,7 @@ export async function fetchRpcMethodCatalog(): Promise<string[]> {
 }
 
 export async function fetchRpcNotificationCatalog(): Promise<string[]> {
-  const response = await fetch('/codex-api/meta/notifications')
+  const response = await fetchWithTimeout('/codex-api/meta/notifications')
 
   let payload: unknown = null
   try {
@@ -141,12 +168,18 @@ function toNotification(value: unknown): RpcNotification | null {
   }
 }
 
-export function subscribeRpcNotifications(onNotification: (value: RpcNotification) => void): () => void {
+export function subscribeRpcNotifications(
+  onNotification: (value: RpcNotification) => void,
+  onStateChange?: (state: 'open' | 'error') => void,
+): () => void {
   if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
     return () => {}
   }
 
   const source = new EventSource('/codex-api/events')
+
+  source.onopen = () => onStateChange?.('open')
+  source.onerror = () => onStateChange?.('error')
 
   source.onmessage = (event) => {
     try {
@@ -168,13 +201,13 @@ export function subscribeRpcNotifications(onNotification: (value: RpcNotificatio
 export async function respondServerRequest(body: ServerRequestReplyBody): Promise<void> {
   let response: Response
   try {
-    response = await fetch('/codex-api/server-requests/respond', {
+    response = await fetchWithTimeout('/codex-api/server-requests/respond', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-    })
+    }, DEFAULT_REQUEST_TIMEOUT_MS)
   } catch (error) {
     throw new CodexApiError(
       error instanceof Error ? error.message : 'Failed to reply to server request',
@@ -202,7 +235,7 @@ export async function respondServerRequest(body: ServerRequestReplyBody): Promis
 }
 
 export async function fetchPendingServerRequests(): Promise<unknown[]> {
-  const response = await fetch('/codex-api/server-requests/pending')
+  const response = await fetchWithTimeout('/codex-api/server-requests/pending')
 
   let payload: unknown = null
   try {

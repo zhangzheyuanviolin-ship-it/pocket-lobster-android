@@ -40,10 +40,6 @@
       </ul>
     </section>
 
-    <SidebarMenuRow as="header" class="thread-tree-header-row">
-      <span class="thread-tree-header">{{ t('threads_header') }}</span>
-    </SidebarMenuRow>
-
     <p v-if="isSearchActive && filteredGroups.length === 0" class="thread-tree-no-results">{{ t('threads_no_match') }}</p>
 
     <p v-else-if="isLoading && groups.length === 0" class="thread-tree-loading">{{ t('threads_loading') }}</p>
@@ -62,9 +58,10 @@
           <SidebarMenuRow
             as="div"
             class="project-header-row"
-            :force-right-hover="isProjectMenuOpen(group.projectName)"
             role="button"
             tabindex="0"
+            :aria-label="`${getProjectDisplayName(group.projectName)}，${isCollapsed(group.projectName) ? '已收起' : '已展开'}`"
+            :aria-expanded="!isCollapsed(group.projectName)"
             @click="toggleProjectCollapse(group.projectName)"
             @keydown.enter.prevent="toggleProjectCollapse(group.projectName)"
             @keydown.space.prevent="toggleProjectCollapse(group.projectName)"
@@ -88,54 +85,6 @@
             >
               <span class="project-title">{{ getProjectDisplayName(group.projectName) }}</span>
             </span>
-            <template #right-hover>
-              <div class="project-hover-controls">
-                <div :ref="(el) => setProjectMenuWrapRef(group.projectName, el)" class="project-menu-wrap">
-                  <button
-                    class="project-menu-trigger"
-                    type="button"
-                    title="project_menu"
-                    @click.stop="toggleProjectMenu(group.projectName)"
-                  >
-                    <IconTablerDots class="thread-icon" />
-                  </button>
-
-                  <div v-if="isProjectMenuOpen(group.projectName)" class="project-menu-panel" @click.stop>
-                    <template v-if="projectMenuMode === 'actions'">
-                      <button class="project-menu-item" type="button" @click="openRenameProjectMenu(group.projectName)">
-                        {{ t('project_edit_name') }}
-                      </button>
-                      <button
-                        class="project-menu-item project-menu-item-danger"
-                        type="button"
-                        @click="onRemoveProject(group.projectName)"
-                      >
-                        {{ t('project_remove') }}
-                      </button>
-                    </template>
-                    <template v-else>
-                      <label class="project-menu-label">{{ t('project_name') }}</label>
-                      <input
-                        v-model="projectRenameDraft"
-                        class="project-menu-input"
-                        type="text"
-                        @input="onProjectNameInput(group.projectName)"
-                      />
-                    </template>
-                  </div>
-                </div>
-
-                <button
-                  class="thread-start-button"
-                  type="button"
-                  :aria-label="getNewThreadButtonAriaLabel(group.projectName)"
-                  :title="getNewThreadButtonAriaLabel(group.projectName)"
-                  @click.stop="onStartNewThread(group.projectName)"
-                >
-                  <IconTablerFilePencil class="thread-icon" />
-                </button>
-              </div>
-            </template>
           </SidebarMenuRow>
 
           <ul v-if="hasThreads(group)" class="thread-list">
@@ -207,8 +156,6 @@ import type { UiProjectGroup, UiThread } from '../../types/codex'
 import IconTablerArchive from '../icons/IconTablerArchive.vue'
 import IconTablerChevronDown from '../icons/IconTablerChevronDown.vue'
 import IconTablerChevronRight from '../icons/IconTablerChevronRight.vue'
-import IconTablerDots from '../icons/IconTablerDots.vue'
-import IconTablerFilePencil from '../icons/IconTablerFilePencil.vue'
 import IconTablerFolder from '../icons/IconTablerFolder.vue'
 import IconTablerFolderOpen from '../icons/IconTablerFolderOpen.vue'
 import IconTablerPin from '../icons/IconTablerPin.vue'
