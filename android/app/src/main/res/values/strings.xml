@@ -33,6 +33,8 @@
     <string name="agent_hub_codex">Codex 聊天</string>
     <string name="agent_hub_claude">Claude Code 聊天</string>
     <string name="agent_hub_permission_center">权限管理中心</string>
+    <string name="shared_browser_button_text">浏览器</string>
+    <string name="shared_browser_button_desc">打开可由三个智能体共享并由用户接管的 Minis 浏览器</string>
     <string name="prompt_manager_title">提示词管理</string>
     <string name="prompt_manager_subtitle">创建并选择会话初始化提示词。支持分别管理 Codex 与 Claude 的提示词。</string>
     <string name="prompt_manager_subtitle_codex">管理 Codex 会话提示词。选中的提示词会同步到 Codex 注入配置。</string>

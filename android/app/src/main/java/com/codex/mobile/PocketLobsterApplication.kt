@@ -2,20 +2,46 @@ package com.codex.mobile
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Environment
 import android.util.Log
 import com.openminis.app.MinisApp
+import com.openminis.app.integration.MinisRuntimeBridgeRuntime
+import com.openminis.app.integration.MinisRuntimeBridgeService
 import java.io.File
 import java.io.FileOutputStream
 import org.json.JSONObject
+import rikka.shizuku.ShizukuProvider
+import rikka.sui.Sui
 
 class PocketLobsterApplication : MinisApp() {
+    private var suiBackend = false
+
+    override fun attachBaseContext(base: Context) {
+        val processName = currentProcessName()
+        suiBackend = runCatching { Sui.init(base.packageName) }.getOrDefault(false)
+        if (!suiBackend) {
+            ShizukuProvider.enableMultiProcessSupport(
+                isShizukuProviderProcess(processName, base.packageName),
+            )
+        }
+        super.attachBaseContext(base)
+    }
+
     override fun onCreate() {
         val processName = currentProcessName()
         BetaStartupDiagnostics.record(this, "application_start", processName)
         try {
+            if (isMinisProcess(processName, packageName) && !suiBackend) {
+                ShizukuProvider.requestBinderForNonProviderProcess(this)
+            }
             super.onCreate()
+            when {
+                isShizukuProviderProcess(processName, packageName) -> initializeHostRuntime()
+                isMinisProcess(processName, packageName) ->
+                    MinisRuntimeBridgeRuntime.ensureStarted(this)
+            }
             BetaStartupDiagnostics.record(this, "application_ready", processName)
         } catch (error: Throwable) {
             BetaStartupDiagnostics.record(this, "application_failed", processName, error)
@@ -25,6 +51,17 @@ class PocketLobsterApplication : MinisApp() {
 
     override fun shouldInitializeMinisRuntime(): Boolean {
         return isMinisRuntimeProcess(currentProcessName(), packageName)
+    }
+
+    private fun initializeHostRuntime() {
+        SharedBridgeTokenStore.ensure(this)
+        ShizukuBridgeRuntime.ensureStarted(this)
+        SharedRuntimeCliInstaller.ensureInstalled(this)
+        runCatching {
+            startService(Intent(this, MinisRuntimeBridgeService::class.java))
+        }.onFailure { error ->
+            Log.w("PocketLobsterApplication", "Minis bridge service start failed: ${error.message}")
+        }
     }
 
     private fun currentProcessName(): String {
@@ -40,6 +77,12 @@ class PocketLobsterApplication : MinisApp() {
         internal fun isMinisRuntimeProcess(processName: String, packageName: String): Boolean {
             return processName == "$packageName:minis" || processName == "$packageName:acra"
         }
+
+        internal fun isMinisProcess(processName: String, packageName: String): Boolean =
+            processName == "$packageName:minis"
+
+        internal fun isShizukuProviderProcess(processName: String, packageName: String): Boolean =
+            processName == packageName
     }
 }
 

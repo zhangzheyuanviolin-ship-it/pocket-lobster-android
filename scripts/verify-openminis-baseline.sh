@@ -37,7 +37,7 @@ grep -q '"officialChatRuntime": true' "$MANIFEST"
 grep -q '"legacyOpenClawRuntimeBundled": false' "$MANIFEST"
 grep -q 'golden-beta-v299-20260820' "$MANIFEST"
 grep -q 'implementation(project(":openminis"))' "$ROOT_DIR/android/app/build.gradle.kts"
-grep -q 'versionCode = 305' "$ROOT_DIR/android/app/build.gradle.kts"
+grep -q 'versionCode = 306' "$ROOT_DIR/android/app/build.gradle.kts"
 grep -q 'third_party/OpenMinis/src/android/app/src/main/assets' "$ROOT_DIR/android/app/build.gradle.kts"
 grep -q 'MinisLauncher.openHome' "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/AgentHubActivity.kt"
 grep -q 'minis://settings/providers' "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/MinisLauncher.kt"
@@ -49,11 +49,24 @@ grep -q 'class PocketLobsterApplication : MinisApp()' \
   "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt"
 grep -q 'processName == "\$packageName:minis"' \
   "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt"
+grep -q 'ShizukuProvider.enableMultiProcessSupport' \
+  "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt"
+grep -q 'ShizukuProvider.requestBinderForNonProviderProcess' \
+  "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt"
 grep -q '口袋大龙虾测试版-启动诊断.jsonl' \
   "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt"
 grep -q 'open class MinisApp' "$ROOT_DIR/android/openminis/build.gradle.kts"
 grep -q 'native-offload-.*Process.myUid' "$ROOT_DIR/android/openminis/build.gradle.kts"
 grep -q 'minis_app_name' "$ROOT_DIR/android/openminis/build.gradle.kts"
+grep -q 'PocketLobsterHostTools.localTerminalDefinition' "$ROOT_DIR/android/openminis/build.gradle.kts"
+grep -q 'PocketLobsterHostTools.ubuntuDefinition' "$ROOT_DIR/android/openminis/build.gradle.kts"
+grep -q 'com.openminis.app.integration.SharedBrowserActivity' "$ROOT_DIR/android/app/src/main/AndroidManifest.xml"
+grep -q 'com.openminis.app.integration.MinisRuntimeBridgeService' "$ROOT_DIR/android/app/src/main/AndroidManifest.xml"
+grep -q 'tool("anyclaw_alpine"' "$ROOT_DIR/android/app/src/main/assets/anyclaw/claude-toolbox-server.js"
+grep -q 'tool("minis_browser"' "$ROOT_DIR/android/app/src/main/assets/anyclaw/claude-toolbox-server.js"
+test -f "$ROOT_DIR/android/app/src/main/assets/shared-runtime/alpine-shell"
+test -f "$ROOT_DIR/android/app/src/main/assets/shared-runtime/minis-browser"
+test -f "$ROOT_DIR/android/app/src/main/assets/shared-runtime/shared-runtime-cli.js"
 test "$(grep -c 'android:process=":minis"' "$ROOT_DIR/android/openminis/src/main/AndroidManifest.xml")" -eq 10
 test -f "$ROOT_DIR/android/openminis/build.gradle.kts"
 test -f "$ROOT_DIR/android/app/src/main/res/mipmap-anydpi-v26/pocket_lobster_launcher.xml"

@@ -158,7 +158,7 @@ jobs:
           PACKAGE_LINE="$(echo "$BADGING" | head -n 1)"
           echo "$PACKAGE_LINE"
           echo "$PACKAGE_LINE" | grep -F "name='$EXPECTED_PACKAGE_ID'"
-          echo "$PACKAGE_LINE" | grep -F "versionCode='305'"
+          echo "$PACKAGE_LINE" | grep -F "versionCode='306'"
           test "$(echo "$BADGING" | grep -c '^launchable-activity:')" -eq 1
           echo "$BADGING" | grep -F "launchable-activity: name='com.codex.mobile.MainActivity'"
           if echo "$BADGING" | grep -E "^application-label[^:]*:'Minis'$"; then
@@ -166,7 +166,7 @@ jobs:
             exit 1
           fi
           if [ "$RELEASE_CHANNEL" = "beta" ]; then
-            echo "$PACKAGE_LINE" | grep -F "versionName='1.0.64-codex-cli-0.147.0-gpt-5.6-openminis-1.12-isolated-runtime-v305-beta'"
+            echo "$PACKAGE_LINE" | grep -F "versionName='1.0.65-codex-cli-0.147.0-gpt-5.6-openminis-1.12-shared-runtime-v306-beta'"
             echo "$BADGING" | grep -F "application-label:'口袋大龙虾测试版'"
             test "$EXPECTED_PACKAGE_ID" = "com.codex.mobile.pocketlobster.beta"
           fi
@@ -181,6 +181,20 @@ jobs:
           grep -F 'com.codex.mobile.PocketLobsterApplication' /tmp/merged-manifest.txt
           grep -F 'com.codex.mobile.MainActivity' /tmp/merged-manifest.txt
           test "$(grep -c ':minis' /tmp/merged-manifest.txt)" -ge 10
+          grep -F 'com.openminis.app.integration.SharedBrowserActivity' /tmp/merged-manifest.txt
+          grep -F 'com.openminis.app.integration.MinisRuntimeBridgeService' /tmp/merged-manifest.txt
+
+      - name: Verify shared runtime integration
+        run: |
+          grep -F 'ShizukuProvider.enableMultiProcessSupport' android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt
+          grep -F 'ShizukuProvider.requestBinderForNonProviderProcess' android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt
+          grep -F 'PocketLobsterHostTools.localTerminalDefinition' android/openminis/build.gradle.kts
+          grep -F 'PocketLobsterHostTools.ubuntuDefinition' android/openminis/build.gradle.kts
+          grep -F 'tool("anyclaw_alpine"' android/app/src/main/assets/anyclaw/claude-toolbox-server.js
+          grep -F 'tool("minis_browser"' android/app/src/main/assets/anyclaw/claude-toolbox-server.js
+          test -f android/app/src/main/assets/shared-runtime/alpine-shell
+          test -f android/app/src/main/assets/shared-runtime/minis-browser
+          test -f android/app/src/main/assets/shared-runtime/shared-runtime-cli.js
 
       - name: Verify OpenMinis runtime payload
         env:

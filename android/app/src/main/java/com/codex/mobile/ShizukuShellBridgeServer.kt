@@ -35,6 +35,10 @@ class ShizukuShellBridgeServer(
                 session.method == Method.POST && session.uri == "/disable" -> handleEnable(false)
                 session.method == Method.POST && session.uri == "/exec" -> handleExec(session)
                 session.method == Method.POST && session.uri == "/web/call" -> handleWebCall(session)
+                session.method == Method.GET && session.uri == "/shared/status" ->
+                    handleSharedStatus(session)
+                session.method == Method.POST && session.uri == "/shared/exec" ->
+                    handleSharedExec(session)
                 else -> jsonResponse(
                     Response.Status.NOT_FOUND,
                     JSONObject().put("ok", false).put("error", "Not found"),
@@ -144,6 +148,45 @@ class ShizukuShellBridgeServer(
         val result = WebAutomationManager.handleCall(context, method, params)
         return jsonResponse(Response.Status.OK, result)
     }
+
+    private fun handleSharedStatus(session: IHTTPSession): Response {
+        if (!isSharedRequestAuthorized(session)) return sharedUnauthorized()
+        return jsonResponse(Response.Status.OK, SharedHostRuntimeBridge.status(context))
+    }
+
+    private fun handleSharedExec(session: IHTTPSession): Response {
+        if (!isSharedRequestAuthorized(session)) return sharedUnauthorized()
+        val files = HashMap<String, String>()
+        session.parseBody(files)
+        val raw = files["postData"] ?: ""
+        val payload = if (raw.isBlank()) JSONObject() else JSONObject(raw)
+        val runtime = payload.optString("runtime", "").trim()
+        val command = payload.optString("command", "")
+        val timeoutSeconds = payload.optLong("timeout", 900L)
+        val result = SharedHostRuntimeBridge.execute(
+            context = context,
+            runtime = runtime,
+            command = command,
+            timeoutSeconds = timeoutSeconds,
+        )
+        return jsonResponse(
+            Response.Status.OK,
+            JSONObject()
+                .put("ok", result.exitCode == 0)
+                .put("runtime", runtime)
+                .put("exitCode", result.exitCode)
+                .put("output", result.output)
+                .put("timedOut", result.timedOut),
+        )
+    }
+
+    private fun isSharedRequestAuthorized(session: IHTTPSession): Boolean =
+        SharedBridgeTokenStore.matches(context, session.headers["x-pocket-lobster-token"])
+
+    private fun sharedUnauthorized(): Response = jsonResponse(
+        Response.Status.UNAUTHORIZED,
+        JSONObject().put("ok", false).put("error", "unauthorized"),
+    )
 
     private fun jsonResponse(status: Response.Status, json: JSONObject): Response {
         return newFixedLengthResponse(status, "application/json; charset=utf-8", json.toString())

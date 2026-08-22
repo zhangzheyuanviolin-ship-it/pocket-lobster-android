@@ -2436,6 +2436,7 @@ EOF
 
         ensureCodexWrapperScript()
         ensureCodexBundledRgWrapper()
+        SharedRuntimeCliInstaller.ensureInstalled(context)
         return isCodexInstalled() && getInstalledCodexVersion() == CODEX_VERSION
     }
 

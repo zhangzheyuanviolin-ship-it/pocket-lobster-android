@@ -1,0 +1,2 @@
+#!/system/bin/sh
+exec node "$PREFIX/libexec/pocketlobster/shared-runtime-cli.js" browser "$@"

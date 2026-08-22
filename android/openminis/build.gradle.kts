@@ -137,6 +137,28 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
                 "val socketName: String = SOCKET_NAME",
             )
         }
+        generatedSources.get().file("com/openminis/app/tools/AgentTools.kt").asFile.replaceRequired(
+            "        add(shellExecuteDefinition())",
+            """        add(shellExecuteDefinition())
+        add(com.openminis.app.integration.PocketLobsterHostTools.localTerminalDefinition())
+        add(com.openminis.app.integration.PocketLobsterHostTools.ubuntuDefinition())""",
+        )
+        generatedSources.get().file("com/openminis/app/ui/chat/ChatViewModel.kt").asFile.replaceRequired(
+            """            "memory_get" -> executeMemoryGetTool(argsJson)
+            else -> ToolExecutionResult("Unknown tool: ${'$'}name", false)""",
+            """            "memory_get" -> executeMemoryGetTool(argsJson)
+            com.openminis.app.integration.PocketLobsterHostTools.LOCAL_TOOL,
+            com.openminis.app.integration.PocketLobsterHostTools.UBUNTU_TOOL ->
+                com.openminis.app.integration.PocketLobsterHostTools.execute(name, argsJson, context)
+            else -> ToolExecutionResult("Unknown tool: ${'$'}name", false)""",
+        )
+        generatedSources.get().file("com/openminis/app/ui/chat/ChatViewModel.kt").asFile.replaceRequired(
+            """        BrowserTabPool(context).also {
+            it.setSession(activeSessionId)""",
+            """        BrowserTabPool(context).also {
+            com.openminis.app.integration.SharedMinisRuntime.registerBrowser(it)
+            it.setSession(activeSessionId)""",
+        )
         var appNameReferenceCount = 0
         generatedSources.get().asFile.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
@@ -162,6 +184,14 @@ val verifyOpenMinisIntegrationSources by tasks.registering {
         check("if (!shouldInitializeMinisRuntime()) return" in minisApp)
         check("native-offload-${'$'}{android.os.Process.myUid()}" in nativeOffload)
         check("const val socketName" !in nativeOffload)
+        val agentTools = generatedSources.get()
+            .file("com/openminis/app/tools/AgentTools.kt").asFile.readText()
+        val chatViewModel = generatedSources.get()
+            .file("com/openminis/app/ui/chat/ChatViewModel.kt").asFile.readText()
+        check("PocketLobsterHostTools.localTerminalDefinition" in agentTools)
+        check("PocketLobsterHostTools.ubuntuDefinition" in agentTools)
+        check("PocketLobsterHostTools.execute" in chatViewModel)
+        check("SharedMinisRuntime.registerBrowser" in chatViewModel)
         check(generatedSources.get().asFile.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
             .none { "R.string.app_name" in it.readText() })
@@ -215,4 +245,5 @@ dependencies {
     implementation("ch.acra:acra-core:5.12.0")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
 }

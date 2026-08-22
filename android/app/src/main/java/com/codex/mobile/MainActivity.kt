@@ -64,6 +64,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tabOpenClawButton: Button
     private lateinit var tabCodexButton: Button
     private lateinit var tabClaudeButton: Button
+    private lateinit var tabBrowserButton: Button
     private lateinit var serverManager: CodexServerManager
     private var setupStarted = false
     private var waitingForStorageGrant = false
@@ -158,6 +159,7 @@ class MainActivity : AppCompatActivity() {
         tabOpenClawButton = findViewById(R.id.btnTabOpenClaw)
         tabCodexButton = findViewById(R.id.btnTabCodex)
         tabClaudeButton = findViewById(R.id.btnTabClaude)
+        tabBrowserButton = findViewById(R.id.btnTabBrowser)
 
         serverManager = CodexServerManager(this)
 
@@ -218,6 +220,9 @@ class MainActivity : AppCompatActivity() {
                     putExtra(CliAgentChatActivity.EXTRA_AGENT_ID, ExternalAgentId.CLAUDE_CODE.value)
                 },
             )
+        }
+        tabBrowserButton.setOnClickListener {
+            MinisLauncher.openBrowser(this)
         }
 
         requestBatteryOptimizationExemption()

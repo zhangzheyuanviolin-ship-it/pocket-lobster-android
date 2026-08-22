@@ -168,6 +168,17 @@
             android:text="@string/agent_hub_claude"
             android:textAllCaps="false" />
 
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnTabBrowser"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:layout_weight="1"
+            android:contentDescription="@string/shared_browser_button_desc"
+            android:minHeight="48dp"
+            android:text="@string/shared_browser_button_text"
+            android:textAllCaps="false" />
+
     </LinearLayout>
 
     <LinearLayout

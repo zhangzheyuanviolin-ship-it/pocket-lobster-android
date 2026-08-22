@@ -39,6 +39,13 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name="com.openminis.app.integration.SharedBrowserActivity"
+            android:exported="false"
+            android:process=":minis"
+            android:theme="@style/Theme.Minis"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".OpenClawChatActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
@@ -116,6 +123,11 @@
         <service
             android:name=".CodexForegroundService"
             android:exported="false" />
+
+        <service
+            android:name="com.openminis.app.integration.MinisRuntimeBridgeService"
+            android:exported="false"
+            android:process=":minis" />
 
     </application>
 

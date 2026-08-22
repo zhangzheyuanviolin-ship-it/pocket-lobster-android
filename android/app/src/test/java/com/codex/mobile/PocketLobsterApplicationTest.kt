@@ -30,4 +30,21 @@ class PocketLobsterApplicationTest {
             PocketLobsterApplication.isMinisRuntimeProcess("com.openminis.app", packageName),
         )
     }
+
+    @Test
+    fun shizukuProviderLivesOnlyInHostProcess() {
+        assertTrue(
+            PocketLobsterApplication.isShizukuProviderProcess(packageName, packageName),
+        )
+        assertFalse(
+            PocketLobsterApplication.isShizukuProviderProcess("$packageName:minis", packageName),
+        )
+    }
+
+    @Test
+    fun minisBridgeLivesOnlyInMinisProcess() {
+        assertTrue(PocketLobsterApplication.isMinisProcess("$packageName:minis", packageName))
+        assertFalse(PocketLobsterApplication.isMinisProcess(packageName, packageName))
+        assertFalse(PocketLobsterApplication.isMinisProcess("$packageName:acra", packageName))
+    }
 }

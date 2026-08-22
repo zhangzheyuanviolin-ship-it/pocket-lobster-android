@@ -2386,7 +2386,8 @@ function buildRuntimeSummary(
     runtimeBinDir ? `Current runtime bin: ${runtimeBinDir}` : '',
     ubuntuBin ? `Current Ubuntu bridge: ${ubuntuBin}` : '',
     pathValue ? `Current PATH: ${pathValue}` : '',
-    'Execution chains available in this app: local app shell, Ubuntu runtime shell via ubuntu-shell or ANYCLAW_UBUNTU_BIN, and system-level shell via system-shell.',
+    'Execution chains available in this app: local app shell, Ubuntu runtime shell via ubuntu-shell or ANYCLAW_UBUNTU_BIN, OpenMinis Alpine via alpine-shell, and system-level shell via system-shell.',
+    'The real visible OpenMinis browser is available through minis-browser. Use it when browser state must be visible to or taken over by the user; run minis-browser list_tabs to verify the bridge before concluding it is unavailable.',
     'If the runtime snapshot above is installed and healthy, do not conclude Ubuntu is missing before verifying it with ubuntu-status, echo $ANYCLAW_UBUNTU_BIN, and ls "$HOME/.openclaw-android/linux-runtime/bin" in the local app shell.',
   ].filter((line) => line.length > 0)
 

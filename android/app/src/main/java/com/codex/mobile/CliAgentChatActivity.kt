@@ -73,6 +73,7 @@ class CliAgentChatActivity : AppCompatActivity() {
     private lateinit var btnOpenClaw: Button
     private lateinit var btnCodex: Button
     private lateinit var btnClaude: Button
+    private lateinit var btnBrowser: Button
 
     private lateinit var serverManager: CodexServerManager
     private lateinit var agentId: ExternalAgentId
@@ -195,6 +196,7 @@ class CliAgentChatActivity : AppCompatActivity() {
         btnOpenClaw = findViewById(R.id.btnCliTabOpenClaw)
         btnCodex = findViewById(R.id.btnCliTabCodex)
         btnClaude = findViewById(R.id.btnCliTabClaude)
+        btnBrowser = findViewById(R.id.btnCliBrowser)
 
         listView.adapter = messageAdapter
         tvTitle.text = AgentSessionStore.displayAgentName(agentId)
@@ -223,6 +225,9 @@ class CliAgentChatActivity : AppCompatActivity() {
         }
         btnSend.setOnClickListener {
             sendMessage()
+        }
+        btnBrowser.setOnClickListener {
+            MinisLauncher.openBrowser(this)
         }
         inputMessage.setOnEditorActionListener { _, _, _ ->
             sendMessage()
@@ -1314,6 +1319,8 @@ class CliAgentChatActivity : AppCompatActivity() {
         out.appendLine("15) 即使授权设备工具，也禁止将其用于工作区文件搜索、移动、编辑。")
         out.appendLine("16) 网页自动化调用请使用 mcp__anyclaw_toolbox__start_web/stop_web/web_*，避免裸 start_web/web_*。")
         out.appendLine("17) 若 anyclaw_ 工具不可见或调用失败，必须输出 MCP_TOOLBOX_STATUS=UNAVAILABLE，并给出 reason 与 step。")
+        out.appendLine("18) 需要真实可见且用户可接管的浏览器时，必须使用 mcp__anyclaw_toolbox__minis_browser；旧 web_* 仅用于无需用户接管的兼容任务。")
+        out.appendLine("19) Alpine Linux 命令使用 mcp__anyclaw_toolbox__anyclaw_alpine，本地终端与 Ubuntu 分别使用 anyclaw_terminal 和 anyclaw_ubuntu。")
     }
 
     private fun runClaudePrint(
@@ -2134,6 +2141,8 @@ class CliAgentChatActivity : AppCompatActivity() {
             .put("PREFIX", paths.prefixDir)
             .put("PATH", "${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin")
             .put("ANYCLAW_WEB_BRIDGE_URL", "http://127.0.0.1:${ShizukuShellBridgeServer.BRIDGE_PORT}/web/call")
+            .put("ANYCLAW_MINIS_BRIDGE_URL", "http://127.0.0.1:${com.openminis.app.integration.MinisRuntimeBridgeRuntime.PORT}")
+            .put("ANYCLAW_SHARED_BRIDGE_TOKEN_FILE", SharedBridgeTokenStore.tokenFile(this).absolutePath)
             .put("ANYCLAW_TAVILY_BASE_URL", "https://api.tavily.com/search")
             .put("ANYCLAW_EXA_MCP_URL", "https://mcp.exa.ai/mcp")
             .put("ANYCLAW_EXA_MCP_TOOLS", "web_search_exa,web_search_advanced_exa,get_code_context_exa,company_research_exa,people_search_exa,crawling_exa,deep_researcher_start,deep_researcher_check,web_fetch_exa")

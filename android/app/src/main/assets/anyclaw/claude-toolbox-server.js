@@ -4,11 +4,13 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const SERVER_INFO = { name: "anyclaw-toolbox", version: "2.1.0" };
+const SERVER_INFO = { name: "anyclaw-toolbox", version: "2.2.0" };
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_STDIO_BYTES = 4 * 1024 * 1024;
 const DEFAULT_SEARCH_LIMIT = 6;
 const WEB_BRIDGE_URL = process.env.ANYCLAW_WEB_BRIDGE_URL || "http://127.0.0.1:18926/web/call";
+const MINIS_BRIDGE_URL = process.env.ANYCLAW_MINIS_BRIDGE_URL || "http://127.0.0.1:18927";
+const SHARED_BRIDGE_TOKEN_FILE = process.env.ANYCLAW_SHARED_BRIDGE_TOKEN_FILE || path.resolve(process.env.HOME || "", "..", "shared-runtime", "bridge-token");
 const TAVILY_BASE_URL = process.env.ANYCLAW_TAVILY_BASE_URL || "https://api.tavily.com/search";
 const EXA_MCP_URL = process.env.ANYCLAW_EXA_MCP_URL || "https://mcp.exa.ai/mcp";
 const EXA_API_BASE_URL = (process.env.ANYCLAW_EXA_API_BASE_URL || "https://api.exa.ai").replace(/\/$/, "");
@@ -307,6 +309,24 @@ const TOOL_DEFS = [
     command: { type: "string", minLength: 1 },
     timeoutMs: { type: "integer", minimum: 1000, maximum: 120000 }
   }, ["command"]),
+  tool("anyclaw_alpine", "Execute command inside the shared OpenMinis Alpine Linux runtime.", {
+    command: { type: "string", minLength: 1 },
+    timeoutMs: { type: "integer", minimum: 1000, maximum: 900000 }
+  }, ["command"]),
+  tool("minis_browser", "Control the real visible OpenMinis browser that the user can take over from the chat UI.", {
+    action: { type: "string", enum: ["navigate", "screenshot", "click", "type", "get_text", "scroll", "get_page_info", "execute_js", "find_elements", "hover", "get_readable", "set_user_agent", "set_viewport", "get_backbone", "fetch", "new_tab", "close_tab", "list_tabs", "get_cookies", "set_cookies", "scroll_and_collect", "wait_for_dom_stable"] },
+    url: { type: "string" },
+    selector: { type: "string" },
+    text: { type: "string" },
+    script: { type: "string" },
+    tab_id: { type: "integer" },
+    direction: { type: "string", enum: ["up", "down"] },
+    amount: { type: "integer" },
+    coordinate_x: { type: "integer" },
+    coordinate_y: { type: "integer" },
+    user_agent: { type: "string", enum: ["mobile_chrome", "desktop_chrome"] },
+    timeout: { type: "integer", minimum: 1, maximum: 60 }
+  }, ["action"]),
   tool("anyclaw_github_repo_info", "Get repository metadata.", {
     repo: { type: "string", minLength: 3 },
     token: { type: "string" }
@@ -958,6 +978,32 @@ async function callWebBridge(method, params) {
     };
   }
 
+  return response.data;
+}
+
+async function callMinisBridge(route, payload, timeoutMs = 120000) {
+  let token = "";
+  try {
+    token = fs.readFileSync(SHARED_BRIDGE_TOKEN_FILE, "utf8").trim();
+  } catch (error) {
+    return { ok: false, error: "shared_bridge_token_unavailable", detail: String(error.message || error) };
+  }
+  const response = await fetchJson(MINIS_BRIDGE_URL + route, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Pocket-Lobster-Token": token,
+      "User-Agent": "AnyClawMinisBridge/1.0"
+    },
+    body: JSON.stringify(payload || {})
+  }, timeoutMs);
+  if (!response.ok || !response.data || typeof response.data !== "object") {
+    return {
+      ok: false,
+      error: "minis_bridge_http_" + String(response.status || 0),
+      detail: String(response.text || "").slice(0, 1200)
+    };
+  }
   return response.data;
 }
 
@@ -2038,6 +2084,18 @@ async function callTool(name, args) {
         error: run.error,
         runtime: "ubuntu"
       };
+    }
+    case "anyclaw_alpine": {
+      const command = toStringSafe(args.command, "").trim();
+      if (!command) throw new Error("command is required");
+      const timeoutMs = clampInt(toInt(args.timeoutMs, 30000), 1000, 900000);
+      return await callMinisBridge("/alpine/exec", {
+        command,
+        timeout: Math.ceil(timeoutMs / 1000)
+      }, timeoutMs + 10000);
+    }
+    case "minis_browser": {
+      return await callMinisBridge("/browser/call", args, 120000);
     }
     case "anyclaw_github_repo_info": {
       const token = resolveGithubToken(args);
