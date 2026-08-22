@@ -5,6 +5,7 @@ const serverManager = readFileSync('android/app/src/main/java/com/codex/mobile/C
 const setupScript = readFileSync('android/app/src/main/assets/setup-codex.sh', 'utf8')
 const gradle = readFileSync('android/app/build.gradle.kts', 'utf8')
 const workflow = readFileSync('.github/workflows/build-apk.yml', 'utf8')
+const baselineScript = readFileSync('scripts/verify-openminis-baseline.sh', 'utf8')
 
 assert.match(serverManager, /private const val CODEX_VERSION = "0\.147\.0"/)
 assert.match(serverManager, /model = "gpt-5\.6"/)
@@ -20,6 +21,7 @@ assert.match(gradle, /create\("operator"\)[\s\S]*applicationId = "com\.codex\.mo
 assert.match(workflow, /versionCode='308'/)
 assert.match(workflow, /codex-realtime-v308-beta/)
 assert.match(workflow, /PACKAGE_ID="com\.codex\.mobile\.pocketlobster\.beta"/)
+assert.match(baselineScript, /versionCode = 308/)
 
 assert.match(serverManager, /installedVersion\.isNotBlank\(\) && installedVersion != CODEX_VERSION/)
 assert.match(serverManager, /rm -rf \\"\$prefix\/lib\/node_modules\/@openai\/codex\\"/)
