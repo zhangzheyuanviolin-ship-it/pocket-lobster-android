@@ -7,11 +7,11 @@ import {
   getCurrentModelConfig,
   getPendingServerRequests,
   getThreadRoute,
+  getThreadSnapshot,
   interruptThreadTurn,
   rollbackThread,
   replyToServerRequest,
   getThreadGroups,
-  getThreadMessages,
   resumeThread,
   setActiveModelSelection,
   startThread,
@@ -44,9 +44,22 @@ const PROJECT_ORDER_STORAGE_KEY = 'codex-web-local.project-order.v1'
 const PROJECT_DISPLAY_NAME_STORAGE_KEY = 'codex-web-local.project-display-name.v1'
 const AUTO_REFRESH_ENABLED_STORAGE_KEY = 'codex-web-local.auto-refresh-enabled.v1'
 const EVENT_SYNC_DEBOUNCE_MS = 220
+const EVENT_SYNC_RETRY_MS = 1500
 const AUTO_REFRESH_INTERVAL_MS = 4000
+const RELIABILITY_SYNC_INTERVAL_MS = 1500
+const LIVE_DELTA_FLUSH_MS = 80
+const INITIAL_THREAD_LOAD_RETRIES = 3
+const INITIAL_THREAD_LOAD_RETRY_MS = 700
 const REASONING_EFFORT_OPTIONS: ReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
 const GLOBAL_SERVER_REQUEST_SCOPE = '__global__'
+
+type OptimisticUserMessage = {
+  message: UiMessage
+  normalizedText: string
+  baselineUserMatches: number
+  baselineAssistantCount: number
+  baselineTurnId: string
+}
 
 function loadReadStateMap(): Record<string, string> {
   if (typeof window === 'undefined') return {}
@@ -321,7 +334,27 @@ function normalizeMessageText(value: string): string {
   return value.replace(/\s+/gu, ' ').trim()
 }
 
+function mergeDisplayMessages(
+  persisted: UiMessage[],
+  optimisticUsers: OptimisticUserMessage[],
+  liveAgent: UiMessage[],
+): UiMessage[] {
+  const rows: UiMessage[] = []
+  const seenIds = new Set<string>()
+  for (const message of [
+    ...persisted,
+    ...optimisticUsers.map((row) => row.message),
+    ...liveAgent,
+  ]) {
+    if (!message.id || seenIds.has(message.id)) continue
+    seenIds.add(message.id)
+    rows.push(message)
+  }
+  return rows
+}
+
 function removeRedundantLiveAgentMessages(previous: UiMessage[], incoming: UiMessage[]): UiMessage[] {
+  const incomingIds = new Set(incoming.map((message) => message.id).filter((id) => id.length > 0))
   const incomingAssistantTexts = new Set(
     incoming
       .filter((message) => message.role === 'assistant')
@@ -335,6 +368,7 @@ function removeRedundantLiveAgentMessages(previous: UiMessage[], incoming: UiMes
 
   const next = previous.filter((message) => {
     if (message.messageType !== 'agentMessage.live') return true
+    if (incomingIds.has(message.id)) return false
     const normalized = normalizeMessageText(message.text)
     if (normalized.length === 0) return false
     return !incomingAssistantTexts.has(normalized)
@@ -550,6 +584,7 @@ export function useDesktopState() {
   const sourceGroups = ref<UiProjectGroup[]>([])
   const selectedThreadId = ref(loadSelectedThreadId())
   const persistedMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
+  const optimisticUserMessagesByThreadId = ref<Record<string, OptimisticUserMessage[]>>({})
   const liveAgentMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
   const liveReasoningTextByThreadId = ref<Record<string, string>>({})
   const inProgressById = ref<Record<string, boolean>>({})
@@ -586,6 +621,8 @@ export function useDesktopState() {
   let eventSyncTimer: number | null = null
   let autoRefreshIntervalTimer: number | null = null
   let autoRefreshCountdownTimer: number | null = null
+  let reliabilitySyncTimer: number | null = null
+  let liveDeltaFlushTimer: number | null = null
   let pendingThreadsRefresh = false
   const pendingThreadMessageRefresh = new Set<string>()
   let activeReasoningItemId = ''
@@ -595,6 +632,12 @@ export function useDesktopState() {
   let modelSelectionWriteChain: Promise<void> = Promise.resolve()
   const selectedModelByProvider = new Map<string, string>()
   const pendingTurnStartsById = new Map<string, TurnStartedInfo>()
+  const messageLoadRevisionByThreadId = new Map<string, number>()
+  const pendingAgentDeltasByThreadId = new Map<string, Map<string, string>>()
+  const pendingReasoningDeltasByThreadId = new Map<string, string>()
+  const lastSnapshotTurnIdByThreadId = new Map<string, string>()
+  let threadLoadRevision = 0
+  let optimisticMessageSequence = 0
 
   const allThreads = computed(() => flattenThreads(projectGroups.value))
   const selectedThread = computed(() =>
@@ -652,8 +695,9 @@ export function useDesktopState() {
     if (!threadId) return []
 
     const persisted = persistedMessagesByThreadId.value[threadId] ?? []
+    const optimisticUsers = optimisticUserMessagesByThreadId.value[threadId] ?? []
     const liveAgent = liveAgentMessagesByThreadId.value[threadId] ?? []
-    const combined = persisted === liveAgent ? persisted : [...persisted, ...liveAgent]
+    const combined = mergeDisplayMessages(persisted, optimisticUsers, liveAgent)
 
     const summary = turnSummaryByThreadId.value[threadId]
     if (!summary) return combined
@@ -810,6 +854,12 @@ export function useDesktopState() {
 
   function pruneThreadScopedState(flatThreads: UiThread[]): void {
     const activeThreadIds = new Set(flatThreads.map((thread) => thread.id))
+    for (const threadId of Object.keys(optimisticUserMessagesByThreadId.value)) {
+      activeThreadIds.add(threadId)
+    }
+    for (const [threadId, inProgress] of Object.entries(inProgressById.value)) {
+      if (inProgress === true) activeThreadIds.add(threadId)
+    }
     const nextReadState = pruneThreadStateMap(readStateByThreadId.value, activeThreadIds)
     if (nextReadState !== readStateByThreadId.value) {
       readStateByThreadId.value = nextReadState
@@ -825,6 +875,10 @@ export function useDesktopState() {
     resumedThreadById.value = pruneThreadStateMap(resumedThreadById.value, activeThreadIds)
     resumedModelProviderById.value = pruneThreadStateMap(resumedModelProviderById.value, activeThreadIds)
     persistedMessagesByThreadId.value = pruneThreadStateMap(persistedMessagesByThreadId.value, activeThreadIds)
+    optimisticUserMessagesByThreadId.value = pruneThreadStateMap(
+      optimisticUserMessagesByThreadId.value,
+      activeThreadIds,
+    )
     liveAgentMessagesByThreadId.value = pruneThreadStateMap(liveAgentMessagesByThreadId.value, activeThreadIds)
     liveReasoningTextByThreadId.value = pruneThreadStateMap(liveReasoningTextByThreadId.value, activeThreadIds)
     turnSummaryByThreadId.value = pruneThreadStateMap(turnSummaryByThreadId.value, activeThreadIds)
@@ -990,6 +1044,99 @@ export function useDesktopState() {
     }
   }
 
+  function setOptimisticUserMessagesForThread(
+    threadId: string,
+    nextMessages: OptimisticUserMessage[],
+  ): void {
+    const previous = optimisticUserMessagesByThreadId.value[threadId] ?? []
+    if (previous === nextMessages) return
+    if (nextMessages.length === 0) {
+      optimisticUserMessagesByThreadId.value = omitKey(
+        optimisticUserMessagesByThreadId.value,
+        threadId,
+      )
+      return
+    }
+    optimisticUserMessagesByThreadId.value = {
+      ...optimisticUserMessagesByThreadId.value,
+      [threadId]: nextMessages,
+    }
+  }
+
+  function queueOptimisticUserMessage(threadId: string, text: string): string {
+    const normalizedText = normalizeMessageText(text)
+    const persisted = persistedMessagesByThreadId.value[threadId] ?? []
+    const id = `optimistic-user:${threadId}:${Date.now().toString(36)}:${(++optimisticMessageSequence).toString(36)}`
+    const row: OptimisticUserMessage = {
+      message: {
+        id,
+        role: 'user',
+        text,
+        messageType: 'userMessage.optimistic',
+      },
+      normalizedText,
+      baselineUserMatches: persisted.filter(
+        (message) => message.role === 'user' && normalizeMessageText(message.text) === normalizedText,
+      ).length,
+      baselineAssistantCount: persisted.filter((message) => message.role === 'assistant').length,
+      baselineTurnId:
+        lastSnapshotTurnIdByThreadId.get(threadId) ??
+        [...persisted].reverse().find((message) => message.turnId)?.turnId ??
+        '',
+    }
+    setOptimisticUserMessagesForThread(
+      threadId,
+      [...(optimisticUserMessagesByThreadId.value[threadId] ?? []), row],
+    )
+    return id
+  }
+
+  function removeOptimisticUserMessage(threadId: string, messageId: string): void {
+    const previous = optimisticUserMessagesByThreadId.value[threadId] ?? []
+    const next = previous.filter((row) => row.message.id !== messageId)
+    if (next.length !== previous.length) {
+      setOptimisticUserMessagesForThread(threadId, next)
+    }
+  }
+
+  function reconcileOptimisticUserMessages(
+    threadId: string,
+    incoming: UiMessage[],
+    latestTurnId: string,
+  ): { responseArrived: boolean; snapshotAdvanced: boolean } {
+    const previous = optimisticUserMessagesByThreadId.value[threadId] ?? []
+    if (previous.length === 0) {
+      return { responseArrived: false, snapshotAdvanced: false }
+    }
+
+    const assistantCount = incoming.filter((message) => message.role === 'assistant').length
+    const userMatchCounts = new Map<string, number>()
+    for (const message of incoming) {
+      if (message.role !== 'user') continue
+      const text = normalizeMessageText(message.text)
+      userMatchCounts.set(text, (userMatchCounts.get(text) ?? 0) + 1)
+    }
+
+    let responseArrived = false
+    const next = previous.filter((row) => {
+      const persistedUserCount = userMatchCounts.get(row.normalizedText) ?? 0
+      const userWasPersisted = persistedUserCount > row.baselineUserMatches
+      if (assistantCount > row.baselineAssistantCount) {
+        responseArrived = true
+      }
+      return !userWasPersisted
+    })
+    if (next.length !== previous.length) {
+      setOptimisticUserMessagesForThread(threadId, next)
+    }
+    return {
+      responseArrived,
+      snapshotAdvanced: previous.some(
+        (row) => latestTurnId.length > 0 && latestTurnId !== row.baselineTurnId,
+      ),
+    }
+  }
+
   function setLiveAgentMessagesForThread(threadId: string, nextMessages: UiMessage[]): void {
     const previous = liveAgentMessagesByThreadId.value[threadId] ?? []
     if (areMessageArraysEqual(previous, nextMessages)) return
@@ -1003,6 +1150,52 @@ export function useDesktopState() {
     const previous = liveAgentMessagesByThreadId.value[threadId] ?? []
     const next = upsertMessage(previous, nextMessage)
     setLiveAgentMessagesForThread(threadId, next)
+  }
+
+  function flushLiveDeltas(): void {
+    if (liveDeltaFlushTimer !== null && typeof window !== 'undefined') {
+      window.clearTimeout(liveDeltaFlushTimer)
+    }
+    liveDeltaFlushTimer = null
+
+    for (const [threadId, byMessageId] of pendingAgentDeltasByThreadId.entries()) {
+      for (const [messageId, delta] of byMessageId.entries()) {
+        const existing = (liveAgentMessagesByThreadId.value[threadId] ?? [])
+          .find((message) => message.id === messageId)
+        upsertLiveAgentMessage(threadId, {
+          id: messageId,
+          role: 'assistant',
+          text: `${existing?.text ?? ''}${delta}`,
+          messageType: 'agentMessage.live',
+        })
+      }
+    }
+    pendingAgentDeltasByThreadId.clear()
+
+    for (const [threadId, delta] of pendingReasoningDeltasByThreadId.entries()) {
+      appendLiveReasoningText(threadId, delta)
+    }
+    pendingReasoningDeltasByThreadId.clear()
+  }
+
+  function scheduleLiveDeltaFlush(): void {
+    if (liveDeltaFlushTimer !== null || typeof window === 'undefined') return
+    liveDeltaFlushTimer = window.setTimeout(flushLiveDeltas, LIVE_DELTA_FLUSH_MS)
+  }
+
+  function queueLiveAgentDelta(threadId: string, messageId: string, delta: string): void {
+    const byMessageId = pendingAgentDeltasByThreadId.get(threadId) ?? new Map<string, string>()
+    byMessageId.set(messageId, `${byMessageId.get(messageId) ?? ''}${delta}`)
+    pendingAgentDeltasByThreadId.set(threadId, byMessageId)
+    scheduleLiveDeltaFlush()
+  }
+
+  function queueLiveReasoningDelta(threadId: string, delta: string): void {
+    pendingReasoningDeltasByThreadId.set(
+      threadId,
+      `${pendingReasoningDeltasByThreadId.get(threadId) ?? ''}${delta}`,
+    )
+    scheduleLiveDeltaFlush()
   }
 
   function setLiveReasoningText(threadId: string, text: string): void {
@@ -1422,6 +1615,10 @@ export function useDesktopState() {
       return
     }
 
+    if (notification.method === 'turn/completed' || notification.method === 'item/completed') {
+      flushLiveDeltas()
+    }
+
     const turnActivity = readTurnActivity(notification)
     if (turnActivity) {
       setTurnActivityForThread(turnActivity.threadId, turnActivity.activity)
@@ -1491,15 +1688,11 @@ export function useDesktopState() {
 
     const liveAgentMessageDelta = readAgentMessageDelta(notification)
     if (liveAgentMessageDelta) {
-      const existing = (liveAgentMessagesByThreadId.value[notificationThreadId] ?? [])
-        .find((message) => message.id === liveAgentMessageDelta.messageId)
-      const nextText = `${existing?.text ?? ''}${liveAgentMessageDelta.delta}`
-      upsertLiveAgentMessage(notificationThreadId, {
-        id: liveAgentMessageDelta.messageId,
-        role: 'assistant',
-        text: nextText,
-        messageType: 'agentMessage.live',
-      })
+      queueLiveAgentDelta(
+        notificationThreadId,
+        liveAgentMessageDelta.messageId,
+        liveAgentMessageDelta.delta,
+      )
     }
 
     const completedAgentMessage = readAgentMessageCompleted(notification)
@@ -1514,7 +1707,7 @@ export function useDesktopState() {
 
     const liveReasoningDelta = readReasoningDelta(notification)
     if (liveReasoningDelta) {
-      appendLiveReasoningText(notificationThreadId, liveReasoningDelta.delta)
+      queueLiveReasoningDelta(notificationThreadId, liveReasoningDelta.delta)
     }
 
     const sectionBreakMessageId = readReasoningSectionBreakMessageId(notification)
@@ -1580,13 +1773,41 @@ export function useDesktopState() {
     }, EVENT_SYNC_DEBOUNCE_MS)
   }
 
-  async function loadThreads() {
+  async function loadThreads(options: { allowEmpty?: boolean } = {}) {
+    const requestRevision = ++threadLoadRevision
     if (!hasLoadedThreads.value) {
       isLoadingThreads.value = true
     }
 
     try {
-      const groups = await getThreadGroups()
+      let groups: UiProjectGroup[] = []
+      let lastLoadError: unknown = null
+      for (let attempt = 0; attempt <= INITIAL_THREAD_LOAD_RETRIES; attempt += 1) {
+        try {
+          groups = await getThreadGroups()
+          lastLoadError = null
+        } catch (unknownError) {
+          lastLoadError = unknownError
+        }
+        if (requestRevision !== threadLoadRevision) return
+        const shouldRetryInitialEmpty =
+          !hasLoadedThreads.value &&
+          flattenThreads(sourceGroups.value).length === 0 &&
+          flattenThreads(groups).length === 0
+        if ((!lastLoadError && !shouldRetryInitialEmpty) || attempt === INITIAL_THREAD_LOAD_RETRIES) {
+          break
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, INITIAL_THREAD_LOAD_RETRY_MS))
+      }
+      if (lastLoadError) throw lastLoadError
+      if (requestRevision !== threadLoadRevision) return
+      if (
+        options.allowEmpty !== true &&
+        flattenThreads(groups).length === 0 &&
+        flattenThreads(sourceGroups.value).length > 0
+      ) {
+        return
+      }
 
       const nextProjectOrder = mergeProjectOrder(projectOrder.value, groups)
       if (!areStringArraysEqual(projectOrder.value, nextProjectOrder)) {
@@ -1607,12 +1828,17 @@ export function useDesktopState() {
       pruneThreadScopedState(flatThreads)
 
       const currentExists = flatThreads.some((thread) => thread.id === selectedThreadId.value)
+      const currentIsPending =
+        inProgressById.value[selectedThreadId.value] === true ||
+        (optimisticUserMessagesByThreadId.value[selectedThreadId.value] ?? []).length > 0
 
-      if (!currentExists) {
+      if (!currentExists && !currentIsPending) {
         setSelectedThreadId(flatThreads[0]?.id ?? '')
       }
     } finally {
-      isLoadingThreads.value = false
+      if (requestRevision === threadLoadRevision) {
+        isLoadingThreads.value = false
+      }
     }
   }
 
@@ -1620,6 +1846,9 @@ export function useDesktopState() {
     if (!threadId) {
       return
     }
+
+    const requestRevision = (messageLoadRevisionByThreadId.get(threadId) ?? 0) + 1
+    messageLoadRevisionByThreadId.set(threadId, requestRevision)
 
     const alreadyLoaded = loadedMessagesByThreadId.value[threadId] === true
     const shouldShowLoading = options.silent !== true && !alreadyLoaded
@@ -1645,16 +1874,57 @@ export function useDesktopState() {
         await syncSelectionToThreadRoute(threadId)
       }
 
-      const nextMessages = await getThreadMessages(threadId)
+      const snapshot = await getThreadSnapshot(threadId)
+      if (messageLoadRevisionByThreadId.get(threadId) !== requestRevision) return
+      const nextMessages = snapshot.messages
       const previousPersisted = persistedMessagesByThreadId.value[threadId] ?? []
-      const mergedMessages = mergeMessages(previousPersisted, nextMessages, {
-        preserveMissing: options.silent === true,
-      })
+      const mergedMessages = mergeMessages(previousPersisted, nextMessages)
       setPersistedMessagesForThread(threadId, mergedMessages)
 
       const previousLiveAgent = liveAgentMessagesByThreadId.value[threadId] ?? []
       const nextLiveAgent = removeRedundantLiveAgentMessages(previousLiveAgent, nextMessages)
       setLiveAgentMessagesForThread(threadId, nextLiveAgent)
+
+      const hadOptimisticMessages = (optimisticUserMessagesByThreadId.value[threadId] ?? []).length > 0
+      const optimisticReconciliation = reconcileOptimisticUserMessages(
+        threadId,
+        nextMessages,
+        snapshot.latestTurnId,
+      )
+      const canApplySnapshotStatus = !hadOptimisticMessages || optimisticReconciliation.snapshotAdvanced
+      if (snapshot.latestTurnId) {
+        lastSnapshotTurnIdByThreadId.set(threadId, snapshot.latestTurnId)
+      }
+      if (canApplySnapshotStatus && snapshot.latestTurnStatus) {
+        if (snapshot.latestTurnStatus === 'inProgress') {
+          setThreadInProgress(threadId, true)
+          setTurnActivityForThread(threadId, {
+            label: 'Thinking',
+            details: buildPendingTurnDetails(selectedModelId.value, selectedReasoningEffort.value),
+          })
+          if (snapshot.latestTurnId) {
+            activeTurnIdByThreadId.value = {
+              ...activeTurnIdByThreadId.value,
+              [threadId]: snapshot.latestTurnId,
+            }
+          }
+        } else {
+          setThreadInProgress(threadId, false)
+          setTurnActivityForThread(threadId, null)
+          clearLiveReasoningForThread(threadId)
+          if (activeTurnIdByThreadId.value[threadId]) {
+            activeTurnIdByThreadId.value = omitKey(activeTurnIdByThreadId.value, threadId)
+          }
+          if (snapshot.latestTurnStatus === 'failed' && snapshot.latestTurnError) {
+            setTurnErrorForThread(threadId, snapshot.latestTurnError)
+          } else {
+            setTurnErrorForThread(threadId, null)
+          }
+        }
+      } else if (optimisticReconciliation.responseArrived) {
+        setThreadInProgress(threadId, false)
+        setTurnActivityForThread(threadId, null)
+      }
 
       loadedMessagesByThreadId.value = {
         ...loadedMessagesByThreadId.value,
@@ -1670,7 +1940,10 @@ export function useDesktopState() {
       }
       markThreadAsRead(threadId)
     } finally {
-      if (shouldShowLoading) {
+      if (
+        shouldShowLoading &&
+        messageLoadRevisionByThreadId.get(threadId) === requestRevision
+      ) {
         isLoadingMessages.value = false
       }
     }
@@ -1716,7 +1989,7 @@ export function useDesktopState() {
   async function archiveThreadById(threadId: string) {
     try {
       await archiveThread(threadId)
-      await loadThreads()
+      await loadThreads({ allowEmpty: true })
 
       if (selectedThreadId.value === threadId) {
         await loadMessages(selectedThreadId.value)
@@ -1808,6 +2081,7 @@ export function useDesktopState() {
 
     isSendingMessage.value = true
     error.value = ''
+    const optimisticMessageId = queueOptimisticUserMessage(threadId, nextText)
     shouldAutoScrollOnNextAgentEvent = true
     setTurnSummaryForThread(threadId, null)
     setTurnActivityForThread(
@@ -1820,6 +2094,7 @@ export function useDesktopState() {
     try {
       await startTurnForThread(threadId, nextText)
     } catch (unknownError) {
+      removeOptimisticUserMessage(threadId, optimisticMessageId)
       shouldAutoScrollOnNextAgentEvent = false
       setThreadInProgress(threadId, false)
       setTurnActivityForThread(threadId, null)
@@ -1841,6 +2116,7 @@ export function useDesktopState() {
     isSendingMessage.value = true
     error.value = ''
     let threadId = ''
+    let optimisticMessageId = ''
 
     try {
       const started = await startThread(
@@ -1869,6 +2145,7 @@ export function useDesktopState() {
         [threadId]: selectedModel.modelId,
       }
       setSelectedThreadId(threadId)
+      optimisticMessageId = queueOptimisticUserMessage(threadId, nextText)
       shouldAutoScrollOnNextAgentEvent = true
       setTurnSummaryForThread(threadId, null)
       setTurnActivityForThread(
@@ -1883,6 +2160,9 @@ export function useDesktopState() {
     } catch (unknownError) {
       shouldAutoScrollOnNextAgentEvent = false
       if (threadId) {
+        if (optimisticMessageId) {
+          removeOptimisticUserMessage(threadId, optimisticMessageId)
+        }
         setThreadInProgress(threadId, false)
         setTurnActivityForThread(threadId, null)
       }
@@ -2059,8 +2339,10 @@ export function useDesktopState() {
       const loadedVersion = loadedVersionByThreadId.value[threadId] ?? ''
       const hasVersionChange = currentVersion.length > 0 && currentVersion !== loadedVersion
       const isInProgress = inProgressById.value[threadId] === true
+      const hasOptimisticMessage =
+        (optimisticUserMessagesByThreadId.value[threadId] ?? []).length > 0
 
-      if (isInProgress || hasVersionChange) {
+      if (isInProgress || hasVersionChange || hasOptimisticMessage) {
         await loadMessages(threadId, { silent: true })
       }
     } catch {
@@ -2085,6 +2367,7 @@ export function useDesktopState() {
 
     const shouldRefreshThreads = pendingThreadsRefresh
     const threadIdsToRefresh = new Set(pendingThreadMessageRefresh)
+    let syncFailed = false
     pendingThreadsRefresh = false
     pendingThreadMessageRefresh.clear()
 
@@ -2106,7 +2389,13 @@ export function useDesktopState() {
         await loadMessages(activeThreadId, { silent: true })
       }
     } catch {
-      // Keep UI stable on transient event sync failures.
+      syncFailed = true
+      if (shouldRefreshThreads) {
+        pendingThreadsRefresh = true
+      }
+      for (const threadId of threadIdsToRefresh) {
+        pendingThreadMessageRefresh.add(threadId)
+      }
     } finally {
       isPolling.value = false
 
@@ -2118,7 +2407,7 @@ export function useDesktopState() {
         eventSyncTimer = window.setTimeout(() => {
           eventSyncTimer = null
           void syncFromNotifications()
-        }, EVENT_SYNC_DEBOUNCE_MS)
+        }, syncFailed ? EVENT_SYNC_RETRY_MS : EVENT_SYNC_DEBOUNCE_MS)
       }
     }
   }
@@ -2135,6 +2424,16 @@ export function useDesktopState() {
       applyRealtimeUpdates(notification)
       queueEventDrivenSync(notification)
     })
+    if (reliabilitySyncTimer === null) {
+      reliabilitySyncTimer = window.setInterval(() => {
+        const hasInProgressThread = Object.values(inProgressById.value).some((value) => value === true)
+        const hasOptimisticMessage = Object.values(optimisticUserMessagesByThreadId.value)
+          .some((rows) => rows.length > 0)
+        if (hasInProgressThread || hasOptimisticMessage) {
+          void syncThreadStatus()
+        }
+      }, RELIABILITY_SYNC_INTERVAL_MS)
+    }
   }
 
   async function loadPendingServerRequestsFromBridge(): Promise<void> {
@@ -2210,6 +2509,17 @@ export function useDesktopState() {
   function stopPolling(): void {
     stopAutoRefreshTimer({ updatePreference: false })
 
+    if (reliabilitySyncTimer !== null && typeof window !== 'undefined') {
+      window.clearInterval(reliabilitySyncTimer)
+      reliabilitySyncTimer = null
+    }
+    if (liveDeltaFlushTimer !== null && typeof window !== 'undefined') {
+      window.clearTimeout(liveDeltaFlushTimer)
+      liveDeltaFlushTimer = null
+    }
+    pendingAgentDeltasByThreadId.clear()
+    pendingReasoningDeltasByThreadId.clear()
+
     if (stopNotificationStream) {
       stopNotificationStream()
       stopNotificationStream = null
@@ -2218,6 +2528,9 @@ export function useDesktopState() {
     pendingThreadsRefresh = false
     pendingThreadMessageRefresh.clear()
     pendingTurnStartsById.clear()
+    messageLoadRevisionByThreadId.clear()
+    lastSnapshotTurnIdByThreadId.clear()
+    threadLoadRevision += 1
     if (eventSyncTimer !== null && typeof window !== 'undefined') {
       window.clearTimeout(eventSyncTimer)
       eventSyncTimer = null
@@ -2225,6 +2538,7 @@ export function useDesktopState() {
     activeReasoningItemId = ''
     shouldAutoScrollOnNextAgentEvent = false
     persistedMessagesByThreadId.value = {}
+    optimisticUserMessagesByThreadId.value = {}
     liveAgentMessagesByThreadId.value = {}
     liveReasoningTextByThreadId.value = {}
     turnActivityByThreadId.value = {}

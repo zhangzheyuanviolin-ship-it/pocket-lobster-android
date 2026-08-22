@@ -836,7 +836,8 @@ function onCodexModelPreferencesRefresh(): void {
 }
 
 function onCodexVisibilityChange(): void {
-  if (document.visibilityState === 'visible') onCodexModelPreferencesRefresh()
+  if (document.visibilityState !== 'visible' || !isCodexBridgeAvailable.value) return
+  void refreshAll()
 }
 
 function toggleSidebarSearch(): void {

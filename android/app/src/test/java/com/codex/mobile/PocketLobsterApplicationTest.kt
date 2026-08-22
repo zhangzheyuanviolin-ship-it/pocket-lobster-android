@@ -1,6 +1,8 @@
 package com.codex.mobile
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -46,5 +48,17 @@ class PocketLobsterApplicationTest {
         assertTrue(PocketLobsterApplication.isMinisProcess("$packageName:minis", packageName))
         assertFalse(PocketLobsterApplication.isMinisProcess(packageName, packageName))
         assertFalse(PocketLobsterApplication.isMinisProcess("$packageName:acra", packageName))
+    }
+
+    @Test
+    fun webViewStorageIsIsolatedOnlyForMinisProcess() {
+        assertEquals(
+            "minis",
+            PocketLobsterApplication.webViewDataDirectorySuffix("$packageName:minis", packageName),
+        )
+        assertNull(PocketLobsterApplication.webViewDataDirectorySuffix(packageName, packageName))
+        assertNull(
+            PocketLobsterApplication.webViewDataDirectorySuffix("$packageName:acra", packageName),
+        )
     }
 }

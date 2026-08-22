@@ -40,6 +40,13 @@ type ThreadRouteResponse = {
   thread?: { modelProvider?: string }
 }
 
+export type ThreadSnapshot = {
+  messages: UiMessage[]
+  latestTurnId: string
+  latestTurnStatus: 'completed' | 'interrupted' | 'failed' | 'inProgress' | ''
+  latestTurnError: string
+}
+
 type StoredCodexModelCatalog = {
   currentConfigId?: string
   configs?: StoredCodexModelConfig[]
@@ -141,12 +148,19 @@ async function getThreadGroupsV2(): Promise<UiProjectGroup[]> {
   return normalizeThreadGroupsV2(payload)
 }
 
-async function getThreadMessagesV2(threadId: string): Promise<UiMessage[]> {
+async function getThreadSnapshotV2(threadId: string): Promise<ThreadSnapshot> {
   const payload = await callRpc<ThreadReadResponse>('thread/read', {
     threadId,
     includeTurns: true,
   })
-  return normalizeThreadMessagesV2(payload)
+  const turns = Array.isArray(payload.thread.turns) ? payload.thread.turns : []
+  const latestTurn = turns[turns.length - 1]
+  return {
+    messages: normalizeThreadMessagesV2(payload),
+    latestTurnId: latestTurn?.id ?? '',
+    latestTurnStatus: latestTurn?.status ?? '',
+    latestTurnError: latestTurn?.error?.message ?? '',
+  }
 }
 
 export async function getThreadGroups(): Promise<UiProjectGroup[]> {
@@ -158,8 +172,12 @@ export async function getThreadGroups(): Promise<UiProjectGroup[]> {
 }
 
 export async function getThreadMessages(threadId: string): Promise<UiMessage[]> {
+  return (await getThreadSnapshot(threadId)).messages
+}
+
+export async function getThreadSnapshot(threadId: string): Promise<ThreadSnapshot> {
   try {
-    return await getThreadMessagesV2(threadId)
+    return await getThreadSnapshotV2(threadId)
   } catch (error) {
     throw normalizeCodexApiError(error, `Failed to load thread ${threadId}`, 'thread/read')
   }

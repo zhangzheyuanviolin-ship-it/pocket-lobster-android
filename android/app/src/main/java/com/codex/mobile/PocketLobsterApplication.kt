@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Environment
 import android.util.Log
+import android.webkit.WebView
 import com.openminis.app.MinisApp
 import com.openminis.app.integration.MinisRuntimeBridgeRuntime
 import com.openminis.app.integration.MinisRuntimeBridgeService
@@ -20,6 +21,11 @@ class PocketLobsterApplication : MinisApp() {
 
     override fun attachBaseContext(base: Context) {
         val processName = currentProcessName()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            webViewDataDirectorySuffix(processName, base.packageName)?.let {
+                WebView.setDataDirectorySuffix(it)
+            }
+        }
         suiBackend = runCatching { Sui.init(base.packageName) }.getOrDefault(false)
         if (!suiBackend) {
             ShizukuProvider.enableMultiProcessSupport(
@@ -83,6 +89,9 @@ class PocketLobsterApplication : MinisApp() {
 
         internal fun isShizukuProviderProcess(processName: String, packageName: String): Boolean =
             processName == packageName
+
+        internal fun webViewDataDirectorySuffix(processName: String, packageName: String): String? =
+            if (isMinisProcess(processName, packageName)) "minis" else null
     }
 }
 
@@ -111,6 +120,13 @@ private object BetaStartupDiagnostics {
                 .put("versionName", installedVersionName(context))
                 .put("processName", processName)
                 .put("minisRuntimeProcess", processName.endsWith(":minis"))
+                .put(
+                    "webViewDataDirectorySuffix",
+                    PocketLobsterApplication.webViewDataDirectorySuffix(
+                        processName,
+                        context.packageName,
+                    ) ?: "default",
+                )
             if (error != null) {
                 payload.put("errorType", error.javaClass.name)
                 payload.put("errorMessage", error.message ?: "")

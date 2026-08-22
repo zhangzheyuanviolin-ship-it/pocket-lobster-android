@@ -158,7 +158,7 @@ jobs:
           PACKAGE_LINE="$(echo "$BADGING" | head -n 1)"
           echo "$PACKAGE_LINE"
           echo "$PACKAGE_LINE" | grep -F "name='$EXPECTED_PACKAGE_ID'"
-          echo "$PACKAGE_LINE" | grep -F "versionCode='306'"
+          echo "$PACKAGE_LINE" | grep -F "versionCode='307'"
           test "$(echo "$BADGING" | grep -c '^launchable-activity:')" -eq 1
           echo "$BADGING" | grep -F "launchable-activity: name='com.codex.mobile.MainActivity'"
           if echo "$BADGING" | grep -E "^application-label[^:]*:'Minis'$"; then
@@ -166,7 +166,7 @@ jobs:
             exit 1
           fi
           if [ "$RELEASE_CHANNEL" = "beta" ]; then
-            echo "$PACKAGE_LINE" | grep -F "versionName='1.0.65-codex-cli-0.147.0-gpt-5.6-openminis-1.12-shared-runtime-v306-beta'"
+            echo "$PACKAGE_LINE" | grep -F "versionName='1.0.66-codex-cli-0.147.0-gpt-5.6-openminis-1.12-webview-reliability-v307-beta'"
             echo "$BADGING" | grep -F "application-label:'口袋大龙虾测试版'"
             test "$EXPECTED_PACKAGE_ID" = "com.codex.mobile.pocketlobster.beta"
           fi
@@ -195,6 +195,10 @@ jobs:
           test -f android/app/src/main/assets/shared-runtime/alpine-shell
           test -f android/app/src/main/assets/shared-runtime/minis-browser
           test -f android/app/src/main/assets/shared-runtime/shared-runtime-cli.js
+          grep -F 'WebView.setDataDirectorySuffix' android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt
+          grep -F 'queueOptimisticUserMessage' src/composables/useDesktopState.ts
+          grep -F 'RELIABILITY_SYNC_INTERVAL_MS' src/composables/useDesktopState.ts
+          grep -F 'getThreadSnapshot' src/composables/useDesktopState.ts
 
       - name: Verify OpenMinis runtime payload
         env:

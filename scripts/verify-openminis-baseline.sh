@@ -37,7 +37,7 @@ grep -q '"officialChatRuntime": true' "$MANIFEST"
 grep -q '"legacyOpenClawRuntimeBundled": false' "$MANIFEST"
 grep -q 'golden-beta-v299-20260820' "$MANIFEST"
 grep -q 'implementation(project(":openminis"))' "$ROOT_DIR/android/app/build.gradle.kts"
-grep -q 'versionCode = 306' "$ROOT_DIR/android/app/build.gradle.kts"
+grep -q 'versionCode = 307' "$ROOT_DIR/android/app/build.gradle.kts"
 grep -q 'third_party/OpenMinis/src/android/app/src/main/assets' "$ROOT_DIR/android/app/build.gradle.kts"
 grep -q 'MinisLauncher.openHome' "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/AgentHubActivity.kt"
 grep -q 'minis://settings/providers' "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/MinisLauncher.kt"
@@ -53,6 +53,11 @@ grep -q 'ShizukuProvider.enableMultiProcessSupport' \
   "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt"
 grep -q 'ShizukuProvider.requestBinderForNonProviderProcess' \
   "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt"
+grep -q 'WebView.setDataDirectorySuffix' \
+  "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt"
+grep -q 'queueOptimisticUserMessage' "$ROOT_DIR/src/composables/useDesktopState.ts"
+grep -q 'RELIABILITY_SYNC_INTERVAL_MS' "$ROOT_DIR/src/composables/useDesktopState.ts"
+grep -q 'getThreadSnapshot' "$ROOT_DIR/src/composables/useDesktopState.ts"
 grep -q '口袋大龙虾测试版-启动诊断.jsonl' \
   "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt"
 grep -q 'open class MinisApp' "$ROOT_DIR/android/openminis/build.gradle.kts"
