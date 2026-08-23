@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const SERVER_INFO = { name: "anyclaw-toolbox", version: "2.2.0" };
+const SERVER_INFO = { name: "anyclaw-toolbox", version: "2.3.0" };
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_STDIO_BYTES = 4 * 1024 * 1024;
 const DEFAULT_SEARCH_LIMIT = 6;
@@ -300,23 +300,24 @@ const TOOL_DEFS = [
     replace: { type: "string" },
     createDirs: { type: "boolean" }
   }, ["path", "mode"]),
-  tool("anyclaw_terminal", "Execute local shell command with timeout.", {
+  tool("anyclaw_terminal", "Execute a command in the app-local Android shell. Defaults to workspaceRoot; returns ok, exitCode, stdout, stderr, error, and cwd.", {
     command: { type: "string", minLength: 1 },
     cwd: { type: "string" },
     timeoutMs: { type: "integer", minimum: 1000, maximum: 120000 }
   }, ["command"]),
-  tool("anyclaw_ubuntu", "Execute command inside bundled Ubuntu runtime.", {
+  tool("anyclaw_ubuntu", "Execute a command in the bundled Ubuntu runtime through its verified bridge; returns ok, exitCode, stdout, stderr, error, and runtime=ubuntu.", {
     command: { type: "string", minLength: 1 },
     timeoutMs: { type: "integer", minimum: 1000, maximum: 120000 }
   }, ["command"]),
-  tool("anyclaw_alpine", "Execute command inside the shared OpenMinis Alpine Linux runtime.", {
+  tool("anyclaw_alpine", "Execute a command in the shared OpenMinis Alpine runtime; returns ok, exitCode, output, and explicit bridge errors.", {
     command: { type: "string", minLength: 1 },
     timeoutMs: { type: "integer", minimum: 1000, maximum: 900000 }
   }, ["command"]),
-  tool("minis_browser", "Control the real visible OpenMinis browser that the user can take over from the chat UI.", {
-    action: { type: "string", enum: ["navigate", "screenshot", "click", "type", "get_text", "scroll", "get_page_info", "execute_js", "find_elements", "hover", "get_readable", "set_user_agent", "set_viewport", "get_backbone", "fetch", "new_tab", "close_tab", "list_tabs", "get_cookies", "set_cookies", "scroll_and_collect", "wait_for_dom_stable"] },
+  tool("minis_browser", "Control the real visible OpenMinis browser shared by Codex, Claude, and Minis. Navigate first, then use wait_for_dom_stable or selector actions; selector actions automatically wait and retry. Screenshots return a directly viewable PNG image plus imageFilePath. Use list_tabs for tab IDs.", {
+    action: { type: "string", enum: ["navigate", "back", "forward", "reload", "screenshot", "click", "type", "get_text", "scroll", "get_page_info", "execute_js", "find_elements", "hover", "get_readable", "set_user_agent", "set_viewport", "get_backbone", "fetch", "new_tab", "close_tab", "list_tabs", "get_cookies", "set_cookies", "scroll_and_collect", "wait_for_dom_stable"] },
     url: { type: "string" },
     selector: { type: "string" },
+    selector_type: { type: "string", enum: ["css", "xpath", "text"], description: "Selector interpretation for click/type; defaults to css." },
     text: { type: "string" },
     script: { type: "string" },
     tab_id: { type: "integer" },
@@ -325,7 +326,10 @@ const TOOL_DEFS = [
     coordinate_x: { type: "integer" },
     coordinate_y: { type: "integer" },
     user_agent: { type: "string", enum: ["mobile_chrome", "desktop_chrome"] },
-    timeout: { type: "integer", minimum: 1, maximum: 60 }
+    timeout: { type: "integer", minimum: 1, maximum: 60, description: "Timeout in seconds." },
+    full_page: { type: "boolean" },
+    output_path: { type: "string", description: "Optional absolute PNG export path in app or shared storage." },
+    include_base64: { type: "boolean", description: "Include image data; screenshot defaults to true for direct visual inspection." }
   }, ["action"]),
   tool("anyclaw_github_repo_info", "Get repository metadata.", {
     repo: { type: "string", minLength: 3 },
@@ -519,8 +523,12 @@ async function handleMessage(message) {
     const args = asObject(message?.params?.arguments);
     try {
       const result = await callTool(name, args);
-      const text = typeof result === "string" ? result : safeStringify(result);
-      writeMessage(makeResponse(id, { content: [{ type: "text", text }], isError: false }));
+      const imageData = result && typeof result === "object" ? String(result.imageBase64 || "") : "";
+      const textResult = imageData ? { ...result, imageBase64: "<attached as MCP image>" } : result;
+      const text = typeof textResult === "string" ? textResult : safeStringify(textResult);
+      const content = [{ type: "text", text }];
+      if (imageData) content.push({ type: "image", data: imageData, mimeType: String(result.imageMimeType || "image/png") });
+      writeMessage(makeResponse(id, { content, isError: false }));
     } catch (error) {
       writeMessage(makeResponse(id, {
         content: [{ type: "text", text: "Tool error: " + String(error?.message || error) }],
@@ -2095,7 +2103,11 @@ async function callTool(name, args) {
       }, timeoutMs + 10000);
     }
     case "minis_browser": {
-      return await callMinisBridge("/browser/call", args, 120000);
+      const browserArgs = { ...args };
+      if (String(browserArgs.action || "") === "screenshot" && typeof browserArgs.include_base64 !== "boolean") {
+        browserArgs.include_base64 = true;
+      }
+      return await callMinisBridge("/browser/call", browserArgs, 120000);
     }
     case "anyclaw_github_repo_info": {
       const token = resolveGithubToken(args);

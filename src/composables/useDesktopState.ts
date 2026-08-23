@@ -650,7 +650,6 @@ export function useDesktopState() {
   const messageLoadRevisionByThreadId = new Map<string, number>()
   const pendingAgentDeltasByThreadId = new Map<string, Map<string, string>>()
   const pendingReasoningDeltasByThreadId = new Map<string, string>()
-  const pendingToolDeltasByThreadId = new Map<string, Map<string, string>>()
   const lastSnapshotTurnIdByThreadId = new Map<string, string>()
   let threadLoadRevision = 0
   let optimisticMessageSequence = 0
@@ -1233,21 +1232,6 @@ export function useDesktopState() {
     }
     pendingReasoningDeltasByThreadId.clear()
 
-    for (const [threadId, byMessageId] of pendingToolDeltasByThreadId.entries()) {
-      for (const [messageId, delta] of byMessageId.entries()) {
-        const existing = (liveAgentMessagesByThreadId.value[threadId] ?? [])
-          .find((message) => message.id === messageId)
-        const prefix = existing?.text ?? '执行步骤'
-        const text = `${prefix}\n${delta}`
-        upsertLiveAgentMessage(threadId, {
-          id: messageId,
-          role: 'system',
-          text: text.length > 12_000 ? `${text.slice(0, 12_000)}\n…实时输出已截断` : text,
-          messageType: 'activity.live',
-        })
-      }
-    }
-    pendingToolDeltasByThreadId.clear()
   }
 
   function scheduleLiveDeltaFlush(): void {
@@ -1267,14 +1251,6 @@ export function useDesktopState() {
       threadId,
       `${pendingReasoningDeltasByThreadId.get(threadId) ?? ''}${delta}`,
     )
-    scheduleLiveDeltaFlush()
-  }
-
-  function queueLiveToolDelta(threadId: string, messageId: string, delta: string): void {
-    if (!threadId || !messageId || !delta) return
-    const byMessageId = pendingToolDeltasByThreadId.get(threadId) ?? new Map<string, string>()
-    byMessageId.set(messageId, `${byMessageId.get(messageId) ?? ''}${delta}`)
-    pendingToolDeltasByThreadId.set(threadId, byMessageId)
     scheduleLiveDeltaFlush()
   }
 
@@ -1469,28 +1445,6 @@ export function useDesktopState() {
           activity: {
             label: 'Writing response',
             details: [],
-          },
-        }
-      }
-      const labels: Record<string, string> = {
-        commandexecution: '正在执行终端命令',
-        filechange: '正在修改文件',
-        mcptoolcall: '正在调用工具',
-        collabagenttoolcall: '正在调用协作智能体',
-        websearch: '正在使用浏览器',
-        imageview: '正在查看图片',
-        plan: '正在更新计划',
-      }
-      const label = labels[itemType]
-      if (label) {
-        const command = readString(item?.command)
-        const tool = readString(item?.tool)
-        const query = readString(item?.query)
-        return {
-          threadId,
-          activity: {
-            label,
-            details: [command || tool || query].filter(Boolean),
           },
         }
       }
@@ -1712,33 +1666,6 @@ export function useDesktopState() {
     return false
   }
 
-  function readLiveActivityMessage(notification: RpcNotification): UiMessage | null {
-    if (notification.method !== 'item/started' && notification.method !== 'item/completed') return null
-    const params = asRecord(notification.params)
-    const item = asRecord(params?.item)
-    const itemType = readString(item?.type)
-    if (!item || !itemType || itemType === 'userMessage' || itemType === 'agentMessage' || itemType === 'reasoning') {
-      return null
-    }
-    const turnId = readString(params?.turnId)
-    const message = normalizeThreadItemV2(item as unknown as ThreadItem, turnId, -1)[0]
-    return message ? { ...message, messageType: 'activity.live' } : null
-  }
-
-  function readToolOutputDelta(notification: RpcNotification): { itemId: string; delta: string } | null {
-    if (
-      notification.method !== 'item/commandExecution/outputDelta' &&
-      notification.method !== 'item/fileChange/outputDelta' &&
-      notification.method !== 'item/mcpToolCall/progress'
-    ) {
-      return null
-    }
-    const params = asRecord(notification.params)
-    const itemId = readString(params?.itemId)
-    const delta = readString(params?.delta) || readString(params?.message)
-    return itemId && delta ? { itemId, delta } : null
-  }
-
   function applyRealtimeUpdates(notification: RpcNotification): void {
     if (handleServerRequestNotification(notification)) {
       return
@@ -1809,16 +1736,6 @@ export function useDesktopState() {
 
     const notificationThreadId = extractThreadIdFromNotification(notification)
     if (!notificationThreadId || notificationThreadId !== selectedThreadId.value) return
-
-    const activityMessage = readLiveActivityMessage(notification)
-    if (activityMessage) {
-      upsertLiveAgentMessage(notificationThreadId, activityMessage)
-    }
-
-    const toolOutputDelta = readToolOutputDelta(notification)
-    if (toolOutputDelta) {
-      queueLiveToolDelta(notificationThreadId, toolOutputDelta.itemId, toolOutputDelta.delta)
-    }
 
     const startedAgentMessageId = readAgentMessageStartedId(notification)
     if (startedAgentMessageId) {
@@ -2696,7 +2613,6 @@ export function useDesktopState() {
     }
     pendingAgentDeltasByThreadId.clear()
     pendingReasoningDeltasByThreadId.clear()
-    pendingToolDeltasByThreadId.clear()
 
     if (stopNotificationStream) {
       stopNotificationStream()

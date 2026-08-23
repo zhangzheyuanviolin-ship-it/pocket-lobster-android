@@ -42,9 +42,12 @@ const startTurnFlow = state.match(
 assert.match(startTurnFlow, /void syncFromNotifications\(\)/)
 assert.doesNotMatch(startTurnFlow, /await syncFromNotifications\(\)/)
 
-for (const itemType of ['commandExecution', 'fileChange', 'mcpToolCall', 'webSearch']) {
-  assert.match(normalizer, new RegExp(`item\\.type === '${itemType}'`))
+for (const rawToolType of ['commandExecution', 'fileChange', 'mcpToolCall', 'collabAgentToolCall', 'webSearch', 'imageView']) {
+  assert.doesNotMatch(normalizer, new RegExp(`item\\.type === '${rawToolType}'`))
 }
+assert.doesNotMatch(normalizer, /终端命令|退出码|aggregatedOutput/)
+assert.doesNotMatch(state, /activity\.live|queueLiveToolDelta|readToolOutputDelta/)
+assert.match(normalizer, /item\.type === 'reasoning'/)
 
 assert.doesNotMatch(layout, /Resize sidebar/)
 assert.doesNotMatch(tree, /title="project_menu"/)

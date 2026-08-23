@@ -81,12 +81,6 @@ function parseUserMessageContent(
   }
 }
 
-function compactOutput(value: string | null | undefined, maxLength = 8_000): string {
-  const text = value?.trim() ?? ''
-  if (text.length <= maxLength) return text
-  return `${text.slice(0, maxLength)}\n…输出已截断`
-}
-
 function activityMessage(
   item: ThreadItem,
   turnId: string,
@@ -145,52 +139,6 @@ export function normalizeThreadItemV2(item: ThreadItem, turnId: string, turnInde
   if (item.type === 'reasoning') {
     const summary = item.summary.map((part) => part.trim()).filter(Boolean).join('\n')
     return summary ? activityMessage(item, turnId, turnIndex, `思考：${summary}`) : []
-  }
-
-  if (item.type === 'plan') {
-    return activityMessage(item, turnId, turnIndex, `计划：${item.text}`)
-  }
-
-  if (item.type === 'commandExecution') {
-    const status = String(item.status)
-    const output = compactOutput(item.aggregatedOutput)
-    const exit = item.exitCode === null ? '' : `，退出码 ${String(item.exitCode)}`
-    const detail = output ? `\n${output}` : ''
-    return activityMessage(item, turnId, turnIndex, `终端命令 ${status}${exit}：${item.command}${detail}`)
-  }
-
-  if (item.type === 'fileChange') {
-    const paths = item.changes.map((change) => change.path).filter(Boolean).join('、')
-    return activityMessage(item, turnId, turnIndex, `文件修改 ${String(item.status)}：${paths || '未提供路径'}`)
-  }
-
-  if (item.type === 'mcpToolCall') {
-    const error = item.error ? `，错误：${toRawPayload(item.error)}` : ''
-    return activityMessage(item, turnId, turnIndex, `工具调用 ${String(item.status)}：${item.server} / ${item.tool}${error}`)
-  }
-
-  if (item.type === 'collabAgentToolCall') {
-    return activityMessage(item, turnId, turnIndex, `协作智能体 ${String(item.status)}：${String(item.tool)}`)
-  }
-
-  if (item.type === 'webSearch') {
-    return activityMessage(item, turnId, turnIndex, `浏览器搜索：${item.query}`)
-  }
-
-  if (item.type === 'imageView') {
-    return activityMessage(item, turnId, turnIndex, `查看图片：${item.path}`)
-  }
-
-  if (item.type === 'enteredReviewMode') {
-    return activityMessage(item, turnId, turnIndex, `进入审查模式：${item.review}`)
-  }
-
-  if (item.type === 'exitedReviewMode') {
-    return activityMessage(item, turnId, turnIndex, `退出审查模式：${item.review}`)
-  }
-
-  if (item.type === 'contextCompaction') {
-    return activityMessage(item, turnId, turnIndex, '上下文已压缩')
   }
 
   return []

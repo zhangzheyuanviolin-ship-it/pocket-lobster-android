@@ -137,12 +137,126 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
                 "val socketName: String = SOCKET_NAME",
             )
         }
+        generatedSources.get().file("com/openminis/app/browser/BrowserAction.kt").asFile.apply {
+            replaceRequired(
+                """    NAVIGATE("navigate"),
+    SCREENSHOT("screenshot"),""",
+                """    NAVIGATE("navigate"),
+    BACK("back"),
+    FORWARD("forward"),
+    RELOAD("reload"),
+    SCREENSHOT("screenshot"),""",
+            )
+            replaceRequired(
+                "NAVIGATE, CLICK, SCROLL, HOVER, TYPE",
+                "NAVIGATE, BACK, FORWARD, RELOAD, CLICK, SCROLL, HOVER, TYPE",
+            )
+        }
+        generatedSources.get().file("com/openminis/app/browser/BrowserActionInput.kt").asFile.apply {
+            replaceRequired(
+                """                    timeoutMs = if (obj.has("timeout")) obj.optInt("timeout") else null,""",
+                """                    timeoutMs = when {
+                        obj.has("timeout_ms") -> obj.optInt("timeout_ms")
+                        obj.has("timeout") -> obj.optInt("timeout").coerceAtLeast(0) * 1_000
+                        else -> null
+                    },""",
+            )
+        }
+        generatedSources.get().file("com/openminis/app/browser/BrowserUseManager.kt").asFile.apply {
+            replaceRequired(
+                """            BrowserAction.NAVIGATE -> navigate(input.url)
+            BrowserAction.SCREENSHOT -> return screenshot(fullPage = input.fullPage)""",
+                """            BrowserAction.NAVIGATE -> navigate(input.url)
+            BrowserAction.BACK -> navigateHistory(back = true)
+            BrowserAction.FORWARD -> navigateHistory(back = false)
+            BrowserAction.RELOAD -> reloadAction()
+            BrowserAction.SCREENSHOT -> return screenshot(fullPage = input.fullPage)""",
+            )
+            replaceRequired(
+                """    // -- Screenshot --
+
+    private suspend fun screenshot(fullPage: Boolean = false): BrowserActionResult {""",
+                """    // -- Browser history --
+
+    private suspend fun navigateHistory(back: Boolean): BrowserActionResult {
+        val canNavigate = withContext(Dispatchers.Main) {
+            if (back) webView.canGoBack() else webView.canGoForward()
+        }
+        if (!canNavigate) {
+            return BrowserActionResult.error(if (back) "No previous history entry" else "No forward history entry")
+        }
+        withContext(Dispatchers.Main) {
+            if (back) webView.goBack() else webView.goForward()
+        }
+        delay(500)
+        val meta = navigationMetadata()
+        return BrowserActionResult(text = (if (back) "Went back" else "Went forward") + "\n" + meta)
+    }
+
+    private suspend fun reloadAction(): BrowserActionResult {
+        withContext(Dispatchers.Main) { reloadAndWait() }
+        return BrowserActionResult(text = "Reloaded current page\n" + navigationMetadata())
+    }
+
+    // -- Screenshot --
+
+    private suspend fun screenshot(fullPage: Boolean = false): BrowserActionResult {""",
+            )
+            replaceRequired(
+                """        return evaluateAndReturn(js)
+    }
+
+    // -- Type --
+
+    private suspend fun type(selector: String?, text: String?): BrowserActionResult {
+        if (selector == null) return BrowserActionResult.error("type requires 'selector'")
+        if (text == null) return BrowserActionResult.error("type requires 'text'")
+        return evaluateAndReturn(BrowserUseJS.type(selector, text))
+    }
+
+    // -- Get Text --""",
+                """        return evaluateSelectorWithRetry(js)
+    }
+
+    // -- Type --
+
+    private suspend fun type(selector: String?, text: String?): BrowserActionResult {
+        if (selector == null) return BrowserActionResult.error("type requires 'selector'")
+        if (text == null) return BrowserActionResult.error("type requires 'text'")
+        return evaluateSelectorWithRetry(BrowserUseJS.type(selector, text))
+    }
+
+    private suspend fun evaluateSelectorWithRetry(js: String): BrowserActionResult {
+        var result = evaluateAndReturn(js)
+        repeat(3) {
+            if (result.success || !result.text.contains("Element not found", ignoreCase = true)) return result
+            delay(350)
+            result = evaluateAndReturn(js)
+        }
+        if (!result.success) {
+            val page = getPageInfo()
+            result = result.copy(text = result.text + "\nPage context after retries:\n" + page.text)
+        }
+        return result
+    }
+
+    // -- Get Text --""",
+            )
+        }
         generatedSources.get().file("com/openminis/app/tools/AgentTools.kt").asFile.replaceRequired(
             "        add(shellExecuteDefinition())",
             """        add(shellExecuteDefinition())
         add(com.openminis.app.integration.PocketLobsterHostTools.localTerminalDefinition())
         add(com.openminis.app.integration.PocketLobsterHostTools.ubuntuDefinition())""",
         )
+        generatedSources.get().file("com/openminis/app/tools/AgentTools.kt").asFile.apply {
+            replaceRequired(
+                """Use navigate to open URLs, screenshot to see the page (returns an image), " +
+            "click/type to interact with elements, get_text/get_readable to extract content, " +""",
+                """Use navigate to open URLs; use back, forward, and reload for normal history navigation. Use screenshot to see the page (returns a directly readable image), " +
+            "click/type to interact with elements and automatically retry transient selector misses; after navigate, use wait_for_dom_stable before interaction on dynamic pages. Use get_text/get_readable to extract content, " +""",
+            )
+        }
         generatedSources.get().file("com/openminis/app/ui/chat/ChatViewModel.kt").asFile.replaceRequired(
             """            "memory_get" -> executeMemoryGetTool(argsJson)
             else -> ToolExecutionResult("Unknown tool: ${'$'}name", false)""",
@@ -192,6 +306,17 @@ val verifyOpenMinisIntegrationSources by tasks.registering {
         check("PocketLobsterHostTools.ubuntuDefinition" in agentTools)
         check("PocketLobsterHostTools.execute" in chatViewModel)
         check("SharedMinisRuntime.registerBrowser" in chatViewModel)
+        val browserAction = generatedSources.get()
+            .file("com/openminis/app/browser/BrowserAction.kt").asFile.readText()
+        val browserInput = generatedSources.get()
+            .file("com/openminis/app/browser/BrowserActionInput.kt").asFile.readText()
+        val browserManager = generatedSources.get()
+            .file("com/openminis/app/browser/BrowserUseManager.kt").asFile.readText()
+        check("BACK(\"back\")" in browserAction)
+        check("FORWARD(\"forward\")" in browserAction)
+        check("RELOAD(\"reload\")" in browserAction)
+        check("obj.has(\"timeout_ms\")" in browserInput)
+        check("evaluateSelectorWithRetry" in browserManager)
         check(generatedSources.get().asFile.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
             .none { "R.string.app_name" in it.readText() })

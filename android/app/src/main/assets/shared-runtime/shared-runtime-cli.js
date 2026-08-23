@@ -9,9 +9,79 @@ const mode = process.argv[2] || '';
 const args = process.argv.slice(3);
 const home = process.env.HOME || '';
 const tokenPath = path.resolve(home, '..', 'shared-runtime', 'bridge-token');
-const token = fs.readFileSync(tokenPath, 'utf8').trim();
+
+const BROWSER_ACTIONS = {
+  navigate: 'Open a URL. Required: --url.',
+  back: 'Go back in the current tab history.',
+  forward: 'Go forward in the current tab history.',
+  reload: 'Reload the current tab.',
+  screenshot: 'Capture a PNG. Optional: --full-page, --output-path, --include-base64.',
+  click: 'Click by --selector, --selector-type css|xpath|text, or --coordinate-x/--coordinate-y.',
+  type: 'Enter --text in --selector. Optional: --selector-type css|xpath|text.',
+  get_text: 'Read page text, optionally scoped by --selector.',
+  get_readable: 'Extract the main readable page content.',
+  get_page_info: 'Return URL, title, viewport, and page dimensions.',
+  get_backbone: 'Return a compact DOM tree. Optional: --max-depth.',
+  find_elements: 'Find elements by CSS --selector.',
+  execute_js: 'Run JavaScript. Required: --script.',
+  hover: 'Hover over a CSS --selector.',
+  scroll: 'Scroll up or down. Optional: --direction, --amount, --selector.',
+  scroll_and_collect: 'Collect repeated items. Required: --item-selector.',
+  wait_for_dom_stable: 'Wait for page stability. Optional: --timeout seconds.',
+  set_user_agent: 'Switch --user-agent mobile_chrome|desktop_chrome.',
+  set_viewport: 'Set --viewport-width and --viewport-height, or --reset.',
+  fetch: 'Fetch a URL with the current browser session. Required: --url.',
+  new_tab: 'Create a tab, optionally with --url.',
+  close_tab: 'Close --tab-id or the current tab.',
+  list_tabs: 'List tabs and their IDs.',
+  get_cookies: 'Read current-site cookie metadata.',
+  set_cookies: 'Write cookies from --cookies JSON.',
+};
+
+const BROWSER_SCHEMA = {
+  type: 'object',
+  required: ['action'],
+  properties: {
+    action: { type: 'string', enum: Object.keys(BROWSER_ACTIONS) },
+    url: { type: 'string', usedBy: ['navigate', 'fetch', 'new_tab'] },
+    selector: { type: 'string', usedBy: ['click', 'type', 'get_text', 'scroll', 'hover', 'find_elements'] },
+    selector_type: { type: 'string', enum: ['css', 'xpath', 'text'], default: 'css', usedBy: ['click', 'type'] },
+    text: { type: 'string', usedBy: ['type'] },
+    script: { type: 'string', usedBy: ['execute_js'] },
+    tab_id: { type: 'integer' },
+    direction: { type: 'string', enum: ['up', 'down'], usedBy: ['scroll'] },
+    amount: { type: 'integer', usedBy: ['scroll'] },
+    timeout: { type: 'integer', unit: 'seconds', minimum: 1, maximum: 60 },
+    full_page: { type: 'boolean', usedBy: ['screenshot'] },
+    output_path: { type: 'string', format: 'absolute PNG path', usedBy: ['screenshot'] },
+    include_base64: { type: 'boolean', usedBy: ['screenshot'] },
+  },
+};
+
+function browserHelp() {
+  const actionLines = Object.entries(BROWSER_ACTIONS).map(([name, detail]) => `  ${name}: ${detail}`);
+  return [
+    'Usage: minis-browser <action> [--key value] [--json]',
+    'Help: minis-browser --help | minis-browser schema',
+    '',
+    'The browser is the real visible OpenMinis WebView shared by Codex, Claude, and Minis.',
+    'Selectors default to CSS. Use --selector-type xpath or text for alternate lookup.',
+    'Selector actions wait for the DOM and retry transient element-not-found failures.',
+    'Screenshots are returned as PNG paths readable by image tools.',
+    '',
+    'Actions:',
+    ...actionLines,
+    '',
+    'Examples:',
+    '  minis-browser navigate --url https://example.com',
+    '  minis-browser click --selector "Sign in" --selector-type text',
+    '  minis-browser type --selector \'//input[@name="q"]\' --selector-type xpath --text openai',
+    '  minis-browser screenshot --output-path /sdcard/Download/minis-page.png --json',
+  ].join('\n');
+}
 
 function post(port, route, payload) {
+  const token = fs.readFileSync(tokenPath, 'utf8').trim();
   const body = JSON.stringify(payload);
   return new Promise((resolve, reject) => {
     const request = http.request({
@@ -56,9 +126,17 @@ function browserPayload(rawArgs) {
     const key = rawArgs.shift();
     if (!key || !key.startsWith('--')) throw new Error(`unexpected argument: ${key}`);
     const name = key.slice(2).replace(/-/g, '_');
+    if (['full_page', 'include_base64', 'reset'].includes(name) && (rawArgs.length === 0 || rawArgs[0].startsWith('--'))) {
+      payload[name] = true;
+      continue;
+    }
     const value = rawArgs.shift();
     if (value === undefined) throw new Error(`missing value for ${key}`);
-    payload[name] = /^-?\d+$/.test(value) ? Number(value) : value;
+    if (value === 'true' || value === 'false') payload[name] = value === 'true';
+    else if (/^-?\d+$/.test(value)) payload[name] = Number(value);
+    else if ((value.startsWith('[') && value.endsWith(']')) || (value.startsWith('{') && value.endsWith('}'))) {
+      payload[name] = JSON.parse(value);
+    } else payload[name] = value;
   }
   return payload;
 }
@@ -69,12 +147,34 @@ function browserPayload(rawArgs) {
     const command = args[0] === '--command' ? args.slice(1).join(' ') : args.join(' ');
     result = await post(18927, '/alpine/exec', { command, timeout: 900 });
   } else if (mode === 'browser') {
-    result = await post(18927, '/browser/call', browserPayload([...args]));
+    const browserArgs = [...args];
+    const first = String(browserArgs[0] || '').toLowerCase();
+    if (browserArgs.length === 0 || ['help', '--help', '-h'].includes(first)) {
+      process.stdout.write(browserHelp() + '\n');
+      return;
+    }
+    if (['actions', 'schema'].includes(first)) {
+      process.stdout.write(JSON.stringify({ actions: BROWSER_ACTIONS, inputSchema: BROWSER_SCHEMA }, null, 2) + '\n');
+      return;
+    }
+    const jsonIndex = browserArgs.indexOf('--json');
+    const jsonOutput = jsonIndex >= 0;
+    if (jsonOutput) browserArgs.splice(jsonIndex, 1);
+    result = await post(18927, '/browser/call', browserPayload(browserArgs));
+    if (jsonOutput) {
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      process.exitCode = result.ok === false ? 1 : 0;
+      return;
+    }
   } else {
     throw new Error('usage: alpine-shell <command> | minis-browser <action> [--key value]');
   }
   if (result.output) process.stdout.write(String(result.output) + '\n');
-  else process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+  if (result.imageFilePath) process.stdout.write(`image_path: ${result.imageFilePath}\n`);
+  if (result.imageMimeType) process.stdout.write(`image_mime_type: ${result.imageMimeType}\n`);
+  if (result.pageURL) process.stdout.write(`page_url: ${result.pageURL}\n`);
+  if (result.tabId !== undefined && result.tabId !== null) process.stdout.write(`tab_id: ${result.tabId}\n`);
+  if (!result.output && !result.imageFilePath) process.stdout.write(JSON.stringify(result, null, 2) + '\n');
   process.exitCode = Number.isInteger(result.exitCode) ? result.exitCode : (result.ok === false ? 1 : 0);
 })().catch((error) => {
   process.stderr.write(`shared runtime bridge error: ${error.message}\n`);

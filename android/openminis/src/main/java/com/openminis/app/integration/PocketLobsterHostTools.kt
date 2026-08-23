@@ -17,7 +17,7 @@ object PocketLobsterHostTools {
 
     fun localTerminalDefinition() = AgentToolDefinition(
         name = LOCAL_TOOL,
-        description = "Execute a command in Pocket Lobster's local Android terminal environment.",
+        description = "Execute a command in Pocket Lobster's app-local Android terminal. Returns merged output, exit_code, timeout state, and explicit bridge errors.",
         parameters = commandParameters("local Android terminal"),
         required = listOf("tool_title", "command"),
         propertyOrdering = listOf("tool_title", "command", "timeout"),
@@ -25,7 +25,7 @@ object PocketLobsterHostTools {
 
     fun ubuntuDefinition() = AgentToolDefinition(
         name = UBUNTU_TOOL,
-        description = "Execute a command in Pocket Lobster's bundled Ubuntu Linux runtime.",
+        description = "Execute a command through Pocket Lobster's bundled Ubuntu Linux bridge. Returns merged output, exit_code, timeout state, and explicit bridge errors.",
         parameters = commandParameters("Ubuntu Linux runtime"),
         required = listOf("tool_title", "command"),
         propertyOrdering = listOf("tool_title", "command", "timeout"),
