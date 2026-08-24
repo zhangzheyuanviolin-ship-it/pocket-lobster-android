@@ -102,7 +102,7 @@ const SHARED_BRIDGE_TOKEN_PATH = homeDir
   ? join(dirname(homeDir), 'shared-runtime', 'bridge-token')
   : ''
 const MINIS_BRIDGE_URL = 'http://127.0.0.1:18927'
-const COLLABORATION_TIMEOUT_MS = 30 * 60_000
+const COLLABORATION_TIMEOUT_MS = 2 * 60 * 60_000
 const COLLABORATION_HISTORY_LIMIT = 40
 
 type JsonRpcCall = {
@@ -344,6 +344,7 @@ let claudeRunsPersistTimer: NodeJS.Timeout | null = null
 const collaborationRuns = new Map<string, CollaborationRun>()
 let collaborationRunsLoaded = false
 let collaborationPersistTimer: NodeJS.Timeout | null = null
+let collaborationPersistQueue: Promise<void> = Promise.resolve()
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -4169,6 +4170,7 @@ function collaborationAgentRecord(leader: CollaborationAgentId): Record<Collabor
 async function ensureCollaborationRunsLoaded(): Promise<void> {
   if (collaborationRunsLoaded) return
   collaborationRunsLoaded = true
+  let restoredInterruptedRun = false
   try {
     const parsed = JSON.parse(await readFile(COLLABORATION_STATE_PATH, 'utf8')) as unknown
     const record = asRecord(parsed)
@@ -4200,6 +4202,7 @@ async function ensureCollaborationRunsLoaded(): Promise<void> {
         if (agents[agentId].status === 'running' || agents[agentId].status === 'synthesizing') {
           agents[agentId].status = 'failed'
           agents[agentId].errorText = '应用重启导致该协作步骤中断'
+          restoredInterruptedRun = true
         }
       }
       const restoredStatus = normalizeText(row?.status)
@@ -4219,17 +4222,24 @@ async function ensureCollaborationRunsLoaded(): Promise<void> {
           : normalizeText(row?.errorText),
       })
     }
+    if (restoredInterruptedRun) await persistCollaborationRunsNow()
   } catch {
     // First run has no state file.
   }
 }
 
 async function persistCollaborationRunsNow(): Promise<void> {
-  const runs = [...collaborationRuns.values()]
-    .sort((a, b) => b.createdAtMs - a.createdAtMs)
-    .slice(0, COLLABORATION_HISTORY_LIMIT)
-  await mkdir(dirname(COLLABORATION_STATE_PATH), { recursive: true })
-  await writeFile(COLLABORATION_STATE_PATH, JSON.stringify({ version: 1, runs }, null, 2), { mode: 0o600 })
+  const persist = collaborationPersistQueue.then(async () => {
+    const runs = [...collaborationRuns.values()]
+      .sort((a, b) => b.createdAtMs - a.createdAtMs)
+      .slice(0, COLLABORATION_HISTORY_LIMIT)
+    await mkdir(dirname(COLLABORATION_STATE_PATH), { recursive: true })
+    const temporary = `${COLLABORATION_STATE_PATH}.${process.pid}.tmp`
+    await writeFile(temporary, JSON.stringify({ version: 1, runs }, null, 2), { mode: 0o600 })
+    await rename(temporary, COLLABORATION_STATE_PATH)
+  })
+  collaborationPersistQueue = persist.catch(() => undefined)
+  await persist
 }
 
 function scheduleCollaborationPersist(delayMs = 120): void {
@@ -4259,6 +4269,10 @@ function setCollaborationAgentState(
   run.agents[agentId] = next
   touchCollaborationRun(run)
   return next
+}
+
+function isCollaborationRunAborted(run: CollaborationRun): boolean {
+  return collaborationRuns.get(run.id)?.status === 'aborted'
 }
 
 async function callMinisChatRpc(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -4346,6 +4360,7 @@ async function waitForCodexCollaborationTurn(
     const status = normalizeText(turn?.status)
     const actionText = collaborationActionFromCodexTurn(turn)
     const run = [...collaborationRuns.values()].find((row) => row.agents.codex.turnId === turnId)
+    if (run?.status === 'aborted') throw new Error('Collaboration run aborted')
     if (run && run.agents.codex.actionText !== actionText) {
       setCollaborationAgentState(run, 'codex', { actionText })
     }
@@ -4424,6 +4439,7 @@ async function waitForClaudeCollaborationRun(runId: string): Promise<string> {
   while (Date.now() < deadline) {
     const status = await getClaudeRunStatus(runId)
     const collaborationRun = [...collaborationRuns.values()].find((row) => row.agents.claude.runId === runId)
+    if (collaborationRun?.status === 'aborted') throw new Error('Collaboration run aborted')
     if (collaborationRun) {
       const processText = normalizeText(asRecord(status.result)?.processText)
       const watchdog = normalizeText(asRecord(status.result)?.watchdog)
@@ -4471,6 +4487,7 @@ async function runMinisCollaborationTurn(run: CollaborationRun, prompt: string):
   setCollaborationAgentState(run, 'minis', { sessionId, actionText: 'Minis 已收到任务，正在执行' })
   const deadline = Date.now() + COLLABORATION_TIMEOUT_MS
   while (Date.now() < deadline) {
+    if (run.status === 'aborted') throw new Error('Collaboration run aborted')
     const status = await callMinisChatRpc('chat.session.status', { sessionId })
     const running = status.isRunning === true
     const messageCount = typeof status.messageCount === 'number' ? status.messageCount : 0
@@ -4512,9 +4529,11 @@ async function runCollaborationAgent(
   run: CollaborationRun,
   agentId: CollaborationAgentId,
   prompt: string,
+  phase: 'running' | 'synthesizing' = 'running',
 ): Promise<string> {
+  if (isCollaborationRunAborted(run)) throw new Error('Collaboration run aborted')
   setCollaborationAgentState(run, agentId, {
-    status: 'running',
+    status: phase,
     startedAtMs: run.agents[agentId].startedAtMs || Date.now(),
     requestText: prompt,
     actionText: `${agentId} 已收到协作任务`,
@@ -4526,6 +4545,7 @@ async function runCollaborationAgent(
       : agentId === 'claude'
         ? await runClaudeCollaborationTurn(run, prompt)
         : await runMinisCollaborationTurn(run, prompt)
+    if (isCollaborationRunAborted(run)) throw new Error('Collaboration run aborted')
     setCollaborationAgentState(run, agentId, {
       status: 'completed',
       actionText: run.agents[agentId].actionText || `${agentId} 已完成任务`,
@@ -4533,6 +4553,12 @@ async function runCollaborationAgent(
     })
     return response
   } catch (error) {
+    if (isCollaborationRunAborted(run)) {
+      if (run.agents[agentId].status !== 'aborted') {
+        setCollaborationAgentState(run, agentId, { status: 'aborted' })
+      }
+      throw error
+    }
     const message = getErrorMessage(error, `${agentId} collaboration failed`)
     setCollaborationAgentState(run, agentId, { status: 'failed', errorText: message })
     throw error
@@ -4563,33 +4589,37 @@ async function executeCollaborationRun(appServer: AppServerProcess, runId: strin
       runCollaborationAgent(appServer, run, agentId, collaborationPrompt(run, agentId)),
     ),
   )
-  if (run.status === 'aborted') return
+  if (isCollaborationRunAborted(run)) return
   const completedCount = firstPass.filter((row) => row.status === 'fulfilled').length
   if (completedCount === 0) {
     run.status = 'failed'
     run.errorText = '三个智能体均未完成首轮任务'
     run.completedAtMs = Date.now()
     touchCollaborationRun(run)
+    await persistCollaborationRunsNow()
     return
   }
 
-  setCollaborationAgentState(run, run.leader, { status: 'synthesizing' })
   try {
     const finalSummary = await runCollaborationAgent(
       appServer,
       run,
       run.leader,
       buildCollaborationSynthesisPrompt(run),
+      'synthesizing',
     )
+    if (isCollaborationRunAborted(run)) return
     run.finalSummary = finalSummary
     run.status = 'completed'
     run.errorText = ''
   } catch (error) {
+    if (isCollaborationRunAborted(run)) return
     run.status = 'failed'
     run.errorText = getErrorMessage(error, '总调度汇总失败')
   }
   run.completedAtMs = Date.now()
   touchCollaborationRun(run)
+  await persistCollaborationRunsNow()
 }
 
 async function abortCollaborationRun(appServer: AppServerProcess, run: CollaborationRun): Promise<void> {
@@ -4612,6 +4642,7 @@ async function abortCollaborationRun(appServer: AppServerProcess, run: Collabora
     }
   }
   touchCollaborationRun(run)
+  await persistCollaborationRunsNow()
 }
 
 function collaborationRunSummary(run: CollaborationRun): CollaborationRun {
@@ -4661,6 +4692,15 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
         const leader = normalizeCollaborationAgent(payload?.leader)
+        const activeRun = [...collaborationRuns.values()].find((run) => run.status === 'running')
+        if (activeRun) {
+          setJson(res, 409, {
+            ok: false,
+            error: `已有三智能体协作任务正在运行：${activeRun.title}，请等待完成或先终止`,
+            run: collaborationRunSummary(activeRun),
+          })
+          return
+        }
         const now = Date.now()
         const id = `collab_${now.toString(36)}_${randomUUID().slice(0, 8)}`
         const titleSeed = prompt.replace(/\s+/gu, ' ').trim().slice(0, 42)
@@ -4678,7 +4718,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           errorText: '',
         }
         collaborationRuns.set(id, run)
-        scheduleCollaborationPersist(20)
+        await persistCollaborationRunsNow()
         void executeCollaborationRun(appServer, id)
         setJson(res, 202, { ok: true, run: collaborationRunSummary(run) })
         return
@@ -4691,6 +4731,10 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         const run = collaborationRuns.get(runId)
         if (!run) {
           setJson(res, 404, { ok: false, error: 'Collaboration run not found' })
+          return
+        }
+        if (run.status !== 'running') {
+          setJson(res, 409, { ok: false, error: '该协作任务已经结束，无需再次终止', run: collaborationRunSummary(run) })
           return
         }
         await abortCollaborationRun(appServer, run)

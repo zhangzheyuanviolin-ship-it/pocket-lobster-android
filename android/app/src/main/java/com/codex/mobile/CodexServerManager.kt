@@ -7,6 +7,8 @@ import java.io.File
 import java.io.InputStreamReader
 import java.io.InterruptedIOException
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URL
 import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
@@ -44,6 +46,8 @@ class CodexServerManager(private val context: Context) {
         private const val OPENCLAW_CHAT_HISTORY_LIMIT_MIN = 20
         private const val OPENCLAW_CHAT_HISTORY_LIMIT_MAX = 400
         private const val OPENCLAW_CHAT_HISTORY_MAX_BYTES = 1 * 1024 * 1024
+        private val serverStartLock = Any()
+        private val proxyStartLock = Any()
     }
 
     private var serverProcess: Process? = null
@@ -2616,52 +2620,64 @@ WEOF
      * resolver; the proxy forwards TCP connections transparently.
      */
     fun startProxy(): Boolean {
-        if (proxyProcess != null) return true
+        synchronized(proxyStartLock) {
+            if (isProxyReady()) return true
+            proxyProcess?.destroy()
+            proxyProcess = null
 
-        val paths = BootstrapInstaller.getPaths(context)
-        val proxyScript = File(paths.homeDir, "proxy.js")
+            val paths = BootstrapInstaller.getPaths(context)
+            val proxyScript = File(paths.homeDir, "proxy.js")
 
         // Always overwrite with the latest version from assets
-        try {
-            context.assets.open("proxy.js").use { input ->
-                proxyScript.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to extract proxy.js asset: ${e.message}")
-            return false
-        }
-
-        // Kill any orphaned proxy from a previous run
-        val pidFile = File(paths.homeDir, ".proxy.pid")
-        if (pidFile.exists()) {
             try {
-                val oldPid = pidFile.readText().trim()
-                ProcessBuilder("kill", oldPid).start().waitFor()
-                Thread.sleep(500)
-            } catch (_: Exception) {}
-            pidFile.delete()
+                context.assets.open("proxy.js").use { input ->
+                    proxyScript.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to extract proxy.js asset: ${e.message}")
+                return false
+            }
+
+            // Kill a stale proxy only after proving the expected port is unavailable.
+            val pidFile = File(paths.homeDir, ".proxy.pid")
+            if (pidFile.exists()) {
+                try {
+                    val oldPid = pidFile.readText().trim()
+                    ProcessBuilder("kill", oldPid).start().waitFor()
+                    Thread.sleep(500)
+                } catch (_: Exception) {}
+                pidFile.delete()
+            }
+
+            val env = buildEnvironment(paths)
+            val shell = runtimeShell()
+            val cmd = "exec node ${proxyScript.absolutePath}"
+
+            val pb = ProcessBuilder(shell, "-c", cmd)
+            pb.environment().clear()
+            pb.environment().putAll(env)
+            pb.directory(File(paths.homeDir))
+            pb.redirectErrorStream(true)
+
+            val proc = pb.start()
+            proxyProcess = proc
+            startProcessLogThread(proc, "proxy")
+
+            Thread.sleep(800)
+            val ready = isProxyReady()
+            Log.i(TAG, "CONNECT proxy ready=$ready on 127.0.0.1:$PROXY_PORT")
+            return ready
         }
-
-        val env = buildEnvironment(paths)
-        val shell = runtimeShell()
-        val cmd = "exec node ${proxyScript.absolutePath}"
-
-        val pb = ProcessBuilder(shell, "-c", cmd)
-        pb.environment().clear()
-        pb.environment().putAll(env)
-        pb.directory(File(paths.homeDir))
-        pb.redirectErrorStream(true)
-
-        val proc = pb.start()
-        proxyProcess = proc
-        startProcessLogThread(proc, "proxy")
-
-        Thread.sleep(800)
-        Log.i(TAG, "CONNECT proxy started on 127.0.0.1:$PROXY_PORT")
-        return true
     }
+
+    fun isProxyReady(timeoutMs: Int = 1200): Boolean = runCatching {
+        Socket().use { socket ->
+            socket.connect(InetSocketAddress("127.0.0.1", PROXY_PORT), timeoutMs)
+        }
+        true
+    }.getOrDefault(false)
 
     fun stopProxy() {
         proxyProcess?.destroy()
@@ -2829,43 +2845,66 @@ WEOF
      * and authentication must have been completed first.
      */
     fun startServer(): Boolean {
-        if (isRunning) {
-            Log.i(TAG, "Server already running")
+        synchronized(serverStartLock) {
+            if (isServerReady()) {
+                Log.i(TAG, "Server already reachable")
+                return true
+            }
+            if (isRunning) {
+                Log.i(TAG, "Server process is already starting")
+                return true
+            }
+
+            ensureCodexWrapperScript()
+            ensureCodexBundledRgWrapper()
+            runCatching { CodexModelConfigStore.writeSecretHandoff(context) }
+                .onFailure { Log.w(TAG, "Failed preparing Codex provider secrets: ${it.message}") }
+
+            val paths = BootstrapInstaller.getPaths(context)
+            val env = buildEnvironment(paths).toMutableMap()
+            env["HTTPS_PROXY"] = "http://127.0.0.1:$PROXY_PORT"
+            env["HTTP_PROXY"] = "http://127.0.0.1:$PROXY_PORT"
+
+            val serverScript = "${paths.prefixDir}/lib/node_modules/codex-web-local/dist-cli/index.js"
+            if (!File(serverScript).exists()) {
+                Log.e(TAG, "Server script not found: $serverScript")
+                return false
+            }
+
+            val shell = runtimeShell()
+            val command = "exec node $serverScript --port $SERVER_PORT --no-password"
+
+            Log.i(TAG, "Starting server: $command")
+
+            val pb = ProcessBuilder(shell, "-c", command)
+            pb.environment().clear()
+            pb.environment().putAll(env)
+            pb.directory(File(paths.homeDir))
+            pb.redirectErrorStream(true)
+
+            val proc = pb.start()
+            serverProcess = proc
+            startProcessLogThread(proc, "server")
+
             return true
         }
+    }
 
-        ensureCodexWrapperScript()
-        ensureCodexBundledRgWrapper()
-        runCatching { CodexModelConfigStore.writeSecretHandoff(context) }
-            .onFailure { Log.w(TAG, "Failed preparing Codex provider secrets: ${it.message}") }
-
-        val paths = BootstrapInstaller.getPaths(context)
-        val env = buildEnvironment(paths).toMutableMap()
-        env["HTTPS_PROXY"] = "http://127.0.0.1:$PROXY_PORT"
-        env["HTTP_PROXY"] = "http://127.0.0.1:$PROXY_PORT"
-
-        val serverScript = "${paths.prefixDir}/lib/node_modules/codex-web-local/dist-cli/index.js"
-        if (!File(serverScript).exists()) {
-            Log.e(TAG, "Server script not found: $serverScript")
-            return false
+    fun isServerReady(timeoutMs: Int = 1200): Boolean {
+        val connection = runCatching {
+            (URL("http://127.0.0.1:$SERVER_PORT/collaboration-api/runs").openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = timeoutMs
+                readTimeout = timeoutMs
+            }
+        }.getOrNull() ?: return false
+        return try {
+            connection.responseCode in 200..399
+        } catch (_: Exception) {
+            false
+        } finally {
+            connection.disconnect()
         }
-
-        val shell = runtimeShell()
-        val command = "exec node $serverScript --port $SERVER_PORT --no-password"
-
-        Log.i(TAG, "Starting server: $command")
-
-        val pb = ProcessBuilder(shell, "-c", command)
-        pb.environment().clear()
-        pb.environment().putAll(env)
-        pb.directory(File(paths.homeDir))
-        pb.redirectErrorStream(true)
-
-        val proc = pb.start()
-        serverProcess = proc
-        startProcessLogThread(proc, "server")
-
-        return true
     }
 
     fun waitForServer(timeoutMs: Long = 60_000): Boolean {

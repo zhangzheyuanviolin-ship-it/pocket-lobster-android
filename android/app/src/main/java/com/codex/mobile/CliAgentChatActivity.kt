@@ -1304,7 +1304,7 @@ class CliAgentChatActivity : AppCompatActivity() {
         sending = true
         renderSession()
         Thread {
-            val result = runCatching { CollaborationClient.start("claude", prompt) }
+            val result = runCatching { CollaborationClient.start(this, "claude", prompt) }
             runOnUiThread {
                 sending = false
                 renderSession()

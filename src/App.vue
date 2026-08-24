@@ -842,7 +842,12 @@ onMounted(() => {
   window.addEventListener('focus', onCodexModelPreferencesRefresh)
   window.addEventListener('pocketlobster:model-provider-changed', onCodexModelPreferencesRefresh)
   document.addEventListener('visibilitychange', onCodexVisibilityChange)
-  collaborationPollTimer = setInterval(() => void refreshCollaborationRuns(), 2_000)
+  collaborationPollTimer = setInterval(() => {
+    if (document.visibilityState !== 'visible') return
+    if (showCollaborationBoard.value || collaborationRuns.value.some((run) => run.status === 'running')) {
+      void refreshCollaborationRuns()
+    }
+  }, 2_000)
   void refreshCollaborationRuns()
   void initialize()
 })
@@ -1014,7 +1019,9 @@ async function onSubmitThreadMessage(text: string, complete: (success: boolean) 
     if (isHomeRoute.value) await submitFirstMessageForNewThread(text)
     else await sendMessageToSelectedThread(text)
     complete(true)
-  } catch {
+  } catch (error) {
+    collaborationError.value = error instanceof Error ? error.message : '启动三智能体协作失败'
+    showCollaborationBoard.value = true
     complete(false)
   }
 }

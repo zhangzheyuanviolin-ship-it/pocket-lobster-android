@@ -12,6 +12,7 @@
         <span>{{ runStatusLabel(run.status) }}</span>
       </div>
       <p>总调度：{{ agentLabel(run.leader) }}</p>
+      <p>{{ runDurationLabel(run) }}</p>
       <details>
         <summary>用户原始任务</summary>
         <p class="collaboration-summary">{{ run.prompt }}</p>
@@ -80,6 +81,15 @@ function agentStatusLabel(status: CollaborationAgentStatus): string {
     failed: '失败',
     aborted: '已终止',
   })[status]
+}
+
+function runDurationLabel(run: CollaborationRun): string {
+  const endAtMs = run.completedAtMs ?? Date.now()
+  const seconds = Math.max(0, Math.floor((endAtMs - run.createdAtMs) / 1000))
+  if (seconds < 60) return `${run.status === 'running' ? '已运行' : '耗时'}${seconds}秒`
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  return `${run.status === 'running' ? '已运行' : '耗时'}${minutes}分${remainingSeconds}秒`
 }
 </script>
 

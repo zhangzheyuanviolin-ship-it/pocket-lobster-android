@@ -2,6 +2,7 @@ package com.codex.mobile
 
 import android.content.Context
 import java.io.OutputStreamWriter
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import org.json.JSONObject
@@ -23,16 +24,18 @@ object CollaborationPreferences {
 }
 
 object CollaborationClient {
-    fun listRuns(): JSONObject = request("GET", "/collaboration-api/runs")
+    fun listRuns(context: Context): JSONObject = request(context, "GET", "/collaboration-api/runs")
 
-    fun start(leader: String, prompt: String): JSONObject = request(
+    fun start(context: Context, leader: String, prompt: String): JSONObject = request(
+        context = context,
         method = "POST",
         path = "/collaboration-api/start",
         body = JSONObject().put("leader", leader).put("prompt", prompt.trim()),
         readTimeoutMs = 45_000,
     )
 
-    fun abort(runId: String): JSONObject = request(
+    fun abort(context: Context, runId: String): JSONObject = request(
+        context = context,
         method = "POST",
         path = "/collaboration-api/abort",
         body = JSONObject().put("runId", runId.trim()),
@@ -40,10 +43,55 @@ object CollaborationClient {
     )
 
     private fun request(
+        context: Context,
         method: String,
         path: String,
         body: JSONObject? = null,
         readTimeoutMs: Int = 20_000,
+    ): JSONObject {
+        ensureServerReady(context)
+        var lastError: IOException? = null
+        repeat(3) { attempt ->
+            try {
+                return requestOnce(method, path, body, readTimeoutMs)
+            } catch (error: IOException) {
+                lastError = error
+                CodexForegroundService.ensureStarted(context)
+                if (attempt < 2) Thread.sleep(700L * (attempt + 1))
+            }
+        }
+        throw lastError ?: IOException("协作服务连接失败")
+    }
+
+    private fun ensureServerReady(context: Context) {
+        if (isServerReady()) return
+        CodexForegroundService.ensureStarted(context)
+        val deadline = System.currentTimeMillis() + 60_000L
+        while (System.currentTimeMillis() < deadline) {
+            if (isServerReady()) return
+            Thread.sleep(500)
+        }
+        throw IOException("协作服务未能在60秒内启动")
+    }
+
+    private fun isServerReady(): Boolean = runCatching {
+        val connection = URL("http://127.0.0.1:${CodexServerManager.SERVER_PORT}/collaboration-api/runs")
+            .openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 1_200
+            connection.readTimeout = 1_200
+            connection.responseCode in 200..399
+        } finally {
+            connection.disconnect()
+        }
+    }.getOrDefault(false)
+
+    private fun requestOnce(
+        method: String,
+        path: String,
+        body: JSONObject?,
+        readTimeoutMs: Int,
     ): JSONObject {
         val connection = URL("http://127.0.0.1:${CodexServerManager.SERVER_PORT}$path")
             .openConnection() as HttpURLConnection

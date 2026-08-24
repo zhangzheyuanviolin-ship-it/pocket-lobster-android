@@ -324,13 +324,21 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
             )
             replaceRequired(
                 """        viewModel.sendMessage(rawText)""",
-                """        if (!com.openminis.app.integration.CollaborationClient.startIfEnabled(context, rawText)) {
+                """        if (!com.openminis.app.integration.CollaborationClient.startIfEnabled(
+            context,
+            rawText,
+            restorePrompt = { viewModel.setInputText(it) },
+        )) {
             viewModel.sendMessage(rawText)
         }""",
             )
             replaceRequired(
                 """                            viewModel.sendMessage(toSend)""",
-                """                            if (!com.openminis.app.integration.CollaborationClient.startIfEnabled(context, toSend)) {
+                """                            if (!com.openminis.app.integration.CollaborationClient.startIfEnabled(
+                                context,
+                                toSend,
+                                restorePrompt = { viewModel.setInputText(it) },
+                            )) {
                                 viewModel.sendMessage(toSend)
                             }""",
             )

@@ -315,12 +315,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startForegroundService() {
-        val intent = Intent(this, CodexForegroundService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
-        }
+        CodexForegroundService.ensureStarted(this)
     }
 
     @Deprecated("Use onBackPressedDispatcher")

@@ -63,7 +63,7 @@ class CollaborationActivity : AppCompatActivity() {
         if (loading) return
         loading = true
         Thread {
-            val result = runCatching { CollaborationClient.listRuns() }
+            val result = runCatching { CollaborationClient.listRuns(this) }
             runOnUiThread {
                 loading = false
                 result.onSuccess { payload ->
@@ -136,7 +136,7 @@ class CollaborationActivity : AppCompatActivity() {
 
     private fun abort(runId: String) {
         Thread {
-            val result = runCatching { CollaborationClient.abort(runId) }
+            val result = runCatching { CollaborationClient.abort(this, runId) }
             runOnUiThread {
                 result.onSuccess {
                     Toast.makeText(this, "终止请求已发送", Toast.LENGTH_SHORT).show()
