@@ -38,6 +38,9 @@ jobs:
       - name: Install npm dependencies
         run: npm ci --ignore-scripts || npm install
 
+      - name: Run source contract tests
+        run: node --test tests/*.test.mjs
+
       - name: Build Vue frontend
         run: npm run build:frontend
 
@@ -158,7 +161,7 @@ jobs:
           PACKAGE_LINE="$(echo "$BADGING" | head -n 1)"
           echo "$PACKAGE_LINE"
           echo "$PACKAGE_LINE" | grep -F "name='$EXPECTED_PACKAGE_ID'"
-          echo "$PACKAGE_LINE" | grep -F "versionCode='309'"
+          echo "$PACKAGE_LINE" | grep -F "versionCode='310'"
           test "$(echo "$BADGING" | grep -c '^launchable-activity:')" -eq 1
           echo "$BADGING" | grep -F "launchable-activity: name='com.codex.mobile.MainActivity'"
           if echo "$BADGING" | grep -E "^application-label[^:]*:'Minis'$"; then
@@ -166,7 +169,7 @@ jobs:
             exit 1
           fi
           if [ "$RELEASE_CHANNEL" = "beta" ]; then
-            echo "$PACKAGE_LINE" | grep -F "versionName='1.0.68-codex-cli-0.147.0-gpt-5.6-openminis-1.12-clean-browser-v309-beta'"
+            echo "$PACKAGE_LINE" | grep -F "versionName='1.0.69-codex-cli-0.147.0-gpt-5.6-openminis-1.12-collaboration-v310-beta'"
             echo "$BADGING" | grep -F "application-label:'口袋大龙虾测试版'"
             test "$EXPECTED_PACKAGE_ID" = "com.codex.mobile.pocketlobster.beta"
           fi

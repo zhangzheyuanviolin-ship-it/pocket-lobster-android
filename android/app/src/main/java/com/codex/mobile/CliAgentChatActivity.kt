@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.speech.tts.TextToSpeech
@@ -74,6 +76,8 @@ class CliAgentChatActivity : AppCompatActivity() {
     private lateinit var btnCodex: Button
     private lateinit var btnClaude: Button
     private lateinit var btnBrowser: Button
+    private lateinit var collaborationSwitch: SwitchCompat
+    private lateinit var btnCollaborationBoard: Button
 
     private lateinit var serverManager: CodexServerManager
     private lateinit var agentId: ExternalAgentId
@@ -110,6 +114,31 @@ class CliAgentChatActivity : AppCompatActivity() {
 
     private var ttsEngine: TextToSpeech? = null
     private var ttsReady = false
+    private val taskStatusHandler = Handler(Looper.getMainLooper())
+    private val taskStatusPoll = object : Runnable {
+        override fun run() {
+            if (!::activeSession.isInitialized || !::agentId.isInitialized) return
+            val running = AgentTaskRegistry.isRunning(agentId, activeSession.sessionId)
+            if (running) {
+                if (!sending) sending = true
+                AgentSessionStore.loadSession(this@CliAgentChatActivity, agentId, activeSession.sessionId)?.let {
+                    activeSession = it
+                }
+                renderSession()
+                taskStatusHandler.postDelayed(this, 750L)
+                return
+            }
+            if (sending && activeProcess == null) {
+                sending = false
+                AgentSessionStore.loadSession(this@CliAgentChatActivity, agentId, activeSession.sessionId)?.let {
+                    activeSession = it
+                }
+                clearLiveProcessLines()
+                renderSession()
+                taskStatusHandler.postDelayed(this, 900L)
+            }
+        }
+    }
 
     private data class AgentRuntimeOptions(
         val allowSharedStorage: Boolean,
@@ -197,6 +226,8 @@ class CliAgentChatActivity : AppCompatActivity() {
         btnCodex = findViewById(R.id.btnCliTabCodex)
         btnClaude = findViewById(R.id.btnCliTabClaude)
         btnBrowser = findViewById(R.id.btnCliBrowser)
+        collaborationSwitch = findViewById(R.id.switchCliCollaboration)
+        btnCollaborationBoard = findViewById(R.id.btnCliCollaborationBoard)
 
         listView.adapter = messageAdapter
         tvTitle.text = AgentSessionStore.displayAgentName(agentId)
@@ -229,6 +260,13 @@ class CliAgentChatActivity : AppCompatActivity() {
         btnBrowser.setOnClickListener {
             MinisLauncher.openBrowser(this)
         }
+        collaborationSwitch.isChecked = CollaborationPreferences.isEnabled(this, "claude")
+        collaborationSwitch.setOnCheckedChangeListener { _, checked ->
+            CollaborationPreferences.setEnabled(this, "claude", checked)
+        }
+        btnCollaborationBoard.setOnClickListener {
+            startActivity(Intent(this, CollaborationActivity::class.java))
+        }
         inputMessage.setOnEditorActionListener { _, _, _ ->
             sendMessage()
             true
@@ -255,16 +293,23 @@ class CliAgentChatActivity : AppCompatActivity() {
         super.onResume()
         val preferredSession = intent.getStringExtra(EXTRA_SESSION_ID)
         activeSession = AgentSessionStore.ensureActiveSession(this, agentId, preferredSession)
+        collaborationSwitch.isChecked = CollaborationPreferences.isEnabled(this, "claude")
+        sending = AgentTaskRegistry.isRunning(agentId, activeSession.sessionId)
         refreshIdleRouteLabel()
         renderSession()
         ensureNativeSessionBoundIfNeeded(trigger = "resume")
+        taskStatusHandler.removeCallbacks(taskStatusPoll)
+        taskStatusHandler.post(taskStatusPoll)
+    }
+
+    override fun onPause() {
+        taskStatusHandler.removeCallbacks(taskStatusPoll)
+        super.onPause()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (isFinishing) {
-            activeProcess?.destroy()
-        }
+        taskStatusHandler.removeCallbacks(taskStatusPoll)
         ttsEngine?.stop()
         ttsEngine?.shutdown()
         ttsEngine = null
@@ -1071,6 +1116,10 @@ class CliAgentChatActivity : AppCompatActivity() {
         ShizukuBridgeRuntime.ensureStarted(this)
         val input = inputMessage.text.toString().trim()
         if (input.isEmpty()) return
+        if (CollaborationPreferences.isEnabled(this, "claude")) {
+            startCollaboration(input)
+            return
+        }
         val useNativeSession = agentId == ExternalAgentId.CLAUDE_CODE && runtimeOptions.claudeNativeSession
 
         val modelConfig = AgentModelConfigStore.loadCurrentConfig(this, agentId)
@@ -1247,6 +1296,34 @@ class CliAgentChatActivity : AppCompatActivity() {
         }.start()
     }
 
+    private fun startCollaboration(input: String) {
+        val attachmentsSnapshot = attachedFiles.toList()
+        attachedFiles.clear()
+        val prompt = buildUserMessageText(input, attachmentsSnapshot)
+        inputMessage.setText("")
+        sending = true
+        renderSession()
+        Thread {
+            val result = runCatching { CollaborationClient.start("claude", prompt) }
+            runOnUiThread {
+                sending = false
+                renderSession()
+                result.onSuccess {
+                    startActivity(Intent(this, CollaborationActivity::class.java))
+                }.onFailure { error ->
+                    inputMessage.setText(input)
+                    attachmentsSnapshot.forEach { attachedFiles += it }
+                    tvAttachmentSummary.text = buildAttachmentSummary()
+                    Toast.makeText(
+                        this,
+                        "启动三智能体协作失败：${error.message ?: "unknown"}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }.start()
+    }
+
     private fun buildPromptWithHistory(
         messages: List<AgentChatMessage>,
         options: AgentRuntimeOptions,
@@ -1366,6 +1443,7 @@ class CliAgentChatActivity : AppCompatActivity() {
 
         val extraEnv = mutableMapOf(
             "ANTHROPIC_API_KEY" to config.apiKey.trim(),
+            "ANYCLAW_AGENT_ID" to "claude",
             "GIT_CONFIG_NOSYSTEM" to "1",
             "GIT_ATTR_NOSYSTEM" to "1",
         )
@@ -1424,7 +1502,7 @@ class CliAgentChatActivity : AppCompatActivity() {
         process: Process,
         finalizeAssistant: (String) -> String,
     ): AgentRunResult {
-        activeProcess = process
+        registerActiveProcess(process)
         val rawLines = mutableListOf<String>()
         BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
             var line = reader.readLine()
@@ -1442,9 +1520,9 @@ class CliAgentChatActivity : AppCompatActivity() {
             }
         }
         val exitCode = process.waitFor()
-        activeProcess = null
+        clearActiveProcess(process)
         val raw = rawLines.joinToString("\n").trim()
-        if (abortRequested) {
+        if (abortRequested || AgentTaskRegistry.wasAbortRequested(agentId, activeSession.sessionId)) {
             return AgentRunResult(
                 assistantText = getString(R.string.cli_task_aborted),
                 processText = raw,
@@ -1462,7 +1540,7 @@ class CliAgentChatActivity : AppCompatActivity() {
     }
 
     private fun runClaudeStreamJson(process: Process): AgentRunResult {
-        activeProcess = process
+        registerActiveProcess(process)
         val state = ClaudeStreamParseState()
         BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
             var line = reader.readLine()
@@ -1482,9 +1560,9 @@ class CliAgentChatActivity : AppCompatActivity() {
             }
         }
         val exitCode = process.waitFor()
-        activeProcess = null
+        clearActiveProcess(process)
 
-        if (abortRequested) {
+        if (abortRequested || AgentTaskRegistry.wasAbortRequested(agentId, activeSession.sessionId)) {
             return AgentRunResult(
                 assistantText = getString(R.string.cli_task_aborted),
                 processText = state.processLines.joinToString("\n").trim(),
@@ -1748,20 +1826,37 @@ class CliAgentChatActivity : AppCompatActivity() {
     }
 
     private fun abortRunningTask() {
-        val proc = activeProcess
-        if (!sending || proc == null) {
+        if (!sending) {
             Toast.makeText(this, getString(R.string.cli_abort_none), Toast.LENGTH_SHORT).show()
             return
         }
         abortRequested = true
-        proc.destroy()
-        Thread {
-            Thread.sleep(1200)
-            if (proc.isAlive) {
-                proc.destroyForcibly()
+        val aborted = AgentTaskRegistry.abort(agentId, activeSession.sessionId)
+        if (aborted) {
+            Toast.makeText(this, getString(R.string.cli_abort_sent), Toast.LENGTH_SHORT).show()
+        } else {
+            val proc = activeProcess
+            if (proc != null && proc.isAlive) {
+                proc.destroy()
+                Thread {
+                    Thread.sleep(900)
+                    if (proc.isAlive) proc.destroyForcibly()
+                }.start()
+                Toast.makeText(this, getString(R.string.cli_abort_sent), Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, getString(R.string.cli_abort_none), Toast.LENGTH_SHORT).show()
             }
-        }.start()
-        Toast.makeText(this, getString(R.string.cli_abort_sent), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun registerActiveProcess(process: Process) {
+        activeProcess = process
+        AgentTaskRegistry.register(agentId, activeSession.sessionId, process)
+    }
+
+    private fun clearActiveProcess(process: Process) {
+        AgentTaskRegistry.clear(agentId, activeSession.sessionId, process)
+        if (activeProcess === process) activeProcess = null
     }
 
     private fun buildUserMessageText(input: String, attachments: List<LocalAttachment>): String {

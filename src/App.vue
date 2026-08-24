@@ -494,11 +494,17 @@
                 <p v-if="codexError" class="new-thread-error" aria-live="assertive">{{ codexError }}</p>
               </div>
 
+              <CollaborationBoard v-if="showCollaborationBoard" :runs="collaborationRuns"
+                :error="collaborationError" @close="showCollaborationBoard = false"
+                @abort="onAbortCollaborationRun" />
+
               <ThreadComposer :active-thread-id="composerThreadContextId" :disabled="isSendingMessage"
                 :providers="availableProviders" :selected-provider="selectedProviderId"
                 :models="availableModels" :reasoning-efforts="availableReasoningEfforts" :selected-model="selectedModelId"
                 :selected-reasoning-effort="selectedReasoningEffort" :is-turn-in-progress="false"
-                :is-interrupting-turn="false" @submit="onSubmitThreadMessage"
+                :is-interrupting-turn="false" :collaboration-enabled="collaborationEnabled"
+                @submit="onSubmitThreadMessage" @update:collaboration-enabled="onToggleCollaboration"
+                @open-collaboration-board="onOpenCollaborationBoard"
                 @update:selected-provider="onSelectProvider" @update:selected-model="onSelectModel"
                 @update:selected-reasoning-effort="onSelectReasoningEffort" />
             </div>
@@ -517,13 +523,19 @@
                   @branch-from-message="onBranchFromMessage" />
               </div>
 
+              <CollaborationBoard v-if="showCollaborationBoard" :runs="collaborationRuns"
+                :error="collaborationError" @close="showCollaborationBoard = false"
+                @abort="onAbortCollaborationRun" />
+
               <ThreadComposer :active-thread-id="composerThreadContextId"
                 :disabled="isSendingMessage || isLoadingMessages" :providers="availableProviders"
                 :selected-provider="selectedProviderId" :models="availableModels"
                 :reasoning-efforts="availableReasoningEfforts"
                 :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
                 :is-turn-in-progress="isSelectedThreadInProgress" :is-interrupting-turn="isInterruptingTurn"
-                @submit="onSubmitThreadMessage" @update:selected-provider="onSelectProvider"
+                :collaboration-enabled="collaborationEnabled" @submit="onSubmitThreadMessage"
+                @update:collaboration-enabled="onToggleCollaboration"
+                @open-collaboration-board="onOpenCollaborationBoard" @update:selected-provider="onSelectProvider"
                 @update:selected-model="onSelectModel"
                 @update:selected-reasoning-effort="onSelectReasoningEffort" @interrupt="onInterruptTurn" />
             </div>
@@ -542,6 +554,7 @@ import SidebarThreadTree from './components/sidebar/SidebarThreadTree.vue'
 import ContentHeader from './components/content/ContentHeader.vue'
 import ThreadConversation from './components/content/ThreadConversation.vue'
 import ThreadComposer from './components/content/ThreadComposer.vue'
+import CollaborationBoard from './components/content/CollaborationBoard.vue'
 import OpenClawComposer from './components/content/OpenClawComposer.vue'
 import ClaudeComposer from './components/content/ClaudeComposer.vue'
 import ComposerDropdown from './components/content/ComposerDropdown.vue'
@@ -556,8 +569,15 @@ import { useUiI18n, type LocalePreference } from './composables/useUiI18n'
 import type { ReasoningEffort, ThreadScrollState, UiServerRequest } from './types/codex'
 import type { OpenClawComposerSubmitPayload } from './types/openclaw'
 import type { ClaudeComposerSubmitPayload } from './types/claude'
+import {
+  abortCollaborationRun,
+  listCollaborationRuns,
+  startCollaborationRun,
+  type CollaborationRun,
+} from './api/collaborationGateway'
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
+const COLLABORATION_ENABLED_STORAGE_KEY = 'pocket-lobster.collaboration-enabled.v1'
 const { localePreference, setLocalePreference, t } = useUiI18n()
 const openClawDashboardUrl = computed(() => {
   const params = new URLSearchParams({
@@ -700,6 +720,11 @@ const isOpenClawSessionCreating = ref(false)
 const claudeSearchQuery = ref('')
 const claudePendingRequests = ref<UiServerRequest[]>([])
 const isClaudeSessionCreating = ref(false)
+const collaborationEnabled = ref(loadCollaborationEnabled())
+const showCollaborationBoard = ref(false)
+const collaborationRuns = ref<CollaborationRun[]>([])
+const collaborationError = ref('')
+let collaborationPollTimer: ReturnType<typeof setInterval> | null = null
 
 const routeThreadId = computed(() => {
   const rawThreadId = route.params.threadId
@@ -817,6 +842,8 @@ onMounted(() => {
   window.addEventListener('focus', onCodexModelPreferencesRefresh)
   window.addEventListener('pocketlobster:model-provider-changed', onCodexModelPreferencesRefresh)
   document.addEventListener('visibilitychange', onCodexVisibilityChange)
+  collaborationPollTimer = setInterval(() => void refreshCollaborationRuns(), 2_000)
+  void refreshCollaborationRuns()
   void initialize()
 })
 
@@ -828,6 +855,8 @@ onUnmounted(() => {
   stopPolling()
   stopOpenClawPolling()
   stopClaudePolling()
+  if (collaborationPollTimer !== null) clearInterval(collaborationPollTimer)
+  collaborationPollTimer = null
 })
 
 function onCodexModelPreferencesRefresh(): void {
@@ -974,12 +1003,58 @@ function onWindowKeyDown(event: KeyboardEvent): void {
 
 async function onSubmitThreadMessage(text: string, complete: (success: boolean) => void): Promise<void> {
   try {
+    if (collaborationEnabled.value) {
+      const run = await startCollaborationRun('codex', text)
+      collaborationRuns.value = [run, ...collaborationRuns.value.filter((row) => row.id !== run.id)]
+      showCollaborationBoard.value = true
+      collaborationError.value = ''
+      complete(true)
+      return
+    }
     if (isHomeRoute.value) await submitFirstMessageForNewThread(text)
     else await sendMessageToSelectedThread(text)
     complete(true)
   } catch {
     complete(false)
   }
+}
+
+function loadCollaborationEnabled(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.localStorage.getItem(COLLABORATION_ENABLED_STORAGE_KEY) === '1'
+}
+
+function onToggleCollaboration(enabled: boolean): void {
+  collaborationEnabled.value = enabled
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(COLLABORATION_ENABLED_STORAGE_KEY, enabled ? '1' : '0')
+  }
+}
+
+function onOpenCollaborationBoard(): void {
+  showCollaborationBoard.value = true
+  void refreshCollaborationRuns()
+}
+
+async function refreshCollaborationRuns(): Promise<void> {
+  try {
+    collaborationRuns.value = await listCollaborationRuns()
+    collaborationError.value = ''
+  } catch (error) {
+    collaborationError.value = error instanceof Error ? error.message : '协作看板刷新失败'
+  }
+}
+
+function onAbortCollaborationRun(runId: string): void {
+  void (async () => {
+    try {
+      const run = await abortCollaborationRun(runId)
+      collaborationRuns.value = collaborationRuns.value.map((row) => row.id === run.id ? run : row)
+      collaborationError.value = ''
+    } catch (error) {
+      collaborationError.value = error instanceof Error ? error.message : '终止协作失败'
+    }
+  })()
 }
 
 function onSelectNewThreadFolder(cwd: string): void {

@@ -4280,6 +4280,7 @@ EOF
             "PROOT_TMP_DIR" to paths.tmpDir,
             "TERM" to "xterm-256color",
             "ANYCLAW_UBUNTU_BIN" to "$runtimeBinDir/ubuntu-shell.sh",
+            "ANYCLAW_AGENT_ID" to "codex",
             "ANDROID_DATA" to "/data",
             "ANDROID_ROOT" to "/system",
             "ANDROID_STORAGE" to "/sdcard",

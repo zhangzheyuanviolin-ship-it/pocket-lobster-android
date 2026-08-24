@@ -11,6 +11,25 @@
       />
 
       <div class="thread-composer-controls">
+        <label class="thread-composer-collaboration">
+          <input
+            type="checkbox"
+            :checked="collaborationEnabled"
+            aria-label="三智能体协作"
+            @change="onCollaborationToggle"
+          />
+          <span>三智能体协作</span>
+        </label>
+
+        <button
+          class="thread-composer-board"
+          type="button"
+          aria-label="打开三智能体协作看板"
+          @click="$emit('open-collaboration-board')"
+        >
+          协作看板
+        </button>
+
         <ComposerDropdown
           class="thread-composer-control"
           :model-value="selectedProvider"
@@ -86,6 +105,7 @@ const props = defineProps<{
   isTurnInProgress?: boolean
   isInterruptingTurn?: boolean
   disabled?: boolean
+  collaborationEnabled?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -94,6 +114,8 @@ const emit = defineEmits<{
   'update:selected-model': [modelId: string]
   'update:selected-provider': [providerId: string]
   'update:selected-reasoning-effort': [effort: ReasoningEffort | '']
+  'update:collaboration-enabled': [enabled: boolean]
+  'open-collaboration-board': []
 }>()
 
 const draft = ref('')
@@ -147,6 +169,10 @@ function onReasoningEffortSelect(value: string): void {
   emit('update:selected-reasoning-effort', value as ReasoningEffort)
 }
 
+function onCollaborationToggle(event: Event): void {
+  emit('update:collaboration-enabled', (event.target as HTMLInputElement).checked)
+}
+
 watch(
   () => props.activeThreadId,
   () => {
@@ -179,11 +205,23 @@ watch(
 }
 
 .thread-composer-controls {
-  @apply mt-3 flex min-w-0 items-center gap-3 overflow-visible;
+  @apply mt-3 flex min-w-0 flex-wrap items-center gap-3 overflow-visible;
 }
 
 .thread-composer-control {
   @apply min-w-0 max-w-[34%] shrink;
+}
+
+.thread-composer-collaboration {
+  @apply inline-flex min-h-9 shrink-0 items-center gap-2 text-xs text-zinc-800;
+}
+
+.thread-composer-collaboration input {
+  @apply h-5 w-5;
+}
+
+.thread-composer-board {
+  @apply min-h-9 shrink-0 rounded-md border border-zinc-300 bg-white px-2 text-xs text-zinc-800;
 }
 
 .thread-composer-submit {

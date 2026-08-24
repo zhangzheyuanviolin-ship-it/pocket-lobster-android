@@ -266,13 +266,75 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
                 com.openminis.app.integration.PocketLobsterHostTools.execute(name, argsJson, context)
             else -> ToolExecutionResult("Unknown tool: ${'$'}name", false)""",
         )
-        generatedSources.get().file("com/openminis/app/ui/chat/ChatViewModel.kt").asFile.replaceRequired(
-            """        BrowserTabPool(context).also {
+        generatedSources.get().file("com/openminis/app/ui/chat/ChatViewModel.kt").asFile.apply {
+            replaceRequired(
+                """        BrowserTabPool(context).also {
             it.setSession(activeSessionId)""",
-            """        BrowserTabPool(context).also {
-            com.openminis.app.integration.SharedMinisRuntime.registerBrowser(it)
-            it.setSession(activeSessionId)""",
-        )
+                """        com.openminis.app.integration.SharedMinisRuntime.browser(context).also {
+            com.openminis.app.integration.SharedMinisRuntime.registerBrowser(it)""",
+            )
+            replaceRequired(
+                """            val result = browserTabPool.execute(input)""",
+                """            val result = com.openminis.app.integration.SharedMinisRuntime.executeBrowser(
+                context,
+                "minis",
+                input,
+            )""",
+            )
+        }
+        generatedSources.get().file("com/openminis/app/ui/chat/ChatScreen.kt").asFile.apply {
+            replaceRequired(
+                """    val snackbarHostState = remember { SnackbarHostState() }""",
+                """    val snackbarHostState = remember { SnackbarHostState() }
+    var pocketLobsterCollaborationEnabled by remember {
+        mutableStateOf(com.openminis.app.integration.CollaborationClient.isEnabled(context))
+    }""",
+            )
+            replaceRequired(
+                """                            MinisMenuDivider()
+                            // Clear Chat""",
+                """                            DropdownMenuItem(
+                                text = { Text("三智能体协作") },
+                                onClick = {
+                                    pocketLobsterCollaborationEnabled = !pocketLobsterCollaborationEnabled
+                                    com.openminis.app.integration.CollaborationClient.setEnabled(
+                                        context,
+                                        pocketLobsterCollaborationEnabled,
+                                    )
+                                },
+                                trailingIcon = {
+                                    androidx.compose.material3.Switch(
+                                        checked = pocketLobsterCollaborationEnabled,
+                                        onCheckedChange = { enabled ->
+                                            pocketLobsterCollaborationEnabled = enabled
+                                            com.openminis.app.integration.CollaborationClient.setEnabled(context, enabled)
+                                        },
+                                    )
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("协作看板") },
+                                onClick = {
+                                    showChatMenu = false
+                                    com.openminis.app.integration.CollaborationClient.openBoard(context)
+                                },
+                            )
+                            MinisMenuDivider()
+                            // Clear Chat""",
+            )
+            replaceRequired(
+                """        viewModel.sendMessage(rawText)""",
+                """        if (!com.openminis.app.integration.CollaborationClient.startIfEnabled(context, rawText)) {
+            viewModel.sendMessage(rawText)
+        }""",
+            )
+            replaceRequired(
+                """                            viewModel.sendMessage(toSend)""",
+                """                            if (!com.openminis.app.integration.CollaborationClient.startIfEnabled(context, toSend)) {
+                                viewModel.sendMessage(toSend)
+                            }""",
+            )
+        }
         var appNameReferenceCount = 0
         generatedSources.get().asFile.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
@@ -306,6 +368,11 @@ val verifyOpenMinisIntegrationSources by tasks.registering {
         check("PocketLobsterHostTools.ubuntuDefinition" in agentTools)
         check("PocketLobsterHostTools.execute" in chatViewModel)
         check("SharedMinisRuntime.registerBrowser" in chatViewModel)
+        check("SharedMinisRuntime.executeBrowser" in chatViewModel)
+        val chatScreen = generatedSources.get()
+            .file("com/openminis/app/ui/chat/ChatScreen.kt").asFile.readText()
+        check("CollaborationClient.startIfEnabled" in chatScreen)
+        check("pocketLobsterCollaborationEnabled" in chatScreen)
         val browserAction = generatedSources.get()
             .file("com/openminis/app/browser/BrowserAction.kt").asFile.readText()
         val browserInput = generatedSources.get()

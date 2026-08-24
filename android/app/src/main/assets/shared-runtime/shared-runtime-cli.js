@@ -9,6 +9,7 @@ const mode = process.argv[2] || '';
 const args = process.argv.slice(3);
 const home = process.env.HOME || '';
 const tokenPath = path.resolve(home, '..', 'shared-runtime', 'bridge-token');
+const agentId = String(process.env.ANYCLAW_AGENT_ID || 'codex').trim().toLowerCase();
 
 const BROWSER_ACTIONS = {
   navigate: 'Open a URL. Required: --url.',
@@ -145,7 +146,7 @@ function browserPayload(rawArgs) {
   let result;
   if (mode === 'alpine') {
     const command = args[0] === '--command' ? args.slice(1).join(' ') : args.join(' ');
-    result = await post(18927, '/alpine/exec', { command, timeout: 900 });
+    result = await post(18927, '/alpine/exec', { agent_id: agentId, command, timeout: 900 });
   } else if (mode === 'browser') {
     const browserArgs = [...args];
     const first = String(browserArgs[0] || '').toLowerCase();
@@ -160,7 +161,7 @@ function browserPayload(rawArgs) {
     const jsonIndex = browserArgs.indexOf('--json');
     const jsonOutput = jsonIndex >= 0;
     if (jsonOutput) browserArgs.splice(jsonIndex, 1);
-    result = await post(18927, '/browser/call', browserPayload(browserArgs));
+    result = await post(18927, '/browser/call', { agent_id: agentId, ...browserPayload(browserArgs) });
     if (jsonOutput) {
       process.stdout.write(JSON.stringify(result, null, 2) + '\n');
       process.exitCode = result.ok === false ? 1 : 0;

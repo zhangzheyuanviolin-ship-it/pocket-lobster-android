@@ -65,5 +65,14 @@
             android:text="@string/agent_hub_permission_center"
             android:textAllCaps="false" />
 
+        <Button
+            android:id="@+id/btnAgentHubCollaboration"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="52dp"
+            android:text="三智能体协作看板"
+            android:textAllCaps="false" />
+
     </LinearLayout>
 </ScrollView>

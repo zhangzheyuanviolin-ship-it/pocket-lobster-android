@@ -38,7 +38,7 @@ Pocket Lobster is a multi-agent native AI assistant for ordinary Android phones.
 
 ## 当前稳定基线 Current Stable Baseline
 
-当前黄金测试基线是 `1.0.58-codex-cli-0.147.0-gpt-5.6-responses-v299-beta`，对应提交 `9bbaba40efe308373090ad3552d6126f9c568075` 与标签 `golden-beta-v299-20260820`。该版本已经完成 Codex 官方授权与第三方 Responses 提供商在同一会话内双向切换验证。English: The current golden beta baseline is v299 at commit `9bbaba40efe308373090ad3552d6126f9c568075`, protected by tag `golden-beta-v299-20260820`.
+当前黄金测试基线是 `1.0.68-codex-cli-0.147.0-gpt-5.6-openminis-1.12-clean-browser-v309-beta`，对应提交 `bdbafb36f41ca4d330c88142b95a6e1334d91b54` 与标签 `golden-beta-v309-20260824`。该版本已经完成 Codex、Claude Code 与 Minis 三智能体的三个终端和共享浏览器稳定性验证。English: The current golden beta baseline is v309 at commit `bdbafb36f41ca4d330c88142b95a6e1334d91b54`, protected by tag `golden-beta-v309-20260824`.
 
 ## License
 

@@ -34,6 +34,12 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".CollaborationActivity"
+            android:exported="false"
+            android:label="三智能体协作"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".CliAgentChatActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />

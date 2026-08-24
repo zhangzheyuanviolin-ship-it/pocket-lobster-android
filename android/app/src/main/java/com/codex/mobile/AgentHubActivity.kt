@@ -34,6 +34,10 @@ class AgentHubActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnAgentHubPermissionCenter).setOnClickListener {
             startActivity(Intent(this, PermissionManagerActivity::class.java))
         }
+
+        findViewById<Button>(R.id.btnAgentHubCollaboration).setOnClickListener {
+            startActivity(Intent(this, CollaborationActivity::class.java))
+        }
     }
 
     private fun startMainWithTarget(target: String) {

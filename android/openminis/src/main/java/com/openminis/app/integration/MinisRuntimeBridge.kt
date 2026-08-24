@@ -11,17 +11,23 @@ import com.openminis.app.browser.BrowserAction
 import com.openminis.app.browser.BrowserActionInput
 import com.openminis.app.browser.BrowserActionResult
 import com.openminis.app.browser.BrowserTabPool
+import com.openminis.app.debug.DebugRPCHandler
 import com.openminis.app.sandbox.ExecutionCoordinator
 import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 object SharedMinisRuntime {
     private const val SHARED_SESSION_ID = "pocket-lobster-shared"
     @Volatile private var browserPool: BrowserTabPool? = null
+    private val browserTabsByAgent = ConcurrentHashMap<String, Int>()
+    private val browserAllocationLock = Mutex()
 
     fun registerBrowser(pool: BrowserTabPool) {
         browserPool = pool
@@ -36,12 +42,68 @@ object SharedMinisRuntime {
         }
     }
 
-    suspend fun executeAlpine(command: String, timeoutMs: Long) =
+    suspend fun executeAlpine(agentId: String, command: String, timeoutMs: Long) =
         ExecutionCoordinator.execute(
-            sessionId = SHARED_SESSION_ID,
+            sessionId = "$SHARED_SESSION_ID-${normalizeAgentId(agentId)}",
             command = command,
             timeout = timeoutMs,
         )
+
+    suspend fun executeBrowser(
+        context: Context,
+        agentId: String,
+        input: BrowserActionInput,
+    ): BrowserActionResult {
+        val pool = browser(context)
+        val normalizedAgentId = normalizeAgentId(agentId)
+        if (input.action == BrowserAction.LIST_TABS) {
+            return pool.execute(input, singleTab = false)
+        }
+        if (input.action == BrowserAction.NEW_TAB) {
+            val result = pool.execute(input, singleTab = false)
+            result.tabId?.let { browserTabsByAgent[normalizedAgentId] = it }
+            return result
+        }
+
+        val targetTab = browserAllocationLock.withLock {
+            val requestedTab = input.tabId?.takeIf { id ->
+                browserTabsByAgent.entries.none { it.key != normalizedAgentId && it.value == id }
+            }
+            val mappedTab = browserTabsByAgent[normalizedAgentId]
+                ?.takeIf { id -> pool.tabs.value.any { it.id == id } }
+            requestedTab ?: mappedTab ?: allocateBrowserTab(pool, normalizedAgentId)
+        }
+        if (targetTab == null) {
+            return BrowserActionResult.error("No browser tab is available for agent $normalizedAgentId")
+        }
+        browserTabsByAgent[normalizedAgentId] = targetTab
+        val routedInput = input.copy(tabId = targetTab)
+        val result = pool.execute(routedInput, singleTab = false)
+        if (input.action == BrowserAction.CLOSE_TAB && result.success) {
+            browserTabsByAgent.remove(normalizedAgentId, targetTab)
+        }
+        return result
+    }
+
+    private suspend fun allocateBrowserTab(pool: BrowserTabPool, agentId: String): Int? {
+        val claimed = browserTabsByAgent.values.toSet()
+        pool.tabs.value.firstOrNull { it.id !in claimed }?.let {
+            browserTabsByAgent[agentId] = it.id
+            return it.id
+        }
+        val created = pool.execute(BrowserActionInput(action = BrowserAction.NEW_TAB), singleTab = false)
+        created.tabId?.let { browserTabsByAgent[agentId] = it }
+        return created.tabId
+    }
+
+    private fun normalizeAgentId(value: String): String {
+        val normalized = value.trim().lowercase()
+        return when (normalized) {
+            "claude", "claude-code" -> "claude"
+            "minis", "openminis" -> "minis"
+            else -> "codex"
+        }
+    }
 }
 
 object MinisRuntimeBridgeRuntime {
@@ -78,6 +140,7 @@ class MinisRuntimeBridgeService : Service() {
 private class MinisRuntimeBridgeServer(
     private val context: Context,
 ) : NanoHTTPD("127.0.0.1", MinisRuntimeBridgeRuntime.PORT) {
+    private val chatRpcHandler = DebugRPCHandler(context)
 
     override fun serve(session: IHTTPSession): Response {
         if (!SharedBridgeToken.matches(context, session.headers["x-pocket-lobster-token"])) {
@@ -89,6 +152,7 @@ private class MinisRuntimeBridgeServer(
                 session.method == Method.GET && session.uri == "/browser/schema" -> browserSchema()
                 session.method == Method.POST && session.uri == "/alpine/exec" -> alpine(session)
                 session.method == Method.POST && session.uri == "/browser/call" -> browser(session)
+                session.method == Method.POST && session.uri == "/chat/rpc" -> chatRpc(session)
                 else -> json(Response.Status.NOT_FOUND, JSONObject().put("ok", false).put("error", "not_found"))
             }
         } catch (error: Throwable) {
@@ -113,12 +177,13 @@ private class MinisRuntimeBridgeServer(
 
     private fun alpine(session: IHTTPSession): Response {
         val payload = body(session)
+        val agentId = payload.optString("agent_id", "codex")
         val command = payload.optString("command", "")
         if (command.isBlank()) {
             return json(Response.Status.BAD_REQUEST, JSONObject().put("ok", false).put("error", "command_required"))
         }
         val timeoutMs = payload.optLong("timeout", 900L).coerceIn(1L, 900L) * 1_000L
-        val result = runBlocking { SharedMinisRuntime.executeAlpine(command, timeoutMs) }
+        val result = runBlocking { SharedMinisRuntime.executeAlpine(agentId, command, timeoutMs) }
         return json(
             Response.Status.OK,
             JSONObject()
@@ -130,6 +195,7 @@ private class MinisRuntimeBridgeServer(
 
     private fun browser(session: IHTTPSession): Response {
         val payload = body(session)
+        val agentId = payload.optString("agent_id", "codex")
         val input = BrowserActionInput.parse(payload.toString())
             ?: return json(
                 Response.Status.BAD_REQUEST,
@@ -138,8 +204,7 @@ private class MinisRuntimeBridgeServer(
                     .put("error", "invalid_browser_action")
                     .put("detail", "Run minis-browser --help or minis-browser schema for actions and parameters."),
             )
-        val pool = SharedMinisRuntime.browser(context)
-        val result = runBlocking { executeBrowserAction(pool, input, payload) }
+        val result = runBlocking { executeBrowserAction(agentId, input, payload) }
         val image = prepareBridgeImage(result, payload)
         return json(
             Response.Status.OK,
@@ -156,8 +221,14 @@ private class MinisRuntimeBridgeServer(
         )
     }
 
+    private fun chatRpc(session: IHTTPSession): Response {
+        val request = body(session).toString()
+        val response = runBlocking { chatRpcHandler.handle(request) }
+        return newFixedLengthResponse(Response.Status.OK, "application/json; charset=utf-8", response)
+    }
+
     private suspend fun executeBrowserAction(
-        pool: BrowserTabPool,
+        agentId: String,
         parsedInput: BrowserActionInput,
         payload: JSONObject,
     ): BrowserActionResult {
@@ -171,25 +242,27 @@ private class MinisRuntimeBridgeServer(
         ) && !parsedInput.selector.isNullOrBlank()
 
         if (selectorAction) {
-            pool.execute(
+            SharedMinisRuntime.executeBrowser(
+                context,
+                agentId,
                 BrowserActionInput(action = BrowserAction.WAIT_FOR_DOM_STABLE, timeoutMs = 2_500),
-                singleTab = true,
             )
         }
 
-        var result = pool.execute(input, singleTab = true)
+        var result = SharedMinisRuntime.executeBrowser(context, agentId, input)
         if (selectorAction) {
             repeat(3) {
                 if (result.success || !result.text.contains("Element not found", ignoreCase = true)) {
                     return result
                 }
                 delay(350)
-                result = pool.execute(input, singleTab = true)
+                result = SharedMinisRuntime.executeBrowser(context, agentId, input)
             }
             if (!result.success) {
-                val contextResult = pool.execute(
+                val contextResult = SharedMinisRuntime.executeBrowser(
+                    context,
+                    agentId,
                     BrowserActionInput(action = BrowserAction.GET_PAGE_INFO),
-                    singleTab = true,
                 )
                 result = result.copy(text = "${result.text}\nPage context after retries:\n${contextResult.text}")
             }

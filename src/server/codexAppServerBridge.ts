@@ -95,6 +95,15 @@ const CLAUDE_PROCESS_LINES_MAX = 240
 const CLAUDE_OUTPUT_CHARS_MAX = 240_000
 const CLAUDE_SESSION_HISTORY_DEFAULT = 60
 const CLAUDE_NO_OUTPUT_WARN_MS = 25_000
+const COLLABORATION_STATE_PATH = homeDir
+  ? join(homeDir, '.pocketlobster', 'collaboration', 'runs.json')
+  : join(process.cwd(), '.pocketlobster', 'collaboration', 'runs.json')
+const SHARED_BRIDGE_TOKEN_PATH = homeDir
+  ? join(dirname(homeDir), 'shared-runtime', 'bridge-token')
+  : ''
+const MINIS_BRIDGE_URL = 'http://127.0.0.1:18927'
+const COLLABORATION_TIMEOUT_MS = 30 * 60_000
+const COLLABORATION_HISTORY_LIMIT = 40
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -293,6 +302,38 @@ type ClaudePersistedRun = {
   exitCode: number | null
 }
 
+type CollaborationAgentId = 'codex' | 'claude' | 'minis'
+type CollaborationAgentStatus = 'pending' | 'running' | 'synthesizing' | 'completed' | 'failed' | 'aborted'
+
+type CollaborationAgentState = {
+  agentId: CollaborationAgentId
+  role: 'leader' | 'worker'
+  status: CollaborationAgentStatus
+  sessionId: string
+  runId: string
+  turnId: string
+  startedAtMs: number
+  updatedAtMs: number
+  requestText: string
+  actionText: string
+  responseText: string
+  errorText: string
+}
+
+type CollaborationRun = {
+  id: string
+  title: string
+  prompt: string
+  leader: CollaborationAgentId
+  status: 'running' | 'completed' | 'failed' | 'aborted'
+  createdAtMs: number
+  updatedAtMs: number
+  completedAtMs: number | null
+  agents: Record<CollaborationAgentId, CollaborationAgentState>
+  finalSummary: string
+  errorText: string
+}
+
 let openClawNativeReadyCacheValue: boolean | null = null
 let openClawNativeReadyCacheAtMs = 0
 const openClawNativeRuns = new Map<string, OpenClawNativeRunContext>()
@@ -300,6 +341,9 @@ const lightweightRuns = new Map<string, LightweightRunContext>()
 const lightweightRunAbortRequested = new Set<string>()
 const claudeRuns = new Map<string, ClaudeRunContext>()
 let claudeRunsPersistTimer: NodeJS.Timeout | null = null
+const collaborationRuns = new Map<string, CollaborationRun>()
+let collaborationRunsLoaded = false
+let collaborationPersistTimer: NodeJS.Timeout | null = null
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -3042,6 +3086,7 @@ async function sendClaudeMessage(payload: Record<string, unknown>): Promise<{ ru
     cwd: homeDir || process.cwd(),
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
   })
   run.process = proc
   proc.stdout.setEncoding('utf8')
@@ -3056,6 +3101,7 @@ async function sendClaudeMessage(payload: Record<string, unknown>): Promise<{ ru
   proc.stdout.on('data', appendOutput)
   proc.stderr.on('data', appendOutput)
   proc.on('error', async (error) => {
+    if (run.completed) return
     run.errorText = getErrorMessage(error, 'claude process start failed')
     run.status = 'failed'
     run.completed = true
@@ -3068,6 +3114,7 @@ async function sendClaudeMessage(payload: Record<string, unknown>): Promise<{ ru
     await finalizeClaudeRun(runId)
   })
   proc.on('close', async (code) => {
+    if (run.completed) return
     run.exitCode = typeof code === 'number' ? code : null
     run.assistantText = extractClaudeAssistantText(run.rawOutput)
     if ((run.exitCode ?? 1) === 0) {
@@ -3223,15 +3270,19 @@ async function abortClaudeRun(runId: string): Promise<boolean> {
   run.errorText = 'aborted by user'
   run.updatedAtMs = Date.now()
   try {
-    run.process?.kill('SIGTERM')
+    const pid = run.process?.pid
+    if (typeof pid === 'number' && pid > 0) process.kill(-pid, 'SIGTERM')
+    else run.process?.kill('SIGTERM')
   } catch {
-    // ignore
+    try { run.process?.kill('SIGTERM') } catch { /* ignore */ }
   }
   await sleepMs(120)
   try {
-    run.process?.kill('SIGKILL')
+    const pid = run.process?.pid
+    if (typeof pid === 'number' && pid > 0) process.kill(-pid, 'SIGKILL')
+    else run.process?.kill('SIGKILL')
   } catch {
-    // ignore
+    try { run.process?.kill('SIGKILL') } catch { /* ignore */ }
   }
   run.completed = true
   run.exitCode = 130
@@ -4080,6 +4131,493 @@ async function switchCodexThreadRoute(
   }
 }
 
+function normalizeCollaborationAgent(value: unknown): CollaborationAgentId {
+  const normalized = normalizeText(value).toLowerCase()
+  if (normalized === 'claude' || normalized === 'claude-code') return 'claude'
+  if (normalized === 'minis' || normalized === 'openminis') return 'minis'
+  return 'codex'
+}
+
+function createCollaborationAgentState(
+  agentId: CollaborationAgentId,
+  leader: CollaborationAgentId,
+): CollaborationAgentState {
+  return {
+    agentId,
+    role: agentId === leader ? 'leader' : 'worker',
+    status: 'pending',
+    sessionId: '',
+    runId: '',
+    turnId: '',
+    startedAtMs: 0,
+    updatedAtMs: Date.now(),
+    requestText: '',
+    actionText: '',
+    responseText: '',
+    errorText: '',
+  }
+}
+
+function collaborationAgentRecord(leader: CollaborationAgentId): Record<CollaborationAgentId, CollaborationAgentState> {
+  return {
+    codex: createCollaborationAgentState('codex', leader),
+    claude: createCollaborationAgentState('claude', leader),
+    minis: createCollaborationAgentState('minis', leader),
+  }
+}
+
+async function ensureCollaborationRunsLoaded(): Promise<void> {
+  if (collaborationRunsLoaded) return
+  collaborationRunsLoaded = true
+  try {
+    const parsed = JSON.parse(await readFile(COLLABORATION_STATE_PATH, 'utf8')) as unknown
+    const record = asRecord(parsed)
+    const rows = Array.isArray(record?.runs) ? record.runs : []
+    for (const value of rows) {
+      const row = asRecord(value)
+      const id = normalizeText(row?.id)
+      const prompt = normalizeText(row?.prompt)
+      if (!id || !prompt) continue
+      const leader = normalizeCollaborationAgent(row?.leader)
+      const sourceAgents = asRecord(row?.agents)
+      const agents = collaborationAgentRecord(leader)
+      for (const agentId of ['codex', 'claude', 'minis'] as const) {
+        const source = asRecord(sourceAgents?.[agentId])
+        if (!source) continue
+        agents[agentId] = {
+          ...agents[agentId],
+          status: normalizeText(source.status) as CollaborationAgentStatus || 'failed',
+          sessionId: normalizeText(source.sessionId),
+          runId: normalizeText(source.runId),
+          turnId: normalizeText(source.turnId),
+          startedAtMs: typeof source.startedAtMs === 'number' ? source.startedAtMs : 0,
+          updatedAtMs: typeof source.updatedAtMs === 'number' ? source.updatedAtMs : Date.now(),
+          requestText: normalizeText(source.requestText),
+          actionText: normalizeText(source.actionText),
+          responseText: normalizeText(source.responseText),
+          errorText: normalizeText(source.errorText),
+        }
+        if (agents[agentId].status === 'running' || agents[agentId].status === 'synthesizing') {
+          agents[agentId].status = 'failed'
+          agents[agentId].errorText = '应用重启导致该协作步骤中断'
+        }
+      }
+      const restoredStatus = normalizeText(row?.status)
+      collaborationRuns.set(id, {
+        id,
+        title: normalizeText(row?.title) || `三智能体协作 ${id.slice(-6)}`,
+        prompt,
+        leader,
+        status: restoredStatus === 'running' ? 'failed' : (restoredStatus as CollaborationRun['status'] || 'failed'),
+        createdAtMs: typeof row?.createdAtMs === 'number' ? row.createdAtMs : Date.now(),
+        updatedAtMs: typeof row?.updatedAtMs === 'number' ? row.updatedAtMs : Date.now(),
+        completedAtMs: typeof row?.completedAtMs === 'number' ? row.completedAtMs : null,
+        agents,
+        finalSummary: normalizeText(row?.finalSummary),
+        errorText: restoredStatus === 'running'
+          ? '应用重启导致协作中断'
+          : normalizeText(row?.errorText),
+      })
+    }
+  } catch {
+    // First run has no state file.
+  }
+}
+
+async function persistCollaborationRunsNow(): Promise<void> {
+  const runs = [...collaborationRuns.values()]
+    .sort((a, b) => b.createdAtMs - a.createdAtMs)
+    .slice(0, COLLABORATION_HISTORY_LIMIT)
+  await mkdir(dirname(COLLABORATION_STATE_PATH), { recursive: true })
+  await writeFile(COLLABORATION_STATE_PATH, JSON.stringify({ version: 1, runs }, null, 2), { mode: 0o600 })
+}
+
+function scheduleCollaborationPersist(delayMs = 120): void {
+  if (collaborationPersistTimer !== null) return
+  collaborationPersistTimer = setTimeout(() => {
+    collaborationPersistTimer = null
+    void persistCollaborationRunsNow()
+  }, delayMs)
+}
+
+function touchCollaborationRun(run: CollaborationRun): void {
+  run.updatedAtMs = Date.now()
+  collaborationRuns.set(run.id, run)
+  scheduleCollaborationPersist()
+}
+
+function setCollaborationAgentState(
+  run: CollaborationRun,
+  agentId: CollaborationAgentId,
+  patch: Partial<CollaborationAgentState>,
+): CollaborationAgentState {
+  const next = {
+    ...run.agents[agentId],
+    ...patch,
+    updatedAtMs: Date.now(),
+  }
+  run.agents[agentId] = next
+  touchCollaborationRun(run)
+  return next
+}
+
+async function callMinisChatRpc(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!SHARED_BRIDGE_TOKEN_PATH) throw new Error('Shared bridge token path is unavailable')
+  const token = (await readFile(SHARED_BRIDGE_TOKEN_PATH, 'utf8')).trim()
+  if (!token) throw new Error('Shared bridge token is empty')
+  const response = await fetch(`${MINIS_BRIDGE_URL}/chat/rpc`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'X-Pocket-Lobster-Token': token,
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
+  })
+  const payload = asRecord(await response.json().catch(() => null))
+  if (!response.ok) throw new Error(normalizeText(payload?.error) || `Minis bridge HTTP ${response.status}`)
+  const rpcError = asRecord(payload?.error)
+  if (rpcError) throw new Error(normalizeText(rpcError.message) || 'Minis RPC failed')
+  return asRecord(payload?.result) ?? {}
+}
+
+function collaborationPrompt(
+  run: CollaborationRun,
+  agentId: CollaborationAgentId,
+): string {
+  const agentName = agentId === 'codex' ? 'Codex' : agentId === 'claude' ? 'Claude Code' : 'Minis'
+  const roleInstruction = agentId === run.leader
+    ? '您是本次协作的总调度。请先独立分析并给出阶段性方案；系统会在其他两位智能体完成后把结果再次投递给您，请在第二轮审核、消除冲突并给出最终结论。'
+    : `您是本次协作成员${agentName}。请独立完成最适合您的部分，明确事实、执行结果、风险和给总调度的建议，不要假装已经看到其他智能体的输出。`
+  return [
+    `[三智能体协作任务 ${run.id}]`,
+    `总调度：${run.leader}`,
+    `当前角色：${agentId === run.leader ? '总调度' : '协作成员'}（${agentName}）`,
+    roleInstruction,
+    '',
+    '用户原始请求：',
+    run.prompt,
+  ].join('\n')
+}
+
+function extractStartedTurnId(value: unknown): string {
+  const record = asRecord(value)
+  const turn = asRecord(record?.turn) ?? record
+  return normalizeText(turn?.id)
+}
+
+function collaborationActionFromCodexTurn(value: unknown): string {
+  const turn = asRecord(value)
+  const items = Array.isArray(turn?.items) ? turn.items.map(asRecord).filter(Boolean) : []
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]
+    const type = normalizeText(item?.type)
+    if (type === 'agentMessage') continue
+    if (type === 'reasoning') {
+      const text = normalizeText(item?.text) || normalizeText(item?.summary)
+      return text ? truncateText(text, 500) : 'Codex 正在分析任务'
+    }
+    if (type === 'commandExecution') {
+      const command = normalizeText(item?.command)
+      return command ? `Codex 正在执行终端命令：${truncateText(command, 320)}` : 'Codex 正在执行终端命令'
+    }
+    if (type === 'mcpToolCall') {
+      const server = normalizeText(item?.server)
+      const tool = normalizeText(item?.tool)
+      return `Codex 正在调用工具：${[server, tool].filter(Boolean).join('/') || 'MCP工具'}`
+    }
+    if (type === 'fileChange') return 'Codex 正在修改文件'
+    if (type) return `Codex 正在执行：${type}`
+  }
+  return 'Codex 正在处理协作任务'
+}
+
+async function waitForCodexCollaborationTurn(
+  appServer: AppServerProcess,
+  threadId: string,
+  turnId: string,
+): Promise<string> {
+  const deadline = Date.now() + COLLABORATION_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    const read = asRecord(await appServer.rpc('thread/read', { threadId, includeTurns: true }))
+    const thread = asRecord(read?.thread)
+    const turns = Array.isArray(thread?.turns) ? thread.turns : []
+    const turn = turns.map(asRecord).find((row) => normalizeText(row?.id) === turnId)
+      ?? asRecord(turns[turns.length - 1])
+    const status = normalizeText(turn?.status)
+    const actionText = collaborationActionFromCodexTurn(turn)
+    const run = [...collaborationRuns.values()].find((row) => row.agents.codex.turnId === turnId)
+    if (run && run.agents.codex.actionText !== actionText) {
+      setCollaborationAgentState(run, 'codex', { actionText })
+    }
+    if (status === 'completed') return extractCompletedTurnText(turn)
+    if (status === 'failed' || status === 'interrupted' || status === 'cancelled') {
+      throw new Error(normalizeText(asRecord(turn?.error)?.message) || `Codex turn ${status}`)
+    }
+    await sleepMs(900)
+  }
+  throw new Error('Codex collaboration turn timed out')
+}
+
+async function runCodexCollaborationTurn(
+  appServer: AppServerProcess,
+  run: CollaborationRun,
+  prompt: string,
+): Promise<string> {
+  const state = run.agents.codex
+  let threadId = state.sessionId
+  if (!threadId) {
+    const started = await appServer.rpc('thread/start', {
+      cwd: homeDir || undefined,
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+      developerInstructions: 'This thread is part of Pocket Lobster three-agent collaboration. Preserve the collaboration run id and produce inspectable factual output.',
+    })
+    threadId = extractThreadId(started)
+    if (!threadId) throw new Error('Codex collaboration thread/start returned no thread id')
+    setCollaborationAgentState(run, 'codex', { sessionId: threadId })
+  }
+  const startedTurn = await appServer.rpc('turn/start', {
+    threadId,
+    input: [{ type: 'text', text: prompt }],
+  })
+  const turnId = extractStartedTurnId(startedTurn)
+  if (!turnId) throw new Error('Codex collaboration turn/start returned no turn id')
+  setCollaborationAgentState(run, 'codex', { turnId })
+  return await waitForCodexCollaborationTurn(appServer, threadId, turnId)
+}
+
+async function writeClaudeCollaborationMirror(
+  sessionId: string,
+  title: string,
+  additions: Array<{ role: string; text: string; atMs: number }>,
+): Promise<void> {
+  if (!homeDir) return
+  const directory = join(homeDir, '.pocketlobster', 'agent-sessions', 'claude-code')
+  const safeId = sessionId.replace(/[^a-zA-Z0-9._-]/gu, '_')
+  const target = join(directory, `${safeId}.json`)
+  let existing: Record<string, unknown> = {}
+  try {
+    existing = asRecord(JSON.parse(await readFile(target, 'utf8')) as unknown) ?? {}
+  } catch {
+    // New collaboration session.
+  }
+  const previousMessages = Array.isArray(existing.messages) ? existing.messages : []
+  const messages = [...previousMessages, ...additions]
+  const updatedAtMs = additions[additions.length - 1]?.atMs ?? Date.now()
+  const payload = {
+    agentId: 'claude-code',
+    sessionId,
+    title,
+    updatedAtMs,
+    nativeSessionId: '',
+    nativeSessionMode: 'collaboration_v1',
+    messages,
+  }
+  await mkdir(directory, { recursive: true })
+  const temporary = `${target}.${process.pid}.tmp`
+  await writeFile(temporary, JSON.stringify(payload, null, 2), { mode: 0o600 })
+  await rename(temporary, target)
+}
+
+async function waitForClaudeCollaborationRun(runId: string): Promise<string> {
+  const deadline = Date.now() + COLLABORATION_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    const status = await getClaudeRunStatus(runId)
+    const collaborationRun = [...collaborationRuns.values()].find((row) => row.agents.claude.runId === runId)
+    if (collaborationRun) {
+      const processText = normalizeText(asRecord(status.result)?.processText)
+      const watchdog = normalizeText(asRecord(status.result)?.watchdog)
+      const actionText = truncateText(processText || watchdog || 'Claude Code 正在处理协作任务', 700)
+      if (collaborationRun.agents.claude.actionText !== actionText) {
+        setCollaborationAgentState(collaborationRun, 'claude', { actionText })
+      }
+    }
+    if (status.completed === true) {
+      if (status.status !== 'completed') throw new Error(normalizeText(status.error) || `Claude ${normalizeText(status.status)}`)
+      return normalizeText(asRecord(status.result)?.assistantText)
+    }
+    await sleepMs(900)
+  }
+  throw new Error('Claude collaboration run timed out')
+}
+
+async function runClaudeCollaborationTurn(run: CollaborationRun, prompt: string): Promise<string> {
+  const state = run.agents.claude
+  const sessionId = state.sessionId || `collab-claude-${run.id}`
+  const title = `三智能体协作 ${run.id.slice(-6)} Claude`
+  if (!state.sessionId) setCollaborationAgentState(run, 'claude', { sessionId })
+  await writeClaudeCollaborationMirror(sessionId, title, [{ role: 'user', text: prompt, atMs: Date.now() }])
+  const started = await sendClaudeMessage({
+    sessionKey: sessionId,
+    message: prompt,
+    allowSharedStorage: true,
+    dangerousMode: true,
+  })
+  setCollaborationAgentState(run, 'claude', { runId: started.runId })
+  const response = await waitForClaudeCollaborationRun(started.runId)
+  await writeClaudeCollaborationMirror(sessionId, title, [{ role: 'assistant', text: response || 'Claude 未返回文本结果', atMs: Date.now() }])
+  return response
+}
+
+async function runMinisCollaborationTurn(run: CollaborationRun, prompt: string): Promise<string> {
+  const state = run.agents.minis
+  const started = await callMinisChatRpc('chat.prompt', {
+    ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+    prompt,
+    wait: false,
+  })
+  const sessionId = normalizeText(started.sessionId)
+  if (!sessionId) throw new Error('Minis collaboration prompt returned no session id')
+  setCollaborationAgentState(run, 'minis', { sessionId, actionText: 'Minis 已收到任务，正在执行' })
+  const deadline = Date.now() + COLLABORATION_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    const status = await callMinisChatRpc('chat.session.status', { sessionId })
+    const running = status.isRunning === true
+    const messageCount = typeof status.messageCount === 'number' ? status.messageCount : 0
+    const lastRole = normalizeText(status.lastMessageRole)
+    const actionText = running
+      ? `Minis 正在执行，当前会话已有${messageCount}条消息`
+      : `Minis 已停止生成，最后消息角色：${lastRole || '未知'}`
+    if (run.agents.minis.actionText !== actionText) {
+      setCollaborationAgentState(run, 'minis', { actionText })
+    }
+    if (!running && lastRole === 'assistant') {
+      const history = await callMinisChatRpc('chat.messages.list', {
+        sessionId,
+        limit: 200,
+        includeTools: true,
+        includeReasoning: true,
+      })
+      const messages = Array.isArray(history.messages) ? history.messages.map(asRecord).filter(Boolean) : []
+      const assistant = [...messages].reverse().find((row) => normalizeText(row?.role) === 'assistant')
+      const response = normalizeText(assistant?.content)
+      const toolNames = messages.flatMap((row) => {
+        const calls = Array.isArray(row?.toolCalls) ? row.toolCalls.map(asRecord).filter(Boolean) : []
+        return calls.map((call) => normalizeText(call?.name) || normalizeText(call?.toolName)).filter(Boolean)
+      })
+      if (toolNames.length > 0) {
+        setCollaborationAgentState(run, 'minis', {
+          actionText: `Minis 已完成；调用工具：${[...new Set(toolNames)].join('、')}`,
+        })
+      }
+      return response || 'Minis 已完成任务，但未返回可解析的文本回复'
+    }
+    await sleepMs(900)
+  }
+  throw new Error('Minis collaboration turn timed out')
+}
+
+async function runCollaborationAgent(
+  appServer: AppServerProcess,
+  run: CollaborationRun,
+  agentId: CollaborationAgentId,
+  prompt: string,
+): Promise<string> {
+  setCollaborationAgentState(run, agentId, {
+    status: 'running',
+    startedAtMs: run.agents[agentId].startedAtMs || Date.now(),
+    requestText: prompt,
+    actionText: `${agentId} 已收到协作任务`,
+    errorText: '',
+  })
+  try {
+    const response = agentId === 'codex'
+      ? await runCodexCollaborationTurn(appServer, run, prompt)
+      : agentId === 'claude'
+        ? await runClaudeCollaborationTurn(run, prompt)
+        : await runMinisCollaborationTurn(run, prompt)
+    setCollaborationAgentState(run, agentId, {
+      status: 'completed',
+      actionText: run.agents[agentId].actionText || `${agentId} 已完成任务`,
+      responseText: response,
+    })
+    return response
+  } catch (error) {
+    const message = getErrorMessage(error, `${agentId} collaboration failed`)
+    setCollaborationAgentState(run, agentId, { status: 'failed', errorText: message })
+    throw error
+  }
+}
+
+function buildCollaborationSynthesisPrompt(run: CollaborationRun): string {
+  const workerSections = (['codex', 'claude', 'minis'] as const)
+    .filter((agentId) => agentId !== run.leader)
+    .map((agentId) => {
+      const state = run.agents[agentId]
+      const content = state.responseText || `失败：${state.errorText || state.status}`
+      return `【${agentId}协作结果】\n${content}`
+    })
+  return [
+    `[三智能体协作任务 ${run.id}：总调度最终审核]`,
+    '下面是另外两位智能体的独立结果。请结合您第一轮的分析，核对事实、处理冲突、指出失败或不确定项，并向用户给出统一的最终结论和可执行下一步。',
+    '',
+    ...workerSections,
+  ].join('\n\n')
+}
+
+async function executeCollaborationRun(appServer: AppServerProcess, runId: string): Promise<void> {
+  const run = collaborationRuns.get(runId)
+  if (!run) return
+  const firstPass = await Promise.allSettled(
+    (['codex', 'claude', 'minis'] as const).map((agentId) =>
+      runCollaborationAgent(appServer, run, agentId, collaborationPrompt(run, agentId)),
+    ),
+  )
+  if (run.status === 'aborted') return
+  const completedCount = firstPass.filter((row) => row.status === 'fulfilled').length
+  if (completedCount === 0) {
+    run.status = 'failed'
+    run.errorText = '三个智能体均未完成首轮任务'
+    run.completedAtMs = Date.now()
+    touchCollaborationRun(run)
+    return
+  }
+
+  setCollaborationAgentState(run, run.leader, { status: 'synthesizing' })
+  try {
+    const finalSummary = await runCollaborationAgent(
+      appServer,
+      run,
+      run.leader,
+      buildCollaborationSynthesisPrompt(run),
+    )
+    run.finalSummary = finalSummary
+    run.status = 'completed'
+    run.errorText = ''
+  } catch (error) {
+    run.status = 'failed'
+    run.errorText = getErrorMessage(error, '总调度汇总失败')
+  }
+  run.completedAtMs = Date.now()
+  touchCollaborationRun(run)
+}
+
+async function abortCollaborationRun(appServer: AppServerProcess, run: CollaborationRun): Promise<void> {
+  run.status = 'aborted'
+  run.completedAtMs = Date.now()
+  for (const agentId of ['codex', 'claude', 'minis'] as const) {
+    const state = run.agents[agentId]
+    if (state.status !== 'running' && state.status !== 'synthesizing') continue
+    setCollaborationAgentState(run, agentId, { status: 'aborted' })
+    try {
+      if (agentId === 'codex' && state.sessionId && state.turnId) {
+        await appServer.rpc('turn/interrupt', { threadId: state.sessionId, turnId: state.turnId })
+      } else if (agentId === 'claude' && state.runId) {
+        await abortClaudeRun(state.runId)
+      } else if (agentId === 'minis' && state.sessionId) {
+        await callMinisChatRpc('chat.session.cancel', { sessionId: state.sessionId })
+      }
+    } catch {
+      // Best effort: state remains visibly aborted even if a child already exited.
+    }
+  }
+  touchCollaborationRun(run)
+}
+
+function collaborationRunSummary(run: CollaborationRun): CollaborationRun {
+  return JSON.parse(JSON.stringify(run)) as CollaborationRun
+}
+
 export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
   const { appServer, methodCatalog } = getSharedBridgeState()
 
@@ -4091,6 +4629,74 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       }
 
       const url = new URL(req.url, 'http://localhost')
+
+      if (req.method === 'GET' && url.pathname === '/collaboration-api/runs') {
+        await ensureCollaborationRunsLoaded()
+        const runs = [...collaborationRuns.values()]
+          .sort((a, b) => b.createdAtMs - a.createdAtMs)
+          .slice(0, COLLABORATION_HISTORY_LIMIT)
+          .map(collaborationRunSummary)
+        setJson(res, 200, { ok: true, runs })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/collaboration-api/status') {
+        await ensureCollaborationRunsLoaded()
+        const runId = normalizeText(url.searchParams.get('runId'))
+        const run = collaborationRuns.get(runId)
+        if (!run) {
+          setJson(res, 404, { ok: false, error: 'Collaboration run not found' })
+          return
+        }
+        setJson(res, 200, { ok: true, run: collaborationRunSummary(run) })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/collaboration-api/start') {
+        await ensureCollaborationRunsLoaded()
+        const payload = asRecord(await readJsonBody(req))
+        const prompt = normalizeText(payload?.prompt)
+        if (!prompt) {
+          setJson(res, 400, { ok: false, error: 'Missing collaboration prompt' })
+          return
+        }
+        const leader = normalizeCollaborationAgent(payload?.leader)
+        const now = Date.now()
+        const id = `collab_${now.toString(36)}_${randomUUID().slice(0, 8)}`
+        const titleSeed = prompt.replace(/\s+/gu, ' ').trim().slice(0, 42)
+        const run: CollaborationRun = {
+          id,
+          title: titleSeed ? `三智能体协作：${titleSeed}` : `三智能体协作 ${id.slice(-6)}`,
+          prompt,
+          leader,
+          status: 'running',
+          createdAtMs: now,
+          updatedAtMs: now,
+          completedAtMs: null,
+          agents: collaborationAgentRecord(leader),
+          finalSummary: '',
+          errorText: '',
+        }
+        collaborationRuns.set(id, run)
+        scheduleCollaborationPersist(20)
+        void executeCollaborationRun(appServer, id)
+        setJson(res, 202, { ok: true, run: collaborationRunSummary(run) })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/collaboration-api/abort') {
+        await ensureCollaborationRunsLoaded()
+        const payload = asRecord(await readJsonBody(req))
+        const runId = normalizeText(payload?.runId)
+        const run = collaborationRuns.get(runId)
+        if (!run) {
+          setJson(res, 404, { ok: false, error: 'Collaboration run not found' })
+          return
+        }
+        await abortCollaborationRun(appServer, run)
+        setJson(res, 200, { ok: true, run: collaborationRunSummary(run) })
+        return
+      }
 
       if (await handleCodexProviderAdapterRequest(req, res, url, {
         catalogPath: codexModelProvidersPath,
