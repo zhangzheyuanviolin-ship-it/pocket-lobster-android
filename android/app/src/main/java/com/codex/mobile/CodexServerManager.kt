@@ -48,9 +48,9 @@ class CodexServerManager(private val context: Context) {
         private const val OPENCLAW_CHAT_HISTORY_MAX_BYTES = 1 * 1024 * 1024
         private val serverStartLock = Any()
         private val proxyStartLock = Any()
+        @Volatile private var managedServerProcess: Process? = null
     }
 
-    private var serverProcess: Process? = null
     private var proxyProcess: Process? = null
     private var openClawGatewayProcess: Process? = null
     private var openClawControlUiProcess: Process? = null
@@ -63,7 +63,7 @@ class CodexServerManager(private val context: Context) {
 
     val isRunning: Boolean
         get() {
-            val proc = serverProcess ?: return false
+            val proc = managedServerProcess ?: return false
             return try {
                 proc.exitValue()
                 false
@@ -2523,33 +2523,37 @@ WEOF
     }
 
     fun installServerBundle(onProgress: (String) -> Unit): Boolean {
-        val paths = BootstrapInstaller.getPaths(context)
-        val targetDir = File(paths.prefixDir, "lib/node_modules/codex-web-local")
-        val stateDir = File(paths.homeDir, ".openclaw-android/state").apply { mkdirs() }
-        val markerFile = File(stateDir, "server-bundle.marker")
-        val markerValue = buildServerBundleMarker()
+        synchronized(serverStartLock) {
+            val paths = BootstrapInstaller.getPaths(context)
+            val targetDir = File(paths.prefixDir, "lib/node_modules/codex-web-local")
+            val stateDir = File(paths.homeDir, ".openclaw-android/state").apply { mkdirs() }
+            val markerFile = File(stateDir, "server-bundle.marker")
+            val markerValue = buildServerBundleMarker()
 
-        try {
-            val assetFiles = context.assets.list("server-bundle") ?: emptyArray()
-            if (assetFiles.isNotEmpty()) {
-                val indexFile = File(targetDir, "dist-cli/index.js")
-                if (indexFile.exists() && markerFile.exists() && markerFile.readText() == markerValue) {
-                    onProgress("Web UI already up to date")
+            try {
+                val assetFiles = context.assets.list("server-bundle") ?: emptyArray()
+                if (assetFiles.isNotEmpty()) {
+                    val indexFile = File(targetDir, "dist-cli/index.js")
+                    if (indexFile.exists() && markerFile.exists() && markerFile.readText() == markerValue) {
+                        onProgress("Web UI already up to date")
+                        return true
+                    }
+                    onProgress("Stopping previous server version…")
+                    stopManagedServerProcess()
+                    onProgress("Installing server bundle from APK…")
+                    targetDir.deleteRecursively()
+                    targetDir.mkdirs()
+                    extractAssetDir("server-bundle", targetDir)
+                    markerFile.writeText(markerValue)
+                    Log.i(TAG, "Server bundle extracted to $targetDir marker=$markerValue")
                     return true
                 }
-                onProgress("Installing server bundle from APK…")
-                targetDir.deleteRecursively()
-                targetDir.mkdirs()
-                extractAssetDir("server-bundle", targetDir)
-                markerFile.writeText(markerValue)
-                Log.i(TAG, "Server bundle extracted to $targetDir")
-                return true
+            } catch (e: Exception) {
+                Log.d(TAG, "No bundled server-bundle asset, will use npm: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.d(TAG, "No bundled server-bundle asset, will use npm: ${e.message}")
-        }
 
-        return false
+            return false
+        }
     }
 
     private fun buildServerBundleMarker(): String {
@@ -2559,6 +2563,15 @@ WEOF
                 context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
             }.getOrElse { "" }
         return "${context.packageName}:$versionName"
+    }
+
+    private fun buildServerBundleVersion(): String {
+        val versionName =
+            runCatching {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+            }.getOrElse { "" }
+        return versionName.removeSuffix("-beta")
     }
 
     /**
@@ -2851,8 +2864,10 @@ WEOF
                 return true
             }
             if (isRunning) {
-                Log.i(TAG, "Server process is already starting")
-                return true
+                Log.i(TAG, "Waiting for managed server process to report the current bundle version")
+                if (waitForServer(timeoutMs = 5_000)) return true
+                Log.w(TAG, "Managed server version is stale or failed to start; replacing it")
+                stopManagedServerProcess()
             }
 
             ensureCodexWrapperScript()
@@ -2864,6 +2879,7 @@ WEOF
             val env = buildEnvironment(paths).toMutableMap()
             env["HTTPS_PROXY"] = "http://127.0.0.1:$PROXY_PORT"
             env["HTTP_PROXY"] = "http://127.0.0.1:$PROXY_PORT"
+            env["POCKET_LOBSTER_SERVER_BUNDLE_ID"] = buildServerBundleVersion()
 
             val serverScript = "${paths.prefixDir}/lib/node_modules/codex-web-local/dist-cli/index.js"
             if (!File(serverScript).exists()) {
@@ -2883,7 +2899,7 @@ WEOF
             pb.redirectErrorStream(true)
 
             val proc = pb.start()
-            serverProcess = proc
+            managedServerProcess = proc
             startProcessLogThread(proc, "server")
 
             return true
@@ -2892,14 +2908,19 @@ WEOF
 
     fun isServerReady(timeoutMs: Int = 1200): Boolean {
         val connection = runCatching {
-            (URL("http://127.0.0.1:$SERVER_PORT/collaboration-api/runs").openConnection() as HttpURLConnection).apply {
+            (URL("http://127.0.0.1:$SERVER_PORT/host-api/health").openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = timeoutMs
                 readTimeout = timeoutMs
+                setRequestProperty("Accept", "application/json")
             }
         }.getOrNull() ?: return false
         return try {
-            connection.responseCode in 200..399
+            if (connection.responseCode !in 200..299) return false
+            val contentType = connection.contentType.orEmpty().lowercase()
+            if (!contentType.contains("application/json")) return false
+            val raw = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            JSONObject(raw).optString("bundleId") == buildServerBundleVersion()
         } catch (_: Exception) {
             false
         } finally {
@@ -2909,22 +2930,11 @@ WEOF
 
     fun waitForServer(timeoutMs: Long = 60_000): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
-        val url = URL("http://127.0.0.1:$SERVER_PORT/")
 
         while (System.currentTimeMillis() < deadline) {
-            try {
-                val conn = url.openConnection() as HttpURLConnection
-                conn.connectTimeout = 2000
-                conn.readTimeout = 2000
-                conn.requestMethod = "GET"
-                val code = conn.responseCode
-                conn.disconnect()
-                if (code in 200..399) {
-                    Log.i(TAG, "Server is ready (HTTP $code)")
-                    return true
-                }
-            } catch (_: Exception) {
-                // Not ready yet
+            if (isServerReady(timeoutMs = 2_000)) {
+                Log.i(TAG, "Server is ready with the current bundle version")
+                return true
             }
             Thread.sleep(500)
         }
@@ -2934,24 +2944,27 @@ WEOF
     }
 
     fun stopServer() {
-        val proc = serverProcess ?: return
-        serverProcess = null
-
-        try {
-            proc.destroy()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error destroying server process: ${e.message}")
-        }
-
-        try {
-            proc.waitFor()
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
+        synchronized(serverStartLock) {
+            stopManagedServerProcess()
         }
 
         stopOpenClaw()
         stopProxy()
         Log.i(TAG, "Server stopped")
+    }
+
+    private fun stopManagedServerProcess() {
+        val proc = managedServerProcess ?: return
+        managedServerProcess = null
+        try {
+            proc.destroy()
+            if (!proc.waitFor(5, TimeUnit.SECONDS)) {
+                proc.destroyForcibly()
+                proc.waitFor(2, TimeUnit.SECONDS)
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "Error destroying server process: ${error.message}")
+        }
     }
 
     private fun stopOpenClaw() {

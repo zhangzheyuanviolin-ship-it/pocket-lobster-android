@@ -104,6 +104,18 @@ const SHARED_BRIDGE_TOKEN_PATH = homeDir
 const MINIS_BRIDGE_URL = 'http://127.0.0.1:18927'
 const COLLABORATION_TIMEOUT_MS = 2 * 60 * 60_000
 const COLLABORATION_HISTORY_LIMIT = 40
+const SERVER_BUNDLE_ID = (() => {
+  try {
+    const entryPath = process.argv[1] || ''
+    if (entryPath) {
+      const embedded = readFileSync(join(dirname(entryPath), '..', 'bundle-id'), 'utf8').trim()
+      if (embedded) return embedded
+    }
+  } catch {
+    // Development builds can use the environment fallback before Android assets are assembled.
+  }
+  return normalizeText(process.env.POCKET_LOBSTER_SERVER_BUNDLE_ID)
+})()
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -4660,6 +4672,14 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       }
 
       const url = new URL(req.url, 'http://localhost')
+
+      if (req.method === 'GET' && url.pathname === '/host-api/health') {
+        setJson(res, 200, {
+          ok: true,
+          bundleId: SERVER_BUNDLE_ID,
+        })
+        return
+      }
 
       if (req.method === 'GET' && url.pathname === '/collaboration-api/runs') {
         await ensureCollaborationRunsLoaded()

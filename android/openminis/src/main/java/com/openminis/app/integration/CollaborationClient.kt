@@ -76,28 +76,43 @@ object CollaborationClient {
     }
 
     private fun ensureServerReady(context: Context) {
-        if (isServerReady()) return
+        if (isServerReady(context)) return
         ensureHostService(context)
         val deadline = System.currentTimeMillis() + 60_000L
         while (System.currentTimeMillis() < deadline) {
-            if (isServerReady()) return
+            if (isServerReady(context)) return
             Thread.sleep(500)
         }
         throw IOException("协作服务未能在60秒内启动")
     }
 
-    private fun isServerReady(): Boolean = runCatching {
-        val connection = URL("http://127.0.0.1:$SERVER_PORT/collaboration-api/runs")
+    private fun isServerReady(context: Context): Boolean = runCatching {
+        val connection = URL("http://127.0.0.1:$SERVER_PORT/host-api/health")
             .openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "GET"
             connection.connectTimeout = 1_200
             connection.readTimeout = 1_200
-            connection.responseCode in 200..399
+            connection.instanceFollowRedirects = false
+            connection.setRequestProperty("Accept", "application/json")
+            if (connection.responseCode !in 200..299) return@runCatching false
+            if (!connection.contentType.orEmpty().lowercase().contains("application/json")) {
+                return@runCatching false
+            }
+            val raw = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            JSONObject(raw).optString("bundleId") == expectedBundleId(context)
         } finally {
             connection.disconnect()
         }
     }.getOrDefault(false)
+
+    private fun expectedBundleId(context: Context): String {
+        val versionName = runCatching {
+            @Suppress("DEPRECATION")
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+        }.getOrDefault("")
+        return versionName.removeSuffix("-beta")
+    }
 
     private fun start(context: Context, prompt: String): JSONObject {
         var lastError: IOException? = null
@@ -121,8 +136,10 @@ object CollaborationClient {
             connection.requestMethod = "POST"
             connection.connectTimeout = 10_000
             connection.readTimeout = 45_000
+            connection.instanceFollowRedirects = false
             connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            connection.setRequestProperty("Accept", "application/json")
             connection.outputStream.use { output ->
                 OutputStreamWriter(output, Charsets.UTF_8).use { it.write(body) }
             }
@@ -137,7 +154,11 @@ object CollaborationClient {
                         .ifBlank { "协作服务HTTP $status" },
                 )
             }
-            JSONObject(raw.ifBlank { "{}" })
+            if (!connection.contentType.orEmpty().lowercase().contains("application/json")) {
+                throw IOException("协作服务返回了页面内容，宿主版本尚未就绪")
+            }
+            runCatching { JSONObject(raw.ifBlank { "{}" }) }
+                .getOrElse { throw IOException("协作服务返回了无效JSON", it) }
         } finally {
             connection.disconnect()
         }
