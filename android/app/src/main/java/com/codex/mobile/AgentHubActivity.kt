@@ -10,6 +10,7 @@ class AgentHubActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_agent_hub)
+        CodexForegroundService.ensureStarted(this)
 
         findViewById<Button>(R.id.btnAgentHubOpenClaw).setOnClickListener {
             MinisLauncher.openHome(this)

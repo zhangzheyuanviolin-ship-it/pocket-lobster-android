@@ -3,6 +3,7 @@ package com.openminis.app.integration
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
@@ -10,6 +11,8 @@ import java.io.OutputStreamWriter
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.io.File
+import java.io.FileOutputStream
 import org.json.JSONObject
 
 object CollaborationClient {
@@ -36,12 +39,17 @@ object CollaborationClient {
         if (!isEnabled(context)) return false
         Thread {
             val result = runCatching {
+                MinisCollaborationDiagnostics.record(context, "wait_start")
                 ensureServerReady(context)
                 start(context, prompt)
             }
             Handler(Looper.getMainLooper()).post {
-                result.onSuccess { openBoard(context) }
+                result.onSuccess {
+                    MinisCollaborationDiagnostics.record(context, "start_accepted")
+                    openBoard(context)
+                }
                     .onFailure { error ->
+                        MinisCollaborationDiagnostics.record(context, "start_failed", error.message.orEmpty())
                         restorePrompt(prompt)
                         Toast.makeText(
                             context,
@@ -161,6 +169,28 @@ object CollaborationClient {
                 .getOrElse { throw IOException("协作服务返回了无效JSON", it) }
         } finally {
             connection.disconnect()
+        }
+    }
+}
+
+private object MinisCollaborationDiagnostics {
+    @Synchronized
+    fun record(context: Context, event: String, detail: String = "") {
+        if (!context.packageName.endsWith(".beta")) return
+        runCatching {
+            val directory = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "口袋大龙虾本地归档/诊断",
+            ).apply { mkdirs() }
+            val target = File(directory, "三智能体协作Minis客户端诊断.jsonl")
+            val payload = JSONObject()
+                .put("timestampMs", System.currentTimeMillis())
+                .put("event", event)
+                .put("detail", detail.take(500))
+                .put("packageName", context.packageName)
+            FileOutputStream(target, true).bufferedWriter().use { writer ->
+                writer.append(payload.toString()).append('\n')
+            }
         }
     }
 }

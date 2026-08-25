@@ -135,6 +135,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (!hasExplicitTargetIntent(intent) && BootstrapInstaller.isBootstrapInstalled(this)) {
+            CodexForegroundService.ensureStarted(this)
             startActivity(Intent(this, AgentHubActivity::class.java))
             finish()
             return

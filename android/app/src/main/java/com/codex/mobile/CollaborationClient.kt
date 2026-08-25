@@ -65,12 +65,14 @@ object CollaborationClient {
 
     private fun ensureServerReady(context: Context) {
         if (isServerReady(context)) return
+        CollaborationHostDiagnostics.record(context, "native_client_wait_start")
         CodexForegroundService.ensureStarted(context)
         val deadline = System.currentTimeMillis() + 60_000L
         while (System.currentTimeMillis() < deadline) {
             if (isServerReady(context)) return
             Thread.sleep(500)
         }
+        CollaborationHostDiagnostics.record(context, "native_client_wait_timeout")
         throw IOException("协作服务未能在60秒内启动")
     }
 

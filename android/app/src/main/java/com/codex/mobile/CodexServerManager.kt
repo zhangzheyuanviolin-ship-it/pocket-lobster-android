@@ -2928,6 +2928,34 @@ WEOF
         }
     }
 
+    fun describeServerHealth(timeoutMs: Int = 1200): String {
+        val expected = buildServerBundleVersion()
+        val connection = runCatching {
+            (URL("http://127.0.0.1:$SERVER_PORT/host-api/health").openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = timeoutMs
+                readTimeout = timeoutMs
+                instanceFollowRedirects = false
+                setRequestProperty("Accept", "application/json")
+            }
+        }.getOrElse { return "connect_setup_failed=${it.message};expected=$expected" }
+        return try {
+            val status = connection.responseCode
+            val contentType = connection.contentType.orEmpty()
+            val raw = (if (status in 200..299) connection.inputStream else connection.errorStream)
+                ?.bufferedReader(Charsets.UTF_8)
+                ?.use { it.readText() }
+                .orEmpty()
+                .replace('\n', ' ')
+                .take(300)
+            "http=$status;contentType=$contentType;expected=$expected;body=$raw"
+        } catch (error: Exception) {
+            "request_failed=${error.message};expected=$expected"
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     fun waitForServer(timeoutMs: Long = 60_000): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
 

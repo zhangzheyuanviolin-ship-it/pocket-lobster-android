@@ -60,6 +60,8 @@ test('native collaboration clients wake the shared host and use the production p
   const nativeClient = await read('android/app/src/main/java/com/codex/mobile/CollaborationClient.kt')
   const minisClient = await read('android/openminis/src/main/java/com/openminis/app/integration/CollaborationClient.kt')
   const bundleScript = await read('android/scripts/build-server-bundle.sh')
+  const mainActivity = await read('android/app/src/main/java/com/codex/mobile/MainActivity.kt')
+  const agentHub = await read('android/app/src/main/java/com/codex/mobile/AgentHubActivity.kt')
   assert.match(service, /START_STICKY/)
   assert.match(service, /ensureHostServer/)
   assert.match(service, /HEALTH_INTERVAL_MS/)
@@ -68,6 +70,7 @@ test('native collaboration clients wake the shared host and use the production p
   assert.match(manager, /managedServerProcess/)
   assert.match(manager, /POCKET_LOBSTER_SERVER_BUNDLE_ID/)
   assert.match(manager, /buildServerBundleVersion/)
+  assert.match(manager, /fun describeServerHealth/)
   assert.match(manager, /Stopping previous server version[\s\S]*stopManagedServerProcess\(\)[\s\S]*Installing server bundle from APK/)
   assert.match(nativeClient, /CodexForegroundService\.ensureStarted/)
   assert.match(nativeClient, /repeat\(3\)/)
@@ -81,6 +84,10 @@ test('native collaboration clients wake the shared host and use the production p
   assert.match(minisClient, /instanceFollowRedirects = false/)
   assert.match(bundleScript, /ASSETS_DIR\/bundle-id/)
   assert.match(bundleScript, /Embedded server bundle id/)
+  assert.match(mainActivity, /BootstrapInstaller\.isBootstrapInstalled\(this\)[\s\S]*CodexForegroundService\.ensureStarted\(this\)[\s\S]*AgentHubActivity/)
+  assert.match(agentHub, /CodexForegroundService\.ensureStarted\(this\)/)
+  assert.match(service, /installServerBundle[\s\S]*isProxyReady[\s\S]*startServer/)
+  assert.match(service, /三智能体协作宿主诊断\.jsonl/)
 })
 
 test('collaboration persistence, abort races and overload are guarded', async () => {
