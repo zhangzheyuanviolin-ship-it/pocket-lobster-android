@@ -5,36 +5,30 @@
       <button type="button" aria-label="关闭三智能体协作看板" @click="$emit('close')">关闭</button>
     </div>
     <p v-if="error" class="collaboration-error" aria-live="assertive">{{ error }}</p>
-    <p v-if="runs.length === 0" class="collaboration-empty">暂无协作任务</p>
+    <p class="collaboration-board-status" role="status">{{ boardStatusLabel }}</p>
+    <p v-if="runs.length === 0" class="collaboration-empty">可在任一智能体页面打开三智能体协作后发送任务。</p>
     <article v-for="run in runs" :key="run.id" class="collaboration-run">
       <div class="collaboration-run-title">
-        <strong>{{ run.title }}</strong>
+        <strong>{{ run.status === 'running' ? '当前任务' : '历史任务' }}：{{ run.title }}</strong>
         <span>{{ runStatusLabel(run.status) }}</span>
       </div>
       <p>总调度：{{ agentLabel(run.leader) }}</p>
       <p>{{ runDurationLabel(run) }}</p>
+      <p v-if="run.errorText" class="collaboration-error">任务异常：{{ run.errorText }}</p>
       <details>
         <summary>用户原始任务</summary>
         <p class="collaboration-summary">{{ run.prompt }}</p>
       </details>
       <ul>
         <li v-for="agentId in agentIds" :key="agentId">
-          <strong>{{ agentLabel(agentId) }}</strong>
-          <span>{{ agentStatusLabel(run.agents[agentId].status) }}</span>
-          <span v-if="run.agents[agentId].sessionId">，会话已创建</span>
-          <span v-if="run.agents[agentId].errorText">，{{ run.agents[agentId].errorText }}</span>
           <details>
-            <summary>查看收发消息与动作</summary>
-            <p v-if="run.agents[agentId].requestText" class="collaboration-summary">收到：{{ run.agents[agentId].requestText }}</p>
-            <p v-if="run.agents[agentId].actionText" class="collaboration-summary" aria-live="polite">动作：{{ run.agents[agentId].actionText }}</p>
-            <p v-if="run.agents[agentId].responseText" class="collaboration-summary">回复：{{ run.agents[agentId].responseText }}</p>
+            <summary>{{ agentLabel(agentId) }}，{{ roleLabel(run.agents[agentId].role) }}，{{ agentStatusLabel(run.agents[agentId].status) }}</summary>
+            <p v-if="run.agents[agentId].actionText" class="collaboration-summary" aria-live="polite">当前进展：{{ run.agents[agentId].actionText }}</p>
+            <p v-if="run.agents[agentId].responseText" class="collaboration-summary">{{ run.agents[agentId].role === 'leader' ? (run.status === 'completed' ? '最终汇总' : '阶段输出') : '分工输出' }}：{{ run.agents[agentId].responseText }}</p>
+            <p v-if="run.agents[agentId].errorText" class="collaboration-error">失败原因：{{ run.agents[agentId].errorText }}</p>
           </details>
         </li>
       </ul>
-      <details v-if="run.finalSummary">
-        <summary>总调度最终汇总</summary>
-        <p class="collaboration-summary">{{ run.finalSummary }}</p>
-      </details>
       <button
         v-if="run.status === 'running'"
         type="button"
@@ -48,9 +42,10 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { CollaborationAgentId, CollaborationAgentStatus, CollaborationRun } from '../../api/collaborationGateway'
 
-defineProps<{
+const props = defineProps<{
   runs: CollaborationRun[]
   error?: string
 }>()
@@ -61,11 +56,21 @@ defineEmits<{
 }>()
 
 const agentIds: CollaborationAgentId[] = ['codex', 'claude', 'minis']
+const boardStatusLabel = computed(() => {
+  const running = props.runs.filter((run) => run.status === 'running').length
+  if (running > 0) return `当前有${running}项协作任务正在运行，状态将自动更新。`
+  if (props.runs.length > 0) return '当前没有运行中的协作任务，下方是历史协作记录。'
+  return '当前没有协作任务。'
+})
 
 function agentLabel(agentId: CollaborationAgentId): string {
   if (agentId === 'claude') return 'Claude Code'
   if (agentId === 'minis') return 'Minis'
   return 'Codex'
+}
+
+function roleLabel(role: 'leader' | 'worker'): string {
+  return role === 'leader' ? '总调度' : '协作成员'
 }
 
 function runStatusLabel(status: CollaborationRun['status']): string {
@@ -143,6 +148,10 @@ function runDurationLabel(run: CollaborationRun): string {
 
 .collaboration-empty {
   color: #52525b;
+}
+
+.collaboration-board-status {
+  font-weight: 600;
 }
 
 button {

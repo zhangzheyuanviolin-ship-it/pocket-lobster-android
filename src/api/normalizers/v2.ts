@@ -25,6 +25,15 @@ function toRawPayload(value: unknown): string {
 }
 
 function extractCodexUserRequestText(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.startsWith('[三智能体协作任务')) {
+    if (trimmed.includes('：总调度最终审核]')) return ''
+    const originalRequestMarker = '用户原始请求：'
+    const markerIndex = trimmed.lastIndexOf(originalRequestMarker)
+    if (markerIndex >= 0) {
+      return trimmed.slice(markerIndex + originalRequestMarker.length).trim()
+    }
+  }
   const markerRegex = /(?:^|\n)\s{0,3}#{0,6}\s*my request for codex\s*:?\s*/giu
   const matches = Array.from(value.matchAll(markerRegex))
   if (matches.length === 0) {
@@ -167,7 +176,7 @@ function stripMarkdownForDisplay(text: string): string {
 }
 
 function toThreadTitle(summary: Thread): string {
-  const named = pickThreadName(summary)
+  const named = extractCodexUserRequestText(pickThreadName(summary))
   if (named.length === 0) return 'Untitled thread'
   return stripMarkdownForDisplay(named)
 }

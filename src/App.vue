@@ -844,7 +844,7 @@ onMounted(() => {
   document.addEventListener('visibilitychange', onCodexVisibilityChange)
   collaborationPollTimer = setInterval(() => {
     if (document.visibilityState !== 'visible') return
-    if (showCollaborationBoard.value || collaborationRuns.value.some((run) => run.status === 'running')) {
+    if (collaborationRuns.value.some((run) => run.status === 'running')) {
       void refreshCollaborationRuns()
     }
   }, 2_000)

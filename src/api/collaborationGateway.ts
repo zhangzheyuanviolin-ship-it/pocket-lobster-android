@@ -5,12 +5,8 @@ export type CollaborationAgentState = {
   agentId: CollaborationAgentId
   role: 'leader' | 'worker'
   status: CollaborationAgentStatus
-  sessionId: string
-  runId: string
-  turnId: string
   startedAtMs: number
   updatedAtMs: number
-  requestText: string
   actionText: string
   responseText: string
   errorText: string

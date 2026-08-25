@@ -104,3 +104,38 @@ test('collaboration persistence, abort races and overload are guarded', async ()
   assert.match(app, /document\.visibilityState !== 'visible'/)
   assert.match(app, /collaborationRuns\.value\.some\(\(run\) => run\.status === 'running'\)/)
 })
+
+test('collaboration UI exposes public progress without internal routing payloads', async () => {
+  const server = await read('src/server/codexAppServerBridge.ts')
+  const board = await read('src/components/content/CollaborationBoard.vue')
+  const nativeBoard = await read('android/app/src/main/java/com/codex/mobile/CollaborationActivity.kt')
+  const normalizer = await read('src/api/normalizers/v2.ts')
+  const minisTransform = await read('android/openminis/build.gradle.kts')
+  const publicSummary = server.slice(
+    server.indexOf('function collaborationRunSummary'),
+    server.indexOf('export function createCodexBridgeMiddleware'),
+  )
+  assert.doesNotMatch(publicSummary, /sessionId|turnId|requestText/)
+  assert.doesNotMatch(board, /requestText|sessionId|turnId/)
+  assert.doesNotMatch(nativeBoard, /optString\("requestText"\)/)
+  assert.match(board, /当前进展/)
+  assert.match(board, /总调度/)
+  assert.match(board, /协作成员/)
+  assert.match(nativeBoard, /runningCount > 0/)
+  assert.match(normalizer, /总调度最终审核/)
+  assert.match(normalizer, /用户原始请求/)
+  assert.match(minisTransform, /Collaboration routing instructions stay in model context/)
+  assert.match(minisTransform, /sessionTitle/)
+})
+
+test('collaboration files use one Android shared workspace and single-writer merge rules', async () => {
+  const server = await read('src/server/codexAppServerBridge.ts')
+  const conversationManager = await read('android/app/src/main/java/com/codex/mobile/ConversationManagerActivity.kt')
+  assert.match(server, /\/sdcard\/下载管理\/口袋大龙虾协作/)
+  assert.match(server, /prepareCollaborationWorkspace/)
+  assert.match(server, /不得并发修改同一目标文件/)
+  assert.match(server, /不要自行等待或轮询 runs\.json/)
+  assert.match(conversationManager, /独立工作会话/)
+  assert.match(conversationManager, /三智能体协作会话/)
+  assert.doesNotMatch(conversationManager, /\$updated \| \$\{row\.id\}/)
+})

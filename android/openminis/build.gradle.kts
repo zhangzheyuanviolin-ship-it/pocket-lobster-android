@@ -282,6 +282,47 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
             )""",
             )
         }
+        generatedSources.get().file("com/openminis/app/ui/chat/ChatFlatItems.kt").asFile.replaceRequired(
+            """        if (message.role == "user") {
+            // [T-android-candidate-bubble-gap] Flag when the previous message
+            // is also a user message so the bubble can add a separating top
+            // gap — back-to-back candidate / queued sends otherwise have no
+            // AssistantHeader between them and visually merge.
+            val prevIsUser = idx > 0 && messages[idx - 1].role == "user"
+            out.add(dedupe(FlatChatItem.UserBubble(message, precededByUser = prevIsUser)))
+            continue
+        }""",
+            """        if (message.role == "user") {
+            // Collaboration routing instructions stay in model context but are
+            // reduced to the user's original request in the visible transcript.
+            val raw = message.content.trim()
+            val isCollaboration = raw.startsWith("[三智能体协作任务")
+            val visibleMessage = when {
+                !isCollaboration -> message
+                raw.contains("：总调度最终审核]") -> null
+                raw.contains("用户原始请求：") -> message.copy(
+                    content = raw.substringAfterLast("用户原始请求：").trim(),
+                )
+                else -> message.copy(content = "三智能体协作任务")
+            }
+            val prevIsUser = idx > 0 && messages[idx - 1].role == "user"
+            if (visibleMessage != null) {
+                out.add(dedupe(FlatChatItem.UserBubble(visibleMessage, precededByUser = prevIsUser)))
+            }
+            continue
+        }""",
+        )
+        generatedSources.get().file("com/openminis/app/debug/ChatMutationMethods.kt").asFile.replaceRequired(
+            """        val sessionId = existingId ?: HeadlessChatRunner.ensureSession(context)
+
+        // Resolve model override (mutually exclusive with sessionId binding).""",
+            """        val sessionId = existingId ?: HeadlessChatRunner.ensureSession(context)
+        params.optString("sessionTitle", "").trim().takeIf { it.isNotEmpty() }?.let { title ->
+            app.chatRepository.updateSessionTitle(sessionId, title)
+        }
+
+        // Resolve model override (mutually exclusive with sessionId binding).""",
+        )
         generatedSources.get().file("com/openminis/app/ui/chat/ChatScreen.kt").asFile.apply {
             replaceRequired(
                 """    val snackbarHostState = remember { SnackbarHostState() }""",

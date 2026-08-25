@@ -36,9 +36,20 @@ class ConversationManagerActivity : AppCompatActivity() {
         var title: String,
         val updatedAtMs: Long,
         val preview: String,
+        val workMode: WorkMode,
         val path: String = "",
         val archived: Boolean = false,
     )
+
+    private sealed interface ConversationListItem {
+        data class Section(val title: String) : ConversationListItem
+        data class Row(val conversation: ConversationRow) : ConversationListItem
+    }
+
+    private enum class WorkMode {
+        INDEPENDENT,
+        COLLABORATION,
+    }
 
     private enum class SourceType {
         ALL,
@@ -56,6 +67,7 @@ class ConversationManagerActivity : AppCompatActivity() {
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     private var allRows = mutableListOf<ConversationRow>()
     private var visibleRows = mutableListOf<ConversationRow>()
+    private var visibleItems = mutableListOf<ConversationListItem>()
     private var loadWarnings = mutableListOf<String>()
     private var loading = false
 
@@ -164,6 +176,7 @@ class ConversationManagerActivity : AppCompatActivity() {
     }
 
     private fun loadCodexRows(): List<ConversationRow> {
+        val collaborationThreadIds = loadCollaborationCodexThreadIds()
         val active = LocalBridgeClients.callCodexRpc(
             "thread/list",
             JSONObject()
@@ -180,19 +193,47 @@ class ConversationManagerActivity : AppCompatActivity() {
         )
 
         val rows = mutableListOf<ConversationRow>()
-        rows += parseCodexList(active.optJSONArray("data"), archived = false)
-        rows += parseCodexList(archived.optJSONArray("data"), archived = true)
+        rows += parseCodexList(active.optJSONArray("data"), archived = false, collaborationThreadIds = collaborationThreadIds)
+        rows += parseCodexList(archived.optJSONArray("data"), archived = true, collaborationThreadIds = collaborationThreadIds)
         return rows
     }
 
-    private fun parseCodexList(data: JSONArray?, archived: Boolean): List<ConversationRow> {
+    private fun loadCollaborationCodexThreadIds(): Set<String> {
+        val homeDir = BootstrapInstaller.getPaths(this).homeDir
+        val stateFile = File(homeDir, ".pocketlobster/collaboration/runs.json")
+        val root = runCatching { JSONObject(stateFile.readText()) }.getOrNull() ?: return emptySet()
+        val runs = root.optJSONArray("runs") ?: return emptySet()
+        return buildSet {
+            for (index in 0 until runs.length()) {
+                val sessionId = runs.optJSONObject(index)
+                    ?.optJSONObject("agents")
+                    ?.optJSONObject("codex")
+                    ?.optString("sessionId")
+                    ?.trim()
+                    .orEmpty()
+                if (sessionId.isNotEmpty()) add(sessionId)
+            }
+        }
+    }
+
+    private fun parseCodexList(
+        data: JSONArray?,
+        archived: Boolean,
+        collaborationThreadIds: Set<String>,
+    ): List<ConversationRow> {
         if (data == null) return emptyList()
         val rows = mutableListOf<ConversationRow>()
         for (index in 0 until data.length()) {
             val item = data.optJSONObject(index) ?: continue
             val id = item.optString("id", "").trim()
             if (id.isEmpty()) continue
-            val preview = item.optString("preview", "").trim()
+            val rawPreview = item.optString("preview", "").trim()
+            val workMode = if (id in collaborationThreadIds || isCollaborationPrompt(rawPreview)) {
+                WorkMode.COLLABORATION
+            } else {
+                WorkMode.INDEPENDENT
+            }
+            val preview = collaborationVisibleText(rawPreview)
             val updatedAtSeconds = item.optLong("updatedAt", 0L)
             val titleCandidate = preview.lineSequence().firstOrNull()?.trim().orEmpty()
             rows += ConversationRow(
@@ -201,6 +242,7 @@ class ConversationManagerActivity : AppCompatActivity() {
                 title = if (titleCandidate.isEmpty()) getString(R.string.conversation_unknown_title) else titleCandidate,
                 updatedAtMs = updatedAtSeconds * 1000L,
                 preview = preview,
+                workMode = workMode,
                 path = item.optString("path", "").trim()
                     .ifEmpty { item.optString("rolloutPath", "").trim() }
                     .ifEmpty { item.optString("transcriptPath", "").trim() },
@@ -218,6 +260,7 @@ class ConversationManagerActivity : AppCompatActivity() {
                 title = session.displayName.ifBlank { getString(R.string.conversation_unknown_title) },
                 updatedAtMs = session.updatedAtMs,
                 preview = session.preview,
+                workMode = WorkMode.INDEPENDENT,
                 path = session.sessionFilePath,
             )
         }
@@ -228,14 +271,40 @@ class ConversationManagerActivity : AppCompatActivity() {
         source: SourceType,
     ): List<ConversationRow> {
         return AgentSessionStore.listSessions(this, agentId).map { session ->
+            val workMode = if (session.nativeSessionMode == "collaboration_v1") {
+                WorkMode.COLLABORATION
+            } else {
+                WorkMode.INDEPENDENT
+            }
+            val rawPreview = session.messages.lastOrNull()?.text.orEmpty()
             ConversationRow(
                 source = source,
                 id = session.sessionId,
-                title = session.title,
+                title = collaborationSessionTitle(session.title, session.messages.firstOrNull()?.text.orEmpty(), workMode),
                 updatedAtMs = session.updatedAtMs,
-                preview = session.messages.lastOrNull()?.text.orEmpty(),
+                preview = collaborationVisibleText(rawPreview),
+                workMode = workMode,
             )
         }
+    }
+
+    private fun isCollaborationPrompt(value: String): Boolean =
+        value.trimStart().startsWith("[三智能体协作任务")
+
+    private fun collaborationVisibleText(value: String): String {
+        val trimmed = value.trim()
+        if (!isCollaborationPrompt(trimmed)) return trimmed
+        if (trimmed.contains("：总调度最终审核]")) return "正在汇总其他智能体的结果"
+        val marker = "用户原始请求："
+        val markerIndex = trimmed.lastIndexOf(marker)
+        return if (markerIndex >= 0) trimmed.substring(markerIndex + marker.length).trim() else "三智能体协作任务"
+    }
+
+    private fun collaborationSessionTitle(title: String, firstMessage: String, workMode: WorkMode): String {
+        if (workMode != WorkMode.COLLABORATION) return title
+        if (title.startsWith("三智能体协作：")) return title
+        val seed = collaborationVisibleText(firstMessage).replace(Regex("\\s+"), " ").take(42)
+        return if (seed.isBlank()) "三智能体协作" else "三智能体协作：$seed"
     }
 
     private fun applyFilterAndRender() {
@@ -243,18 +312,45 @@ class ConversationManagerActivity : AppCompatActivity() {
         visibleRows = allRows.filter { row ->
             selected == SourceType.ALL || row.source == selected
         }.toMutableList()
+        visibleItems = buildList {
+            val independent = visibleRows.filter { it.workMode == WorkMode.INDEPENDENT }
+            val collaboration = visibleRows.filter { it.workMode == WorkMode.COLLABORATION }
+            if (independent.isNotEmpty()) {
+                add(ConversationListItem.Section("独立工作会话，共${independent.size}条"))
+                independent.forEach { add(ConversationListItem.Row(it)) }
+            }
+            if (collaboration.isNotEmpty()) {
+                add(ConversationListItem.Section("三智能体协作会话，共${collaboration.size}条"))
+                collaboration.forEach { add(ConversationListItem.Row(it)) }
+            }
+        }.toMutableList()
 
         listView.adapter = object : android.widget.BaseAdapter() {
-            override fun getCount(): Int = visibleRows.size
+            override fun getCount(): Int = visibleItems.size
 
-            override fun getItem(position: Int): Any = visibleRows[position]
+            override fun getItem(position: Int): Any = visibleItems[position]
 
             override fun getItemId(position: Int): Long = position.toLong()
 
+            override fun getViewTypeCount(): Int = 2
+
+            override fun getItemViewType(position: Int): Int =
+                if (visibleItems[position] is ConversationListItem.Section) 0 else 1
+
+            override fun isEnabled(position: Int): Boolean =
+                visibleItems[position] is ConversationListItem.Row
+
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val item = visibleItems[position]
+                if (item is ConversationListItem.Section) {
+                    val sectionView = convertView ?: LayoutInflater.from(this@ConversationManagerActivity)
+                        .inflate(R.layout.item_conversation_section, parent, false)
+                    sectionView.findViewById<TextView>(R.id.tvConversationSectionTitle).text = item.title
+                    return sectionView
+                }
                 val rowView = convertView ?: LayoutInflater.from(this@ConversationManagerActivity)
                     .inflate(R.layout.item_conversation_row, parent, false)
-                val row = visibleRows[position]
+                val row = (item as ConversationListItem.Row).conversation
 
                 val sourceName = when (row.source) {
                     SourceType.CODEX -> getString(R.string.conversation_source_codex)
@@ -267,6 +363,7 @@ class ConversationManagerActivity : AppCompatActivity() {
                 } else {
                     getString(R.string.conversation_state_active)
                 }
+                val modeName = if (row.workMode == WorkMode.COLLABORATION) "协作会话" else "独立会话"
                 val updated = if (row.updatedAtMs > 0L) {
                     dateFormat.format(Date(row.updatedAtMs))
                 } else {
@@ -275,7 +372,7 @@ class ConversationManagerActivity : AppCompatActivity() {
                 val preview = row.preview.lineSequence().firstOrNull()?.trim().orEmpty()
 
                 rowView.findViewById<TextView>(R.id.tvConversationRowTitle).text = row.title
-                rowView.findViewById<TextView>(R.id.tvConversationRowMeta).text = "$sourceName | $stateTag | $updated | ${row.id}"
+                rowView.findViewById<TextView>(R.id.tvConversationRowMeta).text = "$sourceName | $modeName | $stateTag | $updated"
                 rowView.findViewById<TextView>(R.id.tvConversationRowPreview).text = preview
 
                 rowView.findViewById<Button>(R.id.btnConversationRowRename).setOnClickListener {
@@ -304,7 +401,8 @@ class ConversationManagerActivity : AppCompatActivity() {
         val baseStatus = if (visibleRows.isEmpty()) {
             getString(R.string.conversation_empty)
         } else {
-            "${visibleRows.size} ${getString(R.string.conversation_source_all)}"
+            val collaborationCount = visibleRows.count { it.workMode == WorkMode.COLLABORATION }
+            "共${visibleRows.size}条会话，独立工作${visibleRows.size - collaborationCount}条，三智能体协作${collaborationCount}条"
         }
         if (loadWarnings.isEmpty()) {
             tvStatus.text = baseStatus
@@ -611,7 +709,7 @@ class ConversationManagerActivity : AppCompatActivity() {
                     val item = items.optJSONObject(itemIndex) ?: continue
                     when (item.optString("type", "")) {
                         "userMessage" -> {
-                            val text = parseCodexUserText(item.optJSONArray("content"))
+                            val text = collaborationVisibleText(parseCodexUserText(item.optJSONArray("content")))
                             if (text.isNotEmpty()) {
                                 out.appendLine("User: $text")
                             }
@@ -658,8 +756,9 @@ class ConversationManagerActivity : AppCompatActivity() {
                                 .ifEmpty { parseCodexUserText(message.optJSONArray("content")) }
                             else -> ""
                         }
-                        if (text.isNotEmpty()) {
-                            out.appendLine("User: $text")
+                        val visibleText = collaborationVisibleText(text)
+                        if (visibleText.isNotEmpty()) {
+                            out.appendLine("User: $visibleText")
                             out.appendLine()
                         }
                     }
