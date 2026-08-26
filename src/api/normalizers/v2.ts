@@ -26,6 +26,13 @@ function toRawPayload(value: unknown): string {
 
 function extractCodexUserRequestText(value: string): string {
   const trimmed = value.trim()
+  if (trimmed.startsWith('[口袋大龙虾三智能体协作')) {
+    if (trimmed.startsWith('[口袋大龙虾三智能体协作：总调度')) return ''
+    const backgroundMarker = '用户原始消息仅作为背景，不代表要求您重复执行全部任务：'
+    const backgroundIndex = trimmed.lastIndexOf(backgroundMarker)
+    if (backgroundIndex >= 0) return trimmed.slice(backgroundIndex + backgroundMarker.length).trim()
+    return ''
+  }
   if (trimmed.startsWith('[三智能体协作任务')) {
     if (trimmed.includes('：总调度最终审核]')) return ''
     const originalRequestMarker = '用户原始请求：'

@@ -105,6 +105,8 @@ const SHARED_BRIDGE_TOKEN_PATH = homeDir
   : ''
 const MINIS_BRIDGE_URL = 'http://127.0.0.1:18927'
 const COLLABORATION_TIMEOUT_MS = 2 * 60 * 60_000
+const COLLABORATION_COORDINATOR_TIMEOUT_MS = 10 * 60_000
+const COLLABORATION_MAX_DELEGATION_ROUNDS = 3
 const COLLABORATION_HISTORY_LIMIT = 40
 const SERVER_BUNDLE_ID = (() => {
   try {
@@ -317,7 +319,30 @@ type ClaudePersistedRun = {
 }
 
 type CollaborationAgentId = 'codex' | 'claude' | 'minis'
-type CollaborationAgentStatus = 'pending' | 'running' | 'synthesizing' | 'completed' | 'failed' | 'aborted'
+type CollaborationAgentStatus = 'idle' | 'pending' | 'planning' | 'running' | 'reviewing' | 'waiting_user' | 'completed' | 'failed' | 'aborted'
+type CollaborationRunStatus = 'planning' | 'running' | 'reviewing' | 'waiting_user' | 'completed' | 'failed' | 'aborted'
+type CollaborationEventType = 'user' | 'decision' | 'assignment' | 'progress' | 'result' | 'final' | 'error' | 'control'
+
+type CollaborationEvent = {
+  id: string
+  atMs: number
+  type: CollaborationEventType
+  agentId: CollaborationAgentId | ''
+  text: string
+}
+
+type CollaborationAssignment = {
+  agentId: CollaborationAgentId
+  task: string
+  expectedOutput: string
+}
+
+type CollaborationDecision = {
+  action: 'respond' | 'ask_user' | 'delegate'
+  message: string
+  assignments: CollaborationAssignment[]
+  requiresSharedWorkspace: boolean
+}
 
 type CollaborationAgentState = {
   agentId: CollaborationAgentId
@@ -329,6 +354,7 @@ type CollaborationAgentState = {
   startedAtMs: number
   updatedAtMs: number
   requestText: string
+  assignmentText: string
   actionText: string
   responseText: string
   errorText: string
@@ -339,10 +365,16 @@ type CollaborationRun = {
   title: string
   prompt: string
   leader: CollaborationAgentId
-  status: 'running' | 'completed' | 'failed' | 'aborted'
+  status: CollaborationRunStatus
   createdAtMs: number
   updatedAtMs: number
   completedAtMs: number | null
+  turnNumber: number
+  roundNumber: number
+  archived: boolean
+  workspaceReady: boolean
+  pendingUserMessages: string[]
+  events: CollaborationEvent[]
   agents: Record<CollaborationAgentId, CollaborationAgentState>
   finalSummary: string
   errorText: string
@@ -4160,17 +4192,41 @@ function createCollaborationAgentState(
   return {
     agentId,
     role: agentId === leader ? 'leader' : 'worker',
-    status: 'pending',
+    status: 'idle',
     sessionId: '',
     runId: '',
     turnId: '',
     startedAtMs: 0,
     updatedAtMs: Date.now(),
     requestText: '',
+    assignmentText: '',
     actionText: '',
     responseText: '',
     errorText: '',
   }
+}
+
+function isCollaborationRunActive(run: CollaborationRun): boolean {
+  return run.status === 'planning' || run.status === 'running' || run.status === 'reviewing'
+}
+
+function addCollaborationEvent(
+  run: CollaborationRun,
+  type: CollaborationEventType,
+  text: string,
+  agentId: CollaborationAgentId | '' = '',
+): void {
+  const normalized = normalizeText(text)
+  if (!normalized) return
+  run.events.push({
+    id: `event_${Date.now().toString(36)}_${randomUUID().slice(0, 6)}`,
+    atMs: Date.now(),
+    type,
+    agentId,
+    text: normalized,
+  })
+  if (run.events.length > 240) run.events.splice(0, run.events.length - 240)
+  touchCollaborationRun(run)
 }
 
 function collaborationAgentRecord(leader: CollaborationAgentId): Record<CollaborationAgentId, CollaborationAgentState> {
@@ -4209,29 +4265,55 @@ async function ensureCollaborationRunsLoaded(): Promise<void> {
           startedAtMs: typeof source.startedAtMs === 'number' ? source.startedAtMs : 0,
           updatedAtMs: typeof source.updatedAtMs === 'number' ? source.updatedAtMs : Date.now(),
           requestText: normalizeText(source.requestText),
+          assignmentText: normalizeText(source.assignmentText),
           actionText: normalizeText(source.actionText),
           responseText: normalizeText(source.responseText),
           errorText: normalizeText(source.errorText),
         }
-        if (agents[agentId].status === 'running' || agents[agentId].status === 'synthesizing') {
+        if (['planning', 'running', 'reviewing'].includes(agents[agentId].status)) {
           agents[agentId].status = 'failed'
           agents[agentId].errorText = '应用重启导致该协作步骤中断'
           restoredInterruptedRun = true
         }
       }
       const restoredStatus = normalizeText(row?.status)
+      const sourceEvents = Array.isArray(row?.events) ? row.events : []
+      const events = sourceEvents.map((value): CollaborationEvent | null => {
+        const event = asRecord(value)
+        const type = normalizeText(event?.type) as CollaborationEventType
+        const text = normalizeText(event?.text)
+        if (!text || !['user', 'decision', 'assignment', 'progress', 'result', 'final', 'error', 'control'].includes(type)) return null
+        const eventAgent = normalizeText(event?.agentId)
+        return {
+          id: normalizeText(event?.id) || `event_${randomUUID().slice(0, 8)}`,
+          atMs: typeof event?.atMs === 'number' ? event.atMs : Date.now(),
+          type,
+          agentId: eventAgent === 'codex' || eventAgent === 'claude' || eventAgent === 'minis' ? eventAgent : '',
+          text,
+        }
+      }).filter((value): value is CollaborationEvent => value !== null)
       collaborationRuns.set(id, {
         id,
         title: normalizeText(row?.title) || `三智能体协作 ${id.slice(-6)}`,
         prompt,
         leader,
-        status: restoredStatus === 'running' ? 'failed' : (restoredStatus as CollaborationRun['status'] || 'failed'),
+        status: ['planning', 'running', 'reviewing'].includes(restoredStatus)
+          ? 'failed'
+          : (restoredStatus as CollaborationRunStatus || 'failed'),
         createdAtMs: typeof row?.createdAtMs === 'number' ? row.createdAtMs : Date.now(),
         updatedAtMs: typeof row?.updatedAtMs === 'number' ? row.updatedAtMs : Date.now(),
         completedAtMs: typeof row?.completedAtMs === 'number' ? row.completedAtMs : null,
+        turnNumber: typeof row?.turnNumber === 'number' ? row.turnNumber : 1,
+        roundNumber: typeof row?.roundNumber === 'number' ? row.roundNumber : 0,
+        archived: row?.archived === true,
+        workspaceReady: row?.workspaceReady === true,
+        pendingUserMessages: Array.isArray(row?.pendingUserMessages)
+          ? row.pendingUserMessages.map(normalizeText).filter(Boolean)
+          : [],
+        events,
         agents,
         finalSummary: normalizeText(row?.finalSummary),
-        errorText: restoredStatus === 'running'
+        errorText: ['planning', 'running', 'reviewing'].includes(restoredStatus)
           ? '应用重启导致协作中断'
           : normalizeText(row?.errorText),
       })
@@ -4308,43 +4390,145 @@ async function callMinisChatRpc(method: string, params: Record<string, unknown>)
   return asRecord(payload?.result) ?? {}
 }
 
-function collaborationPrompt(
-  run: CollaborationRun,
-  agentId: CollaborationAgentId,
-): string {
-  const agentName = agentId === 'codex' ? 'Codex' : agentId === 'claude' ? 'Claude Code' : 'Minis'
-  const workspace = collaborationWorkspacePath(run)
-  const roleInstruction = agentId === run.leader
-    ? '您是本次协作的总调度。请先独立分析并给出阶段性方案；系统会在其他两位智能体完成后把结果再次投递给您，请在第二轮审核、消除冲突并给出最终结论。'
-    : `您是本次协作成员${agentName}。请独立完成最适合您的部分，明确事实、执行结果、风险和给总调度的建议，不要假装已经看到其他智能体的输出。`
-  return [
-    `[三智能体协作任务 ${run.id}]`,
-    `总调度：${run.leader}`,
-    `当前角色：${agentId === run.leader ? '总调度' : '协作成员'}（${agentName}）`,
-    roleInstruction,
-    '协作消息由宿主自动中继。不要自行等待或轮询 runs.json，不要把各自私有沙盒里的 shared 目录当成跨智能体通道。',
-    `若任务需要多智能体产出共同文件，唯一共享工作区为：${workspace}。`,
-    `首轮只写入自己的独立草稿 ${workspace}/${agentId}.md，不得并发修改同一目标文件；只有总调度在第二轮可以合并草稿并原子替换最终文件。`,
-    '',
-    '用户原始请求：',
-    run.prompt,
-  ].join('\n')
-}
-
 function collaborationWorkspacePath(run: CollaborationRun): string {
   return join(COLLABORATION_SHARED_ROOT, run.id)
 }
 
 async function prepareCollaborationWorkspace(run: CollaborationRun): Promise<void> {
+  if (run.workspaceReady) return
   const workspace = collaborationWorkspacePath(run)
   await mkdir(workspace, { recursive: true })
   const rules = [
     '口袋大龙虾三智能体协作工作区',
-    '本目录是三个智能体唯一共享的文件交换位置。',
-    '首轮每个智能体只写入各自的 codex.md、claude.md 或 minis.md。',
-    '总调度在第二轮读取草稿，使用临时文件完成原子替换，不允许多个智能体并发改写同一目标。',
+    '本目录只存放本轮任务明确要求共享的文件产物，不承担智能体消息通信。',
+    '每个智能体只能写入以自身名称开头的临时文件，不允许并发改写同一目标。',
+    '最终文件只能由总调度在审核成员结果后使用临时文件原子替换。',
   ].join('\n')
   await writeFile(join(workspace, '协作规则.txt'), `${rules}\n`, { mode: 0o600 })
+  run.workspaceReady = true
+  touchCollaborationRun(run)
+}
+
+function collaborationAgentLabel(agentId: CollaborationAgentId): string {
+  return agentId === 'codex' ? 'Codex' : agentId === 'claude' ? 'Claude Code' : 'Minis'
+}
+
+function collaborationPublicHistory(run: CollaborationRun): string {
+  const rows = run.events
+    .filter((event) => event.type === 'user' || event.type === 'final')
+    .slice(-8)
+    .map((event) => `${event.type === 'user' ? '用户' : collaborationAgentLabel(run.leader)}：${event.text}`)
+  return rows.length > 0 ? rows.join('\n\n') : '无历史消息'
+}
+
+function buildCollaborationCoordinatorPrompt(run: CollaborationRun, userMessage: string): string {
+  const workers = (['codex', 'claude', 'minis'] as const)
+    .filter((agentId) => agentId !== run.leader)
+    .map((agentId) => collaborationAgentLabel(agentId))
+    .join('、')
+  return [
+    '[口袋大龙虾三智能体协作：总调度决策]',
+    `您是用户当前选择的总调度${collaborationAgentLabel(run.leader)}，您始终负责与用户对话和最终回复。可按需调用的协作成员是${workers}。`,
+    '先判断这条消息是否真的需要其他智能体。问候、连通性确认、简单问答、澄清和单智能体即可完成的任务必须直接回复，不得委派，不得创建文件。',
+    '只有任务能够拆成明确且有价值的专门子任务时才委派；只选择确实需要的成员，不要默认全选。成员不会直接面对用户，您必须审核其结果并最终回复。',
+    '共享工作区默认关闭。只有用户明确要求共同产出文件，或多个智能体确实必须交换文件产物时，requiresSharedWorkspace才可为true。',
+    '请只输出一个JSON对象，不要输出Markdown、解释或代码围栏。格式为：',
+    '{"action":"respond或ask_user或delegate","message":"直接回复、澄清问题或您的阶段判断","requiresSharedWorkspace":false,"assignments":[{"agentId":"codex或claude或minis","task":"边界清晰的子任务","expectedOutput":"预期结果"}]}',
+    'respond和ask_user时assignments必须为空；delegate时不得把任务分配给您自己。',
+    '',
+    '本协作会话公开历史：',
+    collaborationPublicHistory(run),
+    '',
+    '用户本轮消息：',
+    userMessage,
+  ].join('\n')
+}
+
+function buildCollaborationWorkerPrompt(
+  run: CollaborationRun,
+  assignment: CollaborationAssignment,
+  userMessage: string,
+): string {
+  const workspaceInstruction = run.workspaceReady
+    ? `本轮已启用共享文件产物目录：${collaborationWorkspacePath(run)}。只在子任务确有文件产物时使用，并且只能写入以${assignment.agentId}开头的临时文件。`
+    : '本轮未启用共享文件产物目录，不要创建协作草稿或自行寻找共享目录。'
+  return [
+    '[口袋大龙虾三智能体协作：成员分工]',
+    `总调度：${collaborationAgentLabel(run.leader)}`,
+    `当前成员：${collaborationAgentLabel(assignment.agentId)}`,
+    '您只负责下面的边界化子任务。完成后把事实、执行结果、证据、风险和建议直接回复给总调度，不要向用户讲话，不要等待其他成员，不要轮询协作状态文件。',
+    `子任务：${assignment.task}`,
+    `预期结果：${assignment.expectedOutput || '给出可核查的完整结果'}`,
+    workspaceInstruction,
+    '',
+    '用户原始消息仅作为背景，不代表要求您重复执行全部任务：',
+    userMessage,
+  ].join('\n')
+}
+
+function extractCollaborationJson(value: string): Record<string, unknown> | null {
+  const trimmed = value.trim()
+  const candidates = [trimmed]
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/iu)?.[1]
+  if (fenced) candidates.push(fenced.trim())
+  const firstBrace = trimmed.indexOf('{')
+  const lastBrace = trimmed.lastIndexOf('}')
+  if (firstBrace >= 0 && lastBrace > firstBrace) candidates.push(trimmed.slice(firstBrace, lastBrace + 1))
+  for (const candidate of candidates) {
+    try {
+      const parsed = asRecord(JSON.parse(candidate))
+      if (parsed) return parsed
+    } catch {
+      // Try the next representation.
+    }
+  }
+  return null
+}
+
+function parseCollaborationDecision(
+  value: string,
+  leader: CollaborationAgentId,
+): CollaborationDecision | null {
+  const parsed = extractCollaborationJson(value)
+  if (!parsed) return null
+  const actionRaw = normalizeText(parsed.action).toLowerCase()
+  const action = actionRaw === 'respond' || actionRaw === '回复' || actionRaw === '直接回复'
+    ? 'respond'
+    : actionRaw === 'ask_user' || actionRaw === 'ask-user' || actionRaw === '澄清' || actionRaw === '询问用户'
+      ? 'ask_user'
+      : actionRaw === 'delegate' || actionRaw === '委派' || actionRaw === '分工'
+        ? 'delegate'
+        : ''
+  if (action !== 'respond' && action !== 'ask_user' && action !== 'delegate') return null
+  const assignmentRows = Array.isArray(parsed.assignments)
+    ? parsed.assignments
+    : Array.isArray(parsed.tasks)
+      ? parsed.tasks
+      : []
+  const assignments = assignmentRows
+    .map((row): CollaborationAssignment | null => {
+      const record = asRecord(row)
+      const rawAgentId = normalizeText(record?.agentId || record?.agent).toLowerCase()
+      const agentId = rawAgentId === 'claude code' || rawAgentId === 'claudecode'
+        ? 'claude'
+        : rawAgentId
+      const task = normalizeText(record?.task)
+      if ((agentId !== 'codex' && agentId !== 'claude' && agentId !== 'minis') || agentId === leader || !task) return null
+      return {
+        agentId,
+        task,
+        expectedOutput: normalizeText(record?.expectedOutput),
+      }
+    })
+    .filter((row): row is CollaborationAssignment => row !== null)
+    .filter((row, index, rows) => rows.findIndex((candidate) => candidate.agentId === row.agentId) === index)
+  if (action === 'delegate' && assignments.length === 0) return null
+  return {
+    action,
+    message: normalizeText(parsed.message || parsed.reply || parsed.question),
+    assignments: action === 'delegate' ? assignments : [],
+    requiresSharedWorkspace: action === 'delegate' && parsed.requiresSharedWorkspace === true,
+  }
 }
 
 function extractStartedTurnId(value: unknown): string {
@@ -4382,8 +4566,9 @@ async function waitForCodexCollaborationTurn(
   appServer: AppServerProcess,
   threadId: string,
   turnId: string,
+  timeoutMs = COLLABORATION_TIMEOUT_MS,
 ): Promise<string> {
-  const deadline = Date.now() + COLLABORATION_TIMEOUT_MS
+  const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const read = asRecord(await appServer.rpc('thread/read', { threadId, includeTurns: true }))
     const thread = asRecord(read?.thread)
@@ -4410,6 +4595,7 @@ async function runCodexCollaborationTurn(
   appServer: AppServerProcess,
   run: CollaborationRun,
   prompt: string,
+  timeoutMs = COLLABORATION_TIMEOUT_MS,
 ): Promise<string> {
   const state = run.agents.codex
   let threadId = state.sessionId
@@ -4431,7 +4617,7 @@ async function runCodexCollaborationTurn(
   const turnId = extractStartedTurnId(startedTurn)
   if (!turnId) throw new Error('Codex collaboration turn/start returned no turn id')
   setCollaborationAgentState(run, 'codex', { turnId })
-  return await waitForCodexCollaborationTurn(appServer, threadId, turnId)
+  return await waitForCodexCollaborationTurn(appServer, threadId, turnId, timeoutMs)
 }
 
 async function writeClaudeCollaborationMirror(
@@ -4467,14 +4653,18 @@ async function writeClaudeCollaborationMirror(
   await rename(temporary, target)
 }
 
-async function waitForClaudeCollaborationRun(runId: string): Promise<string> {
-  const deadline = Date.now() + COLLABORATION_TIMEOUT_MS
+async function waitForClaudeCollaborationRun(runId: string, timeoutMs = COLLABORATION_TIMEOUT_MS): Promise<string> {
+  const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const status = await getClaudeRunStatus(runId)
     const collaborationRun = [...collaborationRuns.values()].find((row) => row.agents.claude.runId === runId)
     if (collaborationRun?.status === 'aborted') throw new Error('Collaboration run aborted')
     if (collaborationRun) {
-      const actionText = 'Claude Code 正在执行分工任务'
+      const actionText = collaborationRun.status === 'planning'
+        ? 'Claude Code 正在判断是否需要委派'
+        : collaborationRun.status === 'reviewing'
+          ? 'Claude Code 正在审核成员结果'
+          : 'Claude Code 正在执行分工任务'
       if (collaborationRun.agents.claude.actionText !== actionText) {
         setCollaborationAgentState(collaborationRun, 'claude', { actionText })
       }
@@ -4488,14 +4678,19 @@ async function waitForClaudeCollaborationRun(runId: string): Promise<string> {
   throw new Error('Claude collaboration run timed out')
 }
 
-async function runClaudeCollaborationTurn(run: CollaborationRun, prompt: string): Promise<string> {
+async function runClaudeCollaborationTurn(
+  run: CollaborationRun,
+  prompt: string,
+  timeoutMs = COLLABORATION_TIMEOUT_MS,
+): Promise<string> {
   const state = run.agents.claude
   const sessionId = state.sessionId || `collab-claude-${run.id}`
   const titleSeed = run.prompt.replace(/\s+/gu, ' ').trim().slice(0, 42)
   const title = titleSeed ? `三智能体协作：${titleSeed}` : '三智能体协作'
   if (!state.sessionId) setCollaborationAgentState(run, 'claude', { sessionId })
-  const isSynthesis = prompt.includes('：总调度最终审核]')
-  if (!isSynthesis) {
+  const isCoordinatorInternal = prompt.startsWith('[口袋大龙虾三智能体协作：总调度')
+  const isCoordinatorReview = prompt.startsWith('[口袋大龙虾三智能体协作：总调度审核]')
+  if (!isCoordinatorReview) {
     await writeClaudeCollaborationMirror(sessionId, title, [{ role: 'user', text: run.prompt, atMs: Date.now() }])
   }
   const started = await sendClaudeMessage({
@@ -4505,12 +4700,18 @@ async function runClaudeCollaborationTurn(run: CollaborationRun, prompt: string)
     dangerousMode: true,
   })
   setCollaborationAgentState(run, 'claude', { runId: started.runId })
-  const response = await waitForClaudeCollaborationRun(started.runId)
-  await writeClaudeCollaborationMirror(sessionId, title, [{ role: 'assistant', text: response || 'Claude 未返回文本结果', atMs: Date.now() }])
+  const response = await waitForClaudeCollaborationRun(started.runId, timeoutMs)
+  if (!isCoordinatorInternal) {
+    await writeClaudeCollaborationMirror(sessionId, title, [{ role: 'assistant', text: response || 'Claude 未返回文本结果', atMs: Date.now() }])
+  }
   return response
 }
 
-async function runMinisCollaborationTurn(run: CollaborationRun, prompt: string): Promise<string> {
+async function runMinisCollaborationTurn(
+  run: CollaborationRun,
+  prompt: string,
+  timeoutMs = COLLABORATION_TIMEOUT_MS,
+): Promise<string> {
   const state = run.agents.minis
   const titleSeed = run.prompt.replace(/\s+/gu, ' ').trim().slice(0, 42)
   const started = await callMinisChatRpc('chat.prompt', {
@@ -4522,7 +4723,7 @@ async function runMinisCollaborationTurn(run: CollaborationRun, prompt: string):
   const sessionId = normalizeText(started.sessionId)
   if (!sessionId) throw new Error('Minis collaboration prompt returned no session id')
   setCollaborationAgentState(run, 'minis', { sessionId, actionText: 'Minis 已收到任务，正在执行' })
-  const deadline = Date.now() + COLLABORATION_TIMEOUT_MS
+  const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (run.status === 'aborted') throw new Error('Collaboration run aborted')
     const status = await callMinisChatRpc('chat.session.status', { sessionId })
@@ -4565,32 +4766,43 @@ async function runCollaborationAgent(
   run: CollaborationRun,
   agentId: CollaborationAgentId,
   prompt: string,
-  phase: 'running' | 'synthesizing' = 'running',
+  phase: 'planning' | 'running' | 'reviewing' = 'running',
+  options: {
+    assignmentText?: string
+    publishResponse?: boolean
+    timeoutMs?: number
+  } = {},
 ): Promise<string> {
-  const agentName = agentId === 'codex' ? 'Codex' : agentId === 'claude' ? 'Claude Code' : 'Minis'
+  const agentName = collaborationAgentLabel(agentId)
   if (isCollaborationRunAborted(run)) throw new Error('Collaboration run aborted')
   setCollaborationAgentState(run, agentId, {
     status: phase,
     startedAtMs: run.agents[agentId].startedAtMs || Date.now(),
     requestText: prompt,
-    actionText: phase === 'synthesizing'
-      ? `${agentName}正在审核和汇总其他智能体结果`
-      : `${agentName}已收到分工任务`,
+    assignmentText: normalizeText(options.assignmentText),
+    actionText: phase === 'planning'
+      ? `${agentName}正在判断是否需要委派`
+      : phase === 'reviewing'
+        ? `${agentName}正在审核成员结果并决定下一步`
+        : `${agentName}已收到分工任务`,
     errorText: '',
   })
   try {
+    const timeoutMs = options.timeoutMs ?? COLLABORATION_TIMEOUT_MS
     const response = agentId === 'codex'
-      ? await runCodexCollaborationTurn(appServer, run, prompt)
+      ? await runCodexCollaborationTurn(appServer, run, prompt, timeoutMs)
       : agentId === 'claude'
-        ? await runClaudeCollaborationTurn(run, prompt)
-        : await runMinisCollaborationTurn(run, prompt)
+        ? await runClaudeCollaborationTurn(run, prompt, timeoutMs)
+        : await runMinisCollaborationTurn(run, prompt, timeoutMs)
     if (isCollaborationRunAborted(run)) throw new Error('Collaboration run aborted')
     setCollaborationAgentState(run, agentId, {
       status: 'completed',
-      actionText: phase === 'synthesizing'
-        ? `${agentName}已完成最终汇总`
-        : `${agentName}已完成分工任务`,
-      responseText: response,
+      actionText: phase === 'planning'
+        ? `${agentName}已完成任务判断`
+        : phase === 'reviewing'
+          ? `${agentName}已完成本轮审核`
+          : `${agentName}已完成分工任务`,
+      ...(options.publishResponse === false ? {} : { responseText: response }),
     })
     return response
   } catch (error) {
@@ -4610,58 +4822,224 @@ async function runCollaborationAgent(
   }
 }
 
-function buildCollaborationSynthesisPrompt(run: CollaborationRun): string {
-  const workerSections = (['codex', 'claude', 'minis'] as const)
-    .filter((agentId) => agentId !== run.leader)
-    .map((agentId) => {
-      const state = run.agents[agentId]
-      const content = state.responseText || `失败：${state.errorText || state.status}`
-      return `【${agentId}协作结果】\n${content}`
-    })
+function buildCollaborationReviewPrompt(
+  run: CollaborationRun,
+  userMessage: string,
+  coordinatorNotes: string,
+  assignments: CollaborationAssignment[],
+  additionalUserMessages: string[],
+): string {
+  const resultSections = assignments.map((assignment) => {
+    const state = run.agents[assignment.agentId]
+    const content = state.responseText || `执行失败：${state.errorText || state.status}`
+    return `【${collaborationAgentLabel(assignment.agentId)}；子任务：${assignment.task}】\n${content}`
+  })
+  const finalRound = run.roundNumber >= COLLABORATION_MAX_DELEGATION_ROUNDS
   return [
-    `[三智能体协作任务 ${run.id}：总调度最终审核]`,
-    '下面是另外两位智能体的独立结果。请结合您第一轮的分析，核对事实、处理冲突、指出失败或不确定项，并向用户给出统一的最终结论和可执行下一步。',
-    `宿主已经把成员结果完整投递给您，不要再等待 runs.json 或私有 shared 目录。若需合并文件，只能使用 ${collaborationWorkspacePath(run)} 中的成员草稿，并由您单独写入最终文件。`,
+    '[口袋大龙虾三智能体协作：总调度审核]',
+    `您是总调度${collaborationAgentLabel(run.leader)}。成员结果已由宿主直接投递，不要等待状态文件或其他消息。`,
+    '请核对成员是否真正完成子任务、处理冲突并决定下一步。可以最终回复用户、向用户澄清，或在确有必要时重新委派边界明确的任务。',
+    finalRound
+      ? '本轮已达到最大委派轮数，禁止继续委派；必须respond给出基于现有证据的最终结论，或ask_user说明缺少的信息。'
+      : '不要机械地再次委派；现有证据足够时必须直接respond收口。',
+    '请只输出一个JSON对象，不要输出Markdown、解释或代码围栏。格式为：',
+    '{"action":"respond或ask_user或delegate","message":"给用户的最终回复、澄清问题或下一轮阶段判断","requiresSharedWorkspace":false,"assignments":[{"agentId":"codex或claude或minis","task":"新的或返工子任务","expectedOutput":"预期结果"}]}',
+    'respond和ask_user时assignments必须为空；delegate时不得把任务分配给您自己。',
     '',
-    ...workerSections,
+    '用户本轮原始消息：',
+    userMessage,
+    '',
+    '您委派前的阶段判断：',
+    coordinatorNotes || '未提供',
+    ...(additionalUserMessages.length > 0
+      ? ['', '用户在执行期间补充的指令，必须优先纳入本次审核：', additionalUserMessages.join('\n')]
+      : []),
+    '',
+    ...resultSections,
   ].join('\n\n')
 }
 
-async function executeCollaborationRun(appServer: AppServerProcess, runId: string): Promise<void> {
+function resetCollaborationTurnAgents(run: CollaborationRun): void {
+  for (const agentId of ['codex', 'claude', 'minis'] as const) {
+    const previous = run.agents[agentId]
+    run.agents[agentId] = {
+      ...previous,
+      role: agentId === run.leader ? 'leader' : 'worker',
+      status: 'idle',
+      startedAtMs: 0,
+      updatedAtMs: Date.now(),
+      requestText: '',
+      assignmentText: '',
+      actionText: agentId === run.leader ? '等待总调度分析' : '本轮尚未委派',
+      responseText: '',
+      errorText: '',
+    }
+  }
+  touchCollaborationRun(run)
+}
+
+function finishCollaborationTurn(
+  run: CollaborationRun,
+  decision: CollaborationDecision,
+): void {
+  const waiting = decision.action === 'ask_user'
+  const message = decision.message || (waiting ? '需要您补充信息后才能继续。' : '本轮协作已完成。')
+  run.status = waiting ? 'waiting_user' : 'completed'
+  run.finalSummary = message
+  run.errorText = ''
+  run.completedAtMs = Date.now()
+  setCollaborationAgentState(run, run.leader, {
+    status: waiting ? 'waiting_user' : 'completed',
+    actionText: waiting ? `${collaborationAgentLabel(run.leader)}正在等待用户补充` : `${collaborationAgentLabel(run.leader)}已完成最终回复`,
+    responseText: message,
+  })
+  addCollaborationEvent(run, 'final', message, run.leader)
+}
+
+async function executeCollaborationRun(
+  appServer: AppServerProcess,
+  runId: string,
+  userMessage: string,
+): Promise<void> {
   const run = collaborationRuns.get(runId)
   if (!run) return
-  const firstPass = await Promise.allSettled(
-    (['codex', 'claude', 'minis'] as const).map((agentId) =>
-      runCollaborationAgent(appServer, run, agentId, collaborationPrompt(run, agentId)),
-    ),
-  )
-  if (isCollaborationRunAborted(run)) return
-  const completedCount = firstPass.filter((row) => row.status === 'fulfilled').length
-  if (completedCount === 0) {
-    run.status = 'failed'
-    run.errorText = '三个智能体均未完成首轮任务'
-    run.completedAtMs = Date.now()
-    touchCollaborationRun(run)
-    await persistCollaborationRunsNow()
-    return
-  }
-
   try {
-    const finalSummary = await runCollaborationAgent(
+    run.status = 'planning'
+    run.completedAtMs = null
+    run.errorText = ''
+    run.roundNumber = 0
+    resetCollaborationTurnAgents(run)
+    addCollaborationEvent(run, 'progress', `${collaborationAgentLabel(run.leader)}正在判断是否需要调用协作成员`, run.leader)
+    const planningResponse = await runCollaborationAgent(
       appServer,
       run,
       run.leader,
-      buildCollaborationSynthesisPrompt(run),
-      'synthesizing',
+      buildCollaborationCoordinatorPrompt(run, userMessage),
+      'planning',
+      { publishResponse: false, timeoutMs: COLLABORATION_COORDINATOR_TIMEOUT_MS },
     )
     if (isCollaborationRunAborted(run)) return
-    run.finalSummary = finalSummary
-    run.status = 'completed'
-    run.errorText = ''
+    let decision = parseCollaborationDecision(planningResponse, run.leader) ?? {
+      action: 'respond' as const,
+      message: planningResponse || '总调度未返回可解析的回复。',
+      assignments: [],
+      requiresSharedWorkspace: false,
+    }
+    let coordinatorNotes = decision.message
+    addCollaborationEvent(
+      run,
+      'decision',
+      decision.action === 'delegate'
+        ? `${collaborationAgentLabel(run.leader)}决定调用${decision.assignments.map((row) => collaborationAgentLabel(row.agentId)).join('、')}`
+        : decision.action === 'ask_user'
+          ? `${collaborationAgentLabel(run.leader)}需要用户补充信息`
+          : `${collaborationAgentLabel(run.leader)}判断本轮无需调用其他智能体`,
+      run.leader,
+    )
+    if (decision.action !== 'delegate') {
+      finishCollaborationTurn(run, decision)
+      await persistCollaborationRunsNow()
+      return
+    }
+
+    while (decision.action === 'delegate') {
+      run.roundNumber += 1
+      run.status = 'running'
+      if (decision.requiresSharedWorkspace) {
+        await prepareCollaborationWorkspace(run)
+        addCollaborationEvent(run, 'control', '本轮已按任务需要启用共享文件产物目录', run.leader)
+      }
+      const selectedIds = new Set(decision.assignments.map((row) => row.agentId))
+      for (const agentId of ['codex', 'claude', 'minis'] as const) {
+        if (agentId === run.leader) continue
+        if (!selectedIds.has(agentId)) {
+          setCollaborationAgentState(run, agentId, {
+            status: 'idle',
+            assignmentText: '',
+            actionText: '本轮未被总调度调用',
+            responseText: '',
+            errorText: '',
+          })
+        }
+      }
+      for (const assignment of decision.assignments) {
+        addCollaborationEvent(
+          run,
+          'assignment',
+          `${collaborationAgentLabel(assignment.agentId)}负责：${assignment.task}`,
+          assignment.agentId,
+        )
+      }
+      setCollaborationAgentState(run, run.leader, {
+        status: 'pending',
+        actionText: `${collaborationAgentLabel(run.leader)}正在等待成员完成本轮分工`,
+      })
+      await Promise.allSettled(decision.assignments.map((assignment) =>
+        runCollaborationAgent(
+          appServer,
+          run,
+          assignment.agentId,
+          buildCollaborationWorkerPrompt(run, assignment, userMessage),
+          'running',
+          { assignmentText: assignment.task, publishResponse: true },
+        ).then((response) => {
+          addCollaborationEvent(run, 'result', `${collaborationAgentLabel(assignment.agentId)}已完成分工：${truncateText(response, 1_500)}`, assignment.agentId)
+          return response
+        }).catch((error) => {
+          addCollaborationEvent(run, 'error', `${collaborationAgentLabel(assignment.agentId)}执行失败：${getErrorMessage(error, 'unknown')}`, assignment.agentId)
+          throw error
+        }),
+      ))
+      if (isCollaborationRunAborted(run)) return
+
+      run.status = 'reviewing'
+      const additionalUserMessages = run.pendingUserMessages.splice(0)
+      addCollaborationEvent(run, 'progress', `${collaborationAgentLabel(run.leader)}正在审核成员结果`, run.leader)
+      const reviewResponse = await runCollaborationAgent(
+        appServer,
+        run,
+        run.leader,
+        buildCollaborationReviewPrompt(run, userMessage, coordinatorNotes, decision.assignments, additionalUserMessages),
+        'reviewing',
+        { publishResponse: false, timeoutMs: COLLABORATION_COORDINATOR_TIMEOUT_MS },
+      )
+      if (isCollaborationRunAborted(run)) return
+      decision = parseCollaborationDecision(reviewResponse, run.leader) ?? {
+        action: 'respond',
+        message: reviewResponse || '总调度审核完成，但未返回可解析的最终回复。',
+        assignments: [],
+        requiresSharedWorkspace: false,
+      }
+      if (decision.action === 'delegate' && run.roundNumber >= COLLABORATION_MAX_DELEGATION_ROUNDS) {
+        decision = {
+          action: 'respond',
+          message: decision.message || '已达到最大协作轮数，现根据已有结果结束本轮任务。',
+          assignments: [],
+          requiresSharedWorkspace: false,
+        }
+      }
+      coordinatorNotes = decision.message
+      addCollaborationEvent(
+        run,
+        'decision',
+        decision.action === 'delegate'
+          ? `${collaborationAgentLabel(run.leader)}审核后决定进入第${run.roundNumber + 1}轮分工`
+          : decision.action === 'ask_user'
+            ? `${collaborationAgentLabel(run.leader)}审核后需要用户补充信息`
+            : `${collaborationAgentLabel(run.leader)}审核完成并准备最终回复`,
+        run.leader,
+      )
+      if (decision.action !== 'delegate') {
+        finishCollaborationTurn(run, decision)
+        await persistCollaborationRunsNow()
+        return
+      }
+    }
   } catch (error) {
     if (isCollaborationRunAborted(run)) return
     run.status = 'failed'
-    run.errorText = getErrorMessage(error, '总调度汇总失败')
+    run.errorText = getErrorMessage(error, '协作调度失败')
+    addCollaborationEvent(run, 'error', run.errorText, run.leader)
   }
   run.completedAtMs = Date.now()
   touchCollaborationRun(run)
@@ -4671,10 +5049,11 @@ async function executeCollaborationRun(appServer: AppServerProcess, runId: strin
 async function abortCollaborationRun(appServer: AppServerProcess, run: CollaborationRun): Promise<void> {
   run.status = 'aborted'
   run.completedAtMs = Date.now()
+  addCollaborationEvent(run, 'control', '用户已终止本轮协作')
   for (const agentId of ['codex', 'claude', 'minis'] as const) {
     const state = run.agents[agentId]
-    if (state.status !== 'running' && state.status !== 'synthesizing') continue
-    const agentName = agentId === 'codex' ? 'Codex' : agentId === 'claude' ? 'Claude Code' : 'Minis'
+    if (!['planning', 'running', 'reviewing'].includes(state.status)) continue
+    const agentName = collaborationAgentLabel(agentId)
     setCollaborationAgentState(run, agentId, { status: 'aborted', actionText: `${agentName}已终止` })
     try {
       if (agentId === 'codex' && state.sessionId && state.turnId) {
@@ -4705,6 +5084,7 @@ function collaborationRunSummary(run: CollaborationRun): Record<string, unknown>
       status: state.status,
       startedAtMs: state.startedAtMs,
       updatedAtMs: state.updatedAtMs,
+      assignmentText: publicCollaborationText(state.assignmentText, 1_200),
       actionText: publicCollaborationText(state.actionText, 800),
       responseText: publicCollaborationText(state.responseText),
       errorText: publicCollaborationText(state.errorText, 1_200),
@@ -4719,6 +5099,14 @@ function collaborationRunSummary(run: CollaborationRun): Record<string, unknown>
     createdAtMs: run.createdAtMs,
     updatedAtMs: run.updatedAtMs,
     completedAtMs: run.completedAtMs,
+    turnNumber: run.turnNumber,
+    roundNumber: run.roundNumber,
+    archived: run.archived,
+    workspaceReady: run.workspaceReady,
+    events: run.events.map((event) => ({
+      ...event,
+      text: publicCollaborationText(event.text, 2_000),
+    })),
     agents,
     finalSummary: publicCollaborationText(run.finalSummary),
     errorText: publicCollaborationText(run.errorText, 1_200),
@@ -4776,7 +5164,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
         const leader = normalizeCollaborationAgent(payload?.leader)
-        const activeRun = [...collaborationRuns.values()].find((run) => run.status === 'running')
+        const activeRun = [...collaborationRuns.values()].find(isCollaborationRunActive)
         if (activeRun) {
           setJson(res, 409, {
             ok: false,
@@ -4793,23 +5181,68 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           title: titleSeed ? `三智能体协作：${titleSeed}` : `三智能体协作 ${id.slice(-6)}`,
           prompt,
           leader,
-          status: 'running',
+          status: 'planning',
           createdAtMs: now,
           updatedAtMs: now,
           completedAtMs: null,
+          turnNumber: 1,
+          roundNumber: 0,
+          archived: false,
+          workspaceReady: false,
+          pendingUserMessages: [],
+          events: [],
           agents: collaborationAgentRecord(leader),
           finalSummary: '',
           errorText: '',
         }
         collaborationRuns.set(id, run)
-        try {
-          await prepareCollaborationWorkspace(run)
-        } catch (error) {
-          run.errorText = `共享工作区初始化失败：${getErrorMessage(error, 'unknown')}`
-        }
+        addCollaborationEvent(run, 'user', prompt)
         await persistCollaborationRunsNow()
-        void executeCollaborationRun(appServer, id)
+        void executeCollaborationRun(appServer, id, prompt)
         setJson(res, 202, { ok: true, run: collaborationRunSummary(run) })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/collaboration-api/continue') {
+        await ensureCollaborationRunsLoaded()
+        const payload = asRecord(await readJsonBody(req))
+        const runId = normalizeText(payload?.runId)
+        const prompt = normalizeText(payload?.prompt)
+        const run = collaborationRuns.get(runId)
+        if (!run) {
+          setJson(res, 404, { ok: false, error: 'Collaboration run not found' })
+          return
+        }
+        if (!prompt) {
+          setJson(res, 400, { ok: false, error: 'Missing collaboration prompt' })
+          return
+        }
+        if (run.archived) {
+          setJson(res, 409, { ok: false, error: '已归档的协作会话不能继续，请先取消归档' })
+          return
+        }
+        if (isCollaborationRunActive(run)) {
+          addCollaborationEvent(run, 'user', prompt)
+          run.pendingUserMessages.push(prompt)
+          addCollaborationEvent(run, 'control', '补充指令已提交，将在总调度下一次审核时处理')
+          await persistCollaborationRunsNow()
+          setJson(res, 202, { ok: true, queued: true, run: collaborationRunSummary(run) })
+          return
+        }
+        const otherActive = [...collaborationRuns.values()].find((candidate) => candidate.id !== run.id && isCollaborationRunActive(candidate))
+        if (otherActive) {
+          setJson(res, 409, { ok: false, error: `已有三智能体协作任务正在运行：${otherActive.title}` })
+          return
+        }
+        addCollaborationEvent(run, 'user', prompt)
+        run.turnNumber += 1
+        run.status = 'planning'
+        run.completedAtMs = null
+        run.finalSummary = ''
+        run.errorText = ''
+        await persistCollaborationRunsNow()
+        void executeCollaborationRun(appServer, run.id, prompt)
+        setJson(res, 202, { ok: true, queued: false, run: collaborationRunSummary(run) })
         return
       }
 
@@ -4822,12 +5255,70 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           setJson(res, 404, { ok: false, error: 'Collaboration run not found' })
           return
         }
-        if (run.status !== 'running') {
+        if (!isCollaborationRunActive(run)) {
           setJson(res, 409, { ok: false, error: '该协作任务已经结束，无需再次终止', run: collaborationRunSummary(run) })
           return
         }
         await abortCollaborationRun(appServer, run)
         setJson(res, 200, { ok: true, run: collaborationRunSummary(run) })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/collaboration-api/rename') {
+        await ensureCollaborationRunsLoaded()
+        const payload = asRecord(await readJsonBody(req))
+        const run = collaborationRuns.get(normalizeText(payload?.runId))
+        const title = normalizeText(payload?.title).slice(0, 100)
+        if (!run) {
+          setJson(res, 404, { ok: false, error: 'Collaboration run not found' })
+          return
+        }
+        if (!title) {
+          setJson(res, 400, { ok: false, error: '任务名称不能为空' })
+          return
+        }
+        run.title = title
+        touchCollaborationRun(run)
+        await persistCollaborationRunsNow()
+        setJson(res, 200, { ok: true, run: collaborationRunSummary(run) })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/collaboration-api/archive') {
+        await ensureCollaborationRunsLoaded()
+        const payload = asRecord(await readJsonBody(req))
+        const run = collaborationRuns.get(normalizeText(payload?.runId))
+        if (!run) {
+          setJson(res, 404, { ok: false, error: 'Collaboration run not found' })
+          return
+        }
+        if (isCollaborationRunActive(run)) {
+          setJson(res, 409, { ok: false, error: '运行中的协作任务不能归档' })
+          return
+        }
+        run.archived = payload?.archived !== false
+        touchCollaborationRun(run)
+        await persistCollaborationRunsNow()
+        setJson(res, 200, { ok: true, run: collaborationRunSummary(run) })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/collaboration-api/delete') {
+        await ensureCollaborationRunsLoaded()
+        const payload = asRecord(await readJsonBody(req))
+        const runId = normalizeText(payload?.runId)
+        const run = collaborationRuns.get(runId)
+        if (!run) {
+          setJson(res, 404, { ok: false, error: 'Collaboration run not found' })
+          return
+        }
+        if (isCollaborationRunActive(run)) {
+          setJson(res, 409, { ok: false, error: '请先终止运行中的协作任务再删除' })
+          return
+        }
+        collaborationRuns.delete(runId)
+        await persistCollaborationRunsNow()
+        setJson(res, 200, { ok: true, runId })
         return
       }
 

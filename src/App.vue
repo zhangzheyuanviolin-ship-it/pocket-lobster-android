@@ -496,7 +496,9 @@
 
               <CollaborationBoard v-if="showCollaborationBoard" :runs="collaborationRuns"
                 :error="collaborationError" @close="showCollaborationBoard = false"
-                @abort="onAbortCollaborationRun" />
+                @abort="onAbortCollaborationRun" @continue="onContinueCollaborationRun"
+                @rename="onRenameCollaborationRun" @archive="onArchiveCollaborationRun"
+                @delete="onDeleteCollaborationRun" />
 
               <ThreadComposer :active-thread-id="composerThreadContextId" :disabled="isSendingMessage"
                 :providers="availableProviders" :selected-provider="selectedProviderId"
@@ -525,7 +527,9 @@
 
               <CollaborationBoard v-if="showCollaborationBoard" :runs="collaborationRuns"
                 :error="collaborationError" @close="showCollaborationBoard = false"
-                @abort="onAbortCollaborationRun" />
+                @abort="onAbortCollaborationRun" @continue="onContinueCollaborationRun"
+                @rename="onRenameCollaborationRun" @archive="onArchiveCollaborationRun"
+                @delete="onDeleteCollaborationRun" />
 
               <ThreadComposer :active-thread-id="composerThreadContextId"
                 :disabled="isSendingMessage || isLoadingMessages" :providers="availableProviders"
@@ -571,7 +575,12 @@ import type { OpenClawComposerSubmitPayload } from './types/openclaw'
 import type { ClaudeComposerSubmitPayload } from './types/claude'
 import {
   abortCollaborationRun,
+  archiveCollaborationRun,
+  continueCollaborationRun,
+  deleteCollaborationRun,
+  isCollaborationRunActive,
   listCollaborationRuns,
+  renameCollaborationRun,
   startCollaborationRun,
   type CollaborationRun,
 } from './api/collaborationGateway'
@@ -844,7 +853,7 @@ onMounted(() => {
   document.addEventListener('visibilitychange', onCodexVisibilityChange)
   collaborationPollTimer = setInterval(() => {
     if (document.visibilityState !== 'visible') return
-    if (collaborationRuns.value.some((run) => run.status === 'running')) {
+    if (collaborationRuns.value.some(isCollaborationRunActive)) {
       void refreshCollaborationRuns()
     }
   }, 2_000)
@@ -1060,6 +1069,55 @@ function onAbortCollaborationRun(runId: string): void {
       collaborationError.value = ''
     } catch (error) {
       collaborationError.value = error instanceof Error ? error.message : '终止协作失败'
+    }
+  })()
+}
+
+function replaceCollaborationRun(run: CollaborationRun): void {
+  collaborationRuns.value = [run, ...collaborationRuns.value.filter((row) => row.id !== run.id)]
+}
+
+function onContinueCollaborationRun(runId: string, prompt: string): void {
+  void (async () => {
+    try {
+      replaceCollaborationRun(await continueCollaborationRun(runId, prompt))
+      collaborationError.value = ''
+    } catch (error) {
+      collaborationError.value = error instanceof Error ? error.message : '继续协作失败'
+    }
+  })()
+}
+
+function onRenameCollaborationRun(runId: string, title: string): void {
+  void (async () => {
+    try {
+      replaceCollaborationRun(await renameCollaborationRun(runId, title))
+      collaborationError.value = ''
+    } catch (error) {
+      collaborationError.value = error instanceof Error ? error.message : '重命名失败'
+    }
+  })()
+}
+
+function onArchiveCollaborationRun(runId: string, archived: boolean): void {
+  void (async () => {
+    try {
+      replaceCollaborationRun(await archiveCollaborationRun(runId, archived))
+      collaborationError.value = ''
+    } catch (error) {
+      collaborationError.value = error instanceof Error ? error.message : '归档操作失败'
+    }
+  })()
+}
+
+function onDeleteCollaborationRun(runId: string): void {
+  void (async () => {
+    try {
+      await deleteCollaborationRun(runId)
+      collaborationRuns.value = collaborationRuns.value.filter((run) => run.id !== runId)
+      collaborationError.value = ''
+    } catch (error) {
+      collaborationError.value = error instanceof Error ? error.message : '删除失败'
     }
   })()
 }

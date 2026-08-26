@@ -4,13 +4,16 @@ import test from 'node:test'
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8')
 
-test('collaboration coordinator creates three real sessions and a leader synthesis turn', async () => {
+test('collaboration coordinator routes through the leader before selectively invoking real agents', async () => {
   const server = await read('src/server/codexAppServerBridge.ts')
   assert.match(server, /runCodexCollaborationTurn/)
   assert.match(server, /runClaudeCollaborationTurn/)
   assert.match(server, /runMinisCollaborationTurn/)
-  assert.match(server, /Promise\.allSettled/)
-  assert.match(server, /buildCollaborationSynthesisPrompt/)
+  assert.match(server, /buildCollaborationCoordinatorPrompt/)
+  assert.match(server, /parseCollaborationDecision/)
+  assert.match(server, /buildCollaborationReviewPrompt/)
+  assert.match(server, /COLLABORATION_MAX_DELEGATION_ROUNDS/)
+  assert.match(server, /decision\.assignments\.map/)
   assert.match(server, /chat\.prompt/)
   assert.match(server, /agent-sessions.*claude-code/s)
   assert.match(server, /turn\/interrupt/)
@@ -90,7 +93,7 @@ test('native collaboration clients wake the shared host and use the production p
   assert.match(service, /三智能体协作宿主诊断\.jsonl/)
 })
 
-test('collaboration persistence, abort races and overload are guarded', async () => {
+test('collaboration persistence, continuation, abort races and overload are guarded', async () => {
   const server = await read('src/server/codexAppServerBridge.ts')
   const app = await read('src/App.vue')
   assert.match(server, /COLLABORATION_TIMEOUT_MS = 2 \* 60 \* 60_000/)
@@ -100,9 +103,13 @@ test('collaboration persistence, abort races and overload are guarded', async ()
   assert.match(server, /collaborationPersistQueue/)
   assert.match(server, /rename\(temporary, COLLABORATION_STATE_PATH\)/)
   assert.match(server, /isCollaborationRunAborted/)
-  assert.match(server, /已有三智能体协作任务正在运行/)
+  assert.match(server, /isCollaborationRunActive/)
+  assert.match(server, /collaboration-api\/continue/)
+  assert.match(server, /pendingUserMessages/)
+  assert.match(server, /collaboration-api\/delete/)
+  assert.match(server, /collaboration-api\/archive/)
   assert.match(app, /document\.visibilityState !== 'visible'/)
-  assert.match(app, /collaborationRuns\.value\.some\(\(run\) => run\.status === 'running'\)/)
+  assert.match(app, /collaborationRuns\.value\.some\(isCollaborationRunActive\)/)
 })
 
 test('collaboration UI exposes public progress without internal routing payloads', async () => {
@@ -121,20 +128,26 @@ test('collaboration UI exposes public progress without internal routing payloads
   assert.match(board, /当前进展/)
   assert.match(board, /总调度/)
   assert.match(board, /协作成员/)
-  assert.match(nativeBoard, /runningCount > 0/)
-  assert.match(normalizer, /总调度最终审核/)
-  assert.match(normalizer, /用户原始请求/)
+  assert.match(board, /继续协作/)
+  assert.match(board, /补充指令/)
+  assert.match(nativeBoard, /isActiveStatus/)
+  assert.match(nativeBoard, /assignmentText/)
+  assert.match(nativeBoard, /CollaborationClient\.continueRun/)
+  assert.match(normalizer, /extractCodexUserRequestText/)
   assert.match(minisTransform, /Collaboration routing instructions stay in model context/)
   assert.match(minisTransform, /sessionTitle/)
 })
 
-test('collaboration files use one Android shared workspace and single-writer merge rules', async () => {
+test('collaboration files are created lazily and never used as the message bus', async () => {
   const server = await read('src/server/codexAppServerBridge.ts')
   const conversationManager = await read('android/app/src/main/java/com/codex/mobile/ConversationManagerActivity.kt')
   assert.match(server, /\/sdcard\/下载管理\/口袋大龙虾协作/)
   assert.match(server, /prepareCollaborationWorkspace/)
-  assert.match(server, /不得并发修改同一目标文件/)
-  assert.match(server, /不要自行等待或轮询 runs\.json/)
+  assert.match(server, /if \(decision\.requiresSharedWorkspace\)/)
+  assert.match(server, /不承担智能体消息通信/)
+  assert.match(server, /本轮未启用共享文件产物目录/)
+  const startEndpoint = server.slice(server.indexOf("url.pathname === '/collaboration-api/start'"), server.indexOf("url.pathname === '/collaboration-api/continue'"))
+  assert.doesNotMatch(startEndpoint, /prepareCollaborationWorkspace/)
   assert.match(conversationManager, /独立工作会话/)
   assert.match(conversationManager, /三智能体协作会话/)
   assert.doesNotMatch(conversationManager, /\$updated \| \$\{row\.id\}/)

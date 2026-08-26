@@ -42,6 +42,35 @@ object CollaborationClient {
         readTimeoutMs = 45_000,
     )
 
+    fun continueRun(context: Context, runId: String, prompt: String): JSONObject = request(
+        context = context,
+        method = "POST",
+        path = "/collaboration-api/continue",
+        body = JSONObject().put("runId", runId.trim()).put("prompt", prompt.trim()),
+        readTimeoutMs = 45_000,
+    )
+
+    fun rename(context: Context, runId: String, title: String): JSONObject = request(
+        context = context,
+        method = "POST",
+        path = "/collaboration-api/rename",
+        body = JSONObject().put("runId", runId.trim()).put("title", title.trim()),
+    )
+
+    fun archive(context: Context, runId: String, archived: Boolean): JSONObject = request(
+        context = context,
+        method = "POST",
+        path = "/collaboration-api/archive",
+        body = JSONObject().put("runId", runId.trim()).put("archived", archived),
+    )
+
+    fun delete(context: Context, runId: String): JSONObject = request(
+        context = context,
+        method = "POST",
+        path = "/collaboration-api/delete",
+        body = JSONObject().put("runId", runId.trim()),
+    )
+
     private fun request(
         context: Context,
         method: String,

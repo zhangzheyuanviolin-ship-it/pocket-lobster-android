@@ -289,11 +289,17 @@ class ConversationManagerActivity : AppCompatActivity() {
     }
 
     private fun isCollaborationPrompt(value: String): Boolean =
-        value.trimStart().startsWith("[三智能体协作任务")
+        value.trimStart().let {
+            it.startsWith("[三智能体协作任务") || it.startsWith("[口袋大龙虾三智能体协作")
+        }
 
     private fun collaborationVisibleText(value: String): String {
         val trimmed = value.trim()
         if (!isCollaborationPrompt(trimmed)) return trimmed
+        if (trimmed.startsWith("[口袋大龙虾三智能体协作：总调度")) return "总调度内部调度消息"
+        val backgroundMarker = "用户原始消息仅作为背景，不代表要求您重复执行全部任务："
+        val backgroundIndex = trimmed.lastIndexOf(backgroundMarker)
+        if (backgroundIndex >= 0) return trimmed.substring(backgroundIndex + backgroundMarker.length).trim()
         if (trimmed.contains("：总调度最终审核]")) return "正在汇总其他智能体的结果"
         val marker = "用户原始请求："
         val markerIndex = trimmed.lastIndexOf(marker)

@@ -19,6 +19,34 @@
         android:layout_marginTop="12dp"
         android:text="刷新协作状态" />
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnCollaborationCurrent"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="当前" />
+
+        <Button
+            android:id="@+id/btnCollaborationHistory"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="历史" />
+
+        <Button
+            android:id="@+id/btnCollaborationArchived"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="已归档" />
+    </LinearLayout>
+
     <TextView
         android:id="@+id/tvCollaborationStatus"
         android:layout_width="match_parent"
