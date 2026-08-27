@@ -144,12 +144,26 @@ test('collaboration UI exposes public progress without internal routing payloads
   assert.match(nativeBoard, /isScreenReaderFocusable = true/)
   assert.match(nativeBoard, /private data class AgentDetailViews/)
   assert.match(nativeBoard, /setTextBlock\(views\.summaryHeading/)
-  assert.match(nativeBoard, /setTextBlock\(agentViews\.response/)
+  assert.match(nativeBoard, /private data class CollapsibleBlock/)
+  assert.match(nativeBoard, /createCollapsibleBlock/)
+  assert.match(nativeBoard, /setCollapsibleBlock\(agentViews\.assignment/)
+  assert.match(nativeBoard, /setCollapsibleBlock\([\s\S]*agentViews\.response/)
+  assert.match(nativeBoard, /"展开\$\{block\.label\}"/)
+  assert.match(nativeBoard, /focusFinalSummary/)
+  assert.match(nativeBoard, /ACTION_ACCESSIBILITY_FOCUS/)
   assert.doesNotMatch(nativeBoard, /content\.removeAllViews\(\)/)
   assert.doesNotMatch(nativeBoard, /accessibilityLiveRegion = View\.ACCESSIBILITY_LIVE_REGION_POLITE/)
   assert.ok(
     nativeBoard.indexOf('renderRunDetails(row)') < nativeBoard.indexOf('detailDialog = AlertDialog.Builder'),
     'detail nodes must be populated before the dialog is shown',
+  )
+  assert.ok(
+    nativeBoard.indexOf('val agentViews = linkedMapOf') < nativeBoard.indexOf('val summaryHeading = createText'),
+    'agent progress must precede the final coordinator response',
+  )
+  assert.ok(
+    nativeBoard.indexOf('val summary = createText') < nativeBoard.indexOf('val input = EditText'),
+    'the final coordinator response must stay directly above the continuation controls',
   )
   assert.match(board, /selectedRunId\.value\) \?\? null/)
   assert.doesNotMatch(board, /filteredRuns\.value\[0\]/)
