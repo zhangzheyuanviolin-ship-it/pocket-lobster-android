@@ -139,6 +139,18 @@ test('collaboration UI exposes public progress without internal routing payloads
   assert.match(nativeBoard, /CollaborationClient\.continueRun/)
   assert.match(nativeBoard, /refreshOpenDetail/)
   assert.match(nativeBoard, /detailDialog\?\.isShowing/)
+  assert.match(nativeBoard, /importantForAccessibility = View\.IMPORTANT_FOR_ACCESSIBILITY_YES/)
+  assert.match(nativeBoard, /importantForAccessibility = View\.IMPORTANT_FOR_ACCESSIBILITY_NO/)
+  assert.match(nativeBoard, /isScreenReaderFocusable = true/)
+  assert.match(nativeBoard, /private data class AgentDetailViews/)
+  assert.match(nativeBoard, /setTextBlock\(views\.summaryHeading/)
+  assert.match(nativeBoard, /setTextBlock\(agentViews\.response/)
+  assert.doesNotMatch(nativeBoard, /content\.removeAllViews\(\)/)
+  assert.doesNotMatch(nativeBoard, /accessibilityLiveRegion = View\.ACCESSIBILITY_LIVE_REGION_POLITE/)
+  assert.ok(
+    nativeBoard.indexOf('renderRunDetails(row)') < nativeBoard.indexOf('detailDialog = AlertDialog.Builder'),
+    'detail nodes must be populated before the dialog is shown',
+  )
   assert.match(board, /selectedRunId\.value\) \?\? null/)
   assert.doesNotMatch(board, /filteredRuns\.value\[0\]/)
   assert.match(normalizer, /extractCodexUserRequestText/)

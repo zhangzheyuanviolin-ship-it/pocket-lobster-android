@@ -30,6 +30,28 @@ class CollaborationActivity : AppCompatActivity() {
         val payload: JSONObject,
     )
 
+    private data class AgentDetailViews(
+        val heading: TextView,
+        val assignment: TextView,
+        val action: TextView,
+        val response: TextView,
+        val error: TextView,
+    )
+
+    private data class DetailViews(
+        val status: TextView,
+        val error: TextView,
+        val summaryHeading: TextView,
+        val summary: TextView,
+        val agents: Map<String, AgentDetailViews>,
+        val input: EditText,
+        val send: Button,
+        val abort: Button,
+        val rename: Button,
+        val archive: Button,
+        val delete: Button,
+    )
+
     private lateinit var statusView: TextView
     private lateinit var listView: ListView
     private val allRows = mutableListOf<RunRow>()
@@ -42,9 +64,8 @@ class CollaborationActivity : AppCompatActivity() {
     private var filter = "current"
     private var detailDialog: AlertDialog? = null
     private var detailRunId = ""
-    private var detailContent: LinearLayout? = null
+    private var detailViews: DetailViews? = null
     private var detailInput: EditText? = null
-    private var detailDraft = ""
     private var detailFingerprint = ""
     private val poll = object : Runnable { override fun run() = refresh() }
 
@@ -183,36 +204,71 @@ class CollaborationActivity : AppCompatActivity() {
         else -> "Codex"
     }
 
-    private fun addText(container: LinearLayout, text: String, heading: Boolean = false) {
-        if (text.isBlank()) return
+    private fun createText(container: LinearLayout, heading: Boolean = false): TextView {
         val view = TextView(this).apply {
-            this.text = text
             textSize = if (heading) 17f else 15f
             setPadding(0, if (heading) dp(16) else dp(5), 0, dp(5))
-            if (heading && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) isAccessibilityHeading = true
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                isScreenReaderFocusable = true
+                if (heading) isAccessibilityHeading = true
+            }
         }
         container.addView(view, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        return view
     }
 
-    private fun addButton(container: LinearLayout, label: String, action: () -> Unit) {
-        container.addView(Button(this).apply {
-            text = label
-            setOnClickListener { action() }
-        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+    private fun setTextBlock(view: TextView, text: String) {
+        val normalized = text.trim()
+        view.visibility = if (normalized.isEmpty()) View.GONE else View.VISIBLE
+        if (view.text.toString() != normalized) view.text = normalized
     }
 
     private fun showRunDetails(row: RunRow) {
         detailDialog?.dismiss()
         detailRunId = row.id
-        detailDraft = ""
         detailFingerprint = ""
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), dp(16))
-            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        detailContent = content
-        val scroll = ScrollView(this).apply { addView(content) }
+        val status = createText(content)
+        val error = createText(content)
+        val summaryHeading = createText(content, heading = true)
+        val summary = createText(content)
+        val agentViews = linkedMapOf<String, AgentDetailViews>()
+        val orderedIds = listOf(row.leader) + listOf("codex", "claude", "minis").filter { it != row.leader }
+        orderedIds.forEach { id ->
+            agentViews[id] = AgentDetailViews(
+                heading = createText(content, heading = true),
+                assignment = createText(content),
+                action = createText(content),
+                response = createText(content),
+                error = createText(content),
+            )
+        }
+        val input = EditText(this).apply {
+            minLines = 2
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
+        content.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        val send = Button(this).apply { text = "发送" }
+        val abort = Button(this).apply { text = "终止协作" }
+        val rename = Button(this).apply { text = "重命名" }
+        val archive = Button(this)
+        val delete = Button(this).apply { text = "删除" }
+        listOf(send, abort, rename, archive, delete).forEach { button ->
+            content.addView(button, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+        detailViews = DetailViews(status, error, summaryHeading, summary, agentViews, input, send, abort, rename, archive, delete)
+        detailInput = input
+        bindDetailActions()
+        renderRunDetails(row)
+        val scroll = ScrollView(this).apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            addView(content)
+        }
         detailDialog = AlertDialog.Builder(this)
             .setTitle(row.title)
             .setView(scroll)
@@ -221,15 +277,13 @@ class CollaborationActivity : AppCompatActivity() {
             .also { dialog ->
                 dialog.setOnDismissListener {
                     detailRunId = ""
-                    detailContent = null
+                    detailViews = null
                     detailInput = null
-                    detailDraft = ""
                     detailFingerprint = ""
                     detailDialog = null
                 }
                 dialog.show()
             }
-        renderRunDetails(row)
         handler.removeCallbacks(poll)
         if (active) handler.postDelayed(poll, 700L)
     }
@@ -245,74 +299,82 @@ class CollaborationActivity : AppCompatActivity() {
     }
 
     private fun renderRunDetails(row: RunRow) {
-        val content = detailContent ?: return
+        val views = detailViews ?: return
         val fingerprint = row.payload.toString()
         if (fingerprint == detailFingerprint) return
-        detailDraft = detailInput?.text?.toString() ?: detailDraft
         detailFingerprint = fingerprint
         detailDialog?.setTitle(row.title)
-        content.removeAllViews()
         val run = row.payload
-        addText(content, "${statusLabel(row.status)}，总调度${agentLabel(row.leader)}，第${run.optInt("turnNumber", 1)}轮对话")
-        run.optString("errorText").trim().takeIf { it.isNotEmpty() }?.let { addText(content, "任务异常：$it") }
-        run.optString("finalSummary").trim().takeIf { it.isNotEmpty() }?.let { addText(content, "总调度回复：$it", true) }
+        setTextBlock(views.status, "${statusLabel(row.status)}，总调度${agentLabel(row.leader)}，第${run.optInt("turnNumber", 1)}轮对话")
+        setTextBlock(views.error, run.optString("errorText").trim().takeIf { it.isNotEmpty() }?.let { "任务异常：$it" }.orEmpty())
+        val finalSummary = run.optString("finalSummary").trim()
+        setTextBlock(views.summaryHeading, if (finalSummary.isEmpty()) "" else "总调度回复")
+        setTextBlock(views.summary, finalSummary)
 
         val agents = run.optJSONObject("agents")
-        val orderedIds = listOf(row.leader) + listOf("codex", "claude", "minis").filter { it != row.leader }
-        orderedIds.forEach { id ->
+        views.agents.forEach { (id, agentViews) ->
             val agent = agents?.optJSONObject(id) ?: JSONObject()
             val role = if (agent.optString("role") == "leader") "总调度" else "协作成员"
-            addText(content, "${agentLabel(id)}，$role，${statusLabel(agent.optString("status"))}", true)
-            agent.optString("assignmentText").trim().takeIf { it.isNotEmpty() }?.let { addText(content, "本轮任务：$it") }
-            agent.optString("actionText").trim().takeIf { it.isNotEmpty() }?.let { addText(content, "当前进展：$it") }
-            agent.optString("responseText").trim()
-                .takeIf { it.isNotEmpty() && !(role == "总调度" && it == run.optString("finalSummary").trim()) }
-                ?.let { addText(content, "${if (role == "总调度") "总调度回复" else "分工结果"}：$it") }
-            agent.optString("errorText").trim().takeIf { it.isNotEmpty() }?.let { addText(content, "失败原因：$it") }
+            setTextBlock(agentViews.heading, "${agentLabel(id)}，$role，${statusLabel(agent.optString("status"))}")
+            setTextBlock(agentViews.assignment, agent.optString("assignmentText").trim().takeIf { it.isNotEmpty() }?.let { "本轮任务：$it" }.orEmpty())
+            setTextBlock(agentViews.action, agent.optString("actionText").trim().takeIf { it.isNotEmpty() }?.let { "当前进展：$it" }.orEmpty())
+            val response = agent.optString("responseText").trim()
+                .takeIf { it.isNotEmpty() && !(role == "总调度" && it == finalSummary) }
+                ?.let { "${if (role == "总调度") "总调度回复" else "分工结果"}：$it" }
+                .orEmpty()
+            setTextBlock(agentViews.response, response)
+            setTextBlock(agentViews.error, agent.optString("errorText").trim().takeIf { it.isNotEmpty() }?.let { "失败原因：$it" }.orEmpty())
         }
 
-        val input = EditText(this).apply {
-            hint = if (isActiveStatus(row.status)) "补充指令" else "继续协作"
-            minLines = 2
-            setText(detailDraft)
-            setSelection(text.length)
-        }
-        detailInput = input
-        content.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        addButton(content, "发送") {
-            val prompt = input.text.toString().trim()
-            if (prompt.isBlank()) Toast.makeText(this, "请输入消息", Toast.LENGTH_SHORT).show()
-            else {
-                detailDraft = ""
-                input.isEnabled = false
+        views.input.hint = if (isActiveStatus(row.status)) "补充指令" else "继续协作"
+        views.abort.visibility = if (isActiveStatus(row.status)) View.VISIBLE else View.GONE
+        views.rename.visibility = if (isActiveStatus(row.status)) View.GONE else View.VISIBLE
+        views.archive.visibility = if (isActiveStatus(row.status)) View.GONE else View.VISIBLE
+        views.delete.visibility = if (isActiveStatus(row.status)) View.GONE else View.VISIBLE
+        views.archive.text = if (run.optBoolean("archived")) "取消归档" else "归档"
+    }
+
+    private fun currentDetailRow(): RunRow? = allRows.firstOrNull { it.id == detailRunId }
+
+    private fun bindDetailActions() {
+        val views = detailViews ?: return
+        views.send.setOnClickListener {
+            val row = currentDetailRow() ?: return@setOnClickListener
+            val prompt = views.input.text.toString().trim()
+            if (prompt.isBlank()) {
+                Toast.makeText(this, "请输入消息", Toast.LENGTH_SHORT).show()
+            } else {
+                views.input.isEnabled = false
                 perform("消息已提交", { CollaborationClient.continueRun(this, row.id, prompt) }) { payload ->
+                    views.input.text.clear()
                     applyReturnedRun(payload)
                     handler.removeCallbacks(poll)
                     if (active) handler.postDelayed(poll, 400L)
                 }
             }
         }
-        if (isActiveStatus(row.status)) {
-            addButton(content, "终止协作") { abort(row.id) }
-        } else {
-            addButton(content, "重命名") { showRename(row) }
-            addButton(content, if (run.optBoolean("archived")) "取消归档" else "归档") {
-                perform("归档状态已更新", { CollaborationClient.archive(this, row.id, !run.optBoolean("archived")) }) {
+        views.abort.setOnClickListener { currentDetailRow()?.let { abort(it.id) } }
+        views.rename.setOnClickListener { currentDetailRow()?.let(::showRename) }
+        views.archive.setOnClickListener {
+            currentDetailRow()?.let { row ->
+                val archived = row.payload.optBoolean("archived")
+                perform("归档状态已更新", { CollaborationClient.archive(this, row.id, !archived) }) {
                     applyReturnedRun(it)
                 }
             }
-            addButton(content, "删除") {
-                AlertDialog.Builder(this)
-                    .setTitle("删除协作任务")
-                    .setMessage("确定删除“${row.title}”？")
-                    .setNegativeButton(getString(R.string.cancel), null)
-                    .setPositiveButton("删除") { _, _ ->
-                        perform("协作任务已删除", { CollaborationClient.delete(this, row.id) }) {
-                            detailDialog?.dismiss()
-                        }
+        }
+        views.delete.setOnClickListener {
+            val row = currentDetailRow() ?: return@setOnClickListener
+            AlertDialog.Builder(this)
+                .setTitle("删除协作任务")
+                .setMessage("确定删除“${row.title}”？")
+                .setNegativeButton(getString(R.string.cancel), null)
+                .setPositiveButton("删除") { _, _ ->
+                    perform("协作任务已删除", { CollaborationClient.delete(this, row.id) }) {
+                        detailDialog?.dismiss()
                     }
-                    .show()
-            }
+                }
+                .show()
         }
     }
 
@@ -351,6 +413,7 @@ class CollaborationActivity : AppCompatActivity() {
             runOnUiThread {
                 result.onSuccess { payload ->
                     onSuccess(payload)
+                    detailInput?.isEnabled = true
                     Toast.makeText(this, successMessage, Toast.LENGTH_SHORT).show()
                     refresh()
                 }.onFailure { error ->
