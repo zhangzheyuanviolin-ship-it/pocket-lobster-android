@@ -496,6 +496,7 @@
 
               <CollaborationBoard v-if="showCollaborationBoard" :runs="collaborationRuns"
                 :error="collaborationError" @close="showCollaborationBoard = false"
+                @refresh="refreshCollaborationRuns"
                 @abort="onAbortCollaborationRun" @continue="onContinueCollaborationRun"
                 @rename="onRenameCollaborationRun" @archive="onArchiveCollaborationRun"
                 @delete="onDeleteCollaborationRun" />
@@ -527,6 +528,7 @@
 
               <CollaborationBoard v-if="showCollaborationBoard" :runs="collaborationRuns"
                 :error="collaborationError" @close="showCollaborationBoard = false"
+                @refresh="refreshCollaborationRuns"
                 @abort="onAbortCollaborationRun" @continue="onContinueCollaborationRun"
                 @rename="onRenameCollaborationRun" @archive="onArchiveCollaborationRun"
                 @delete="onDeleteCollaborationRun" />
@@ -1020,7 +1022,7 @@ async function onSubmitThreadMessage(text: string, complete: (success: boolean) 
     if (collaborationEnabled.value) {
       const run = await startCollaborationRun('codex', text)
       collaborationRuns.value = [run, ...collaborationRuns.value.filter((row) => row.id !== run.id)]
-      showCollaborationBoard.value = true
+      openCollaborationBoard()
       collaborationError.value = ''
       complete(true)
       return
@@ -1048,6 +1050,14 @@ function onToggleCollaboration(enabled: boolean): void {
 }
 
 function onOpenCollaborationBoard(): void {
+  openCollaborationBoard()
+}
+
+function openCollaborationBoard(): void {
+  if (typeof navigator !== 'undefined' && /Android/iu.test(navigator.userAgent)) {
+    window.location.href = 'pocketlobster://collaboration'
+    return
+  }
   showCollaborationBoard.value = true
   void refreshCollaborationRuns()
 }
@@ -1082,6 +1092,7 @@ function onContinueCollaborationRun(runId: string, prompt: string): void {
     try {
       replaceCollaborationRun(await continueCollaborationRun(runId, prompt))
       collaborationError.value = ''
+      void refreshCollaborationRuns()
     } catch (error) {
       collaborationError.value = error instanceof Error ? error.message : '继续协作失败'
     }

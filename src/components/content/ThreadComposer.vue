@@ -24,7 +24,7 @@
         <button
           class="thread-composer-board"
           type="button"
-          aria-label="打开三智能体协作看板"
+          aria-label="协作看板"
           @click="$emit('open-collaboration-board')"
         >
           协作看板

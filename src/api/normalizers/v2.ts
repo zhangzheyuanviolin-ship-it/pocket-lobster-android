@@ -56,6 +56,23 @@ function extractCodexUserRequestText(value: string): string {
   return value.slice(markerOffset).trim()
 }
 
+function rawUserMessageText(item: ThreadItem): string {
+  if (item.type !== 'userMessage' || !Array.isArray(item.content)) return ''
+  return item.content
+    .filter((block): block is UserInput & { type: 'text'; text: string } =>
+      block.type === 'text' && typeof block.text === 'string',
+    )
+    .map((block) => block.text)
+    .join('\n')
+    .trim()
+}
+
+function isInternalCoordinatorPrompt(value: string): boolean {
+  const trimmed = value.trim()
+  return trimmed.startsWith('[口袋大龙虾三智能体协作：总调度') ||
+    trimmed.startsWith('[三智能体协作任务：总调度最终审核]')
+}
+
 function parseUserMessageContent(
   itemId: string,
   turnId: string,
@@ -236,6 +253,9 @@ export function normalizeThreadMessagesV2(payload: ThreadReadResponse): UiMessag
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex += 1) {
     const turn = turns[turnIndex]
     const items = Array.isArray(turn.items) ? turn.items : []
+    if (items.some((item) => isInternalCoordinatorPrompt(rawUserMessageText(item)))) {
+      continue
+    }
     for (const item of items) {
       messages.push(...normalizeThreadItemV2(item, turn.id, turnIndex))
     }

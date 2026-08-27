@@ -292,18 +292,40 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
             out.add(dedupe(FlatChatItem.UserBubble(message, precededByUser = prevIsUser)))
             continue
         }""",
-            """        if (message.role == "user") {
-            // Collaboration routing instructions stay in model context but are
-            // reduced to the user's original request in the visible transcript.
+            """        val previousUserPrompt = (idx - 1 downTo 0).asSequence()
+            .map { messages[it] }
+            .firstOrNull { it.role == "user" }
+            ?.content
+            ?.trim()
+            .orEmpty()
+        val followsInternalCoordinatorPrompt = message.role == "assistant" && (
+            previousUserPrompt.startsWith("[口袋大龙虾三智能体协作：总调度") ||
+                previousUserPrompt.startsWith("[三智能体协作任务：总调度最终审核]")
+            )
+        if (followsInternalCoordinatorPrompt) {
+            // Coordinator JSON is consumed by the host and rendered on the board.
+            continue
+        }
+        if (message.role == "user") {
+            // Collaboration routing instructions remain in model context but
+            // never appear as user-visible chat content.
             val raw = message.content.trim()
-            val isCollaboration = raw.startsWith("[三智能体协作任务")
+            val isCoordinatorPrompt =
+                raw.startsWith("[口袋大龙虾三智能体协作：总调度") ||
+                    raw.startsWith("[三智能体协作任务：总调度最终审核]")
+            val isCollaboration =
+                raw.startsWith("[口袋大龙虾三智能体协作") ||
+                    raw.startsWith("[三智能体协作任务")
             val visibleMessage = when {
+                isCoordinatorPrompt -> null
                 !isCollaboration -> message
-                raw.contains("：总调度最终审核]") -> null
+                raw.contains("用户原始消息仅作为背景，不代表要求您重复执行全部任务：") -> message.copy(
+                    content = raw.substringAfterLast("用户原始消息仅作为背景，不代表要求您重复执行全部任务：").trim(),
+                )
                 raw.contains("用户原始请求：") -> message.copy(
                     content = raw.substringAfterLast("用户原始请求：").trim(),
                 )
-                else -> message.copy(content = "三智能体协作任务")
+                else -> null
             }
             val prevIsUser = idx > 0 && messages[idx - 1].role == "user"
             if (visibleMessage != null) {

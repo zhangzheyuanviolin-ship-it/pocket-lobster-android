@@ -2,7 +2,10 @@
   <section class="collaboration-board" aria-label="三智能体协作看板">
     <header class="collaboration-board-header">
       <h2>三智能体协作</h2>
-      <button type="button" aria-label="关闭三智能体协作看板" @click="$emit('close')">关闭</button>
+      <div class="collaboration-board-header-actions">
+        <button type="button" @click="$emit('refresh')">刷新</button>
+        <button type="button" aria-label="关闭三智能体协作看板" @click="$emit('close')">关闭</button>
+      </div>
     </header>
     <p v-if="error" class="collaboration-error" role="alert">{{ error }}</p>
     <p class="collaboration-board-status" role="status">{{ boardStatusLabel }}</p>
@@ -30,6 +33,7 @@
 
     <article v-if="selectedRun" class="collaboration-run-detail" :aria-label="selectedRun.title">
       <header>
+        <button type="button" @click="selectedRunId = ''">返回任务列表</button>
         <h3>{{ selectedRun.title }}</h3>
         <p>{{ runStatusLabel(selectedRun.status) }}，第{{ selectedRun.turnNumber }}轮对话，{{ runDurationLabel(selectedRun) }}</p>
       </header>
@@ -86,6 +90,7 @@ import { isCollaborationRunActive, type CollaborationAgentId, type Collaboration
 const props = defineProps<{ runs: CollaborationRun[]; error?: string }>()
 const emit = defineEmits<{
   close: []
+  refresh: []
   abort: [runId: string]
   continue: [runId: string, prompt: string]
   rename: [runId: string, title: string]
@@ -105,7 +110,7 @@ const filteredRuns = computed(() => {
   return !run.archived && !isCollaborationRunActive(run) && run.status !== 'waiting_user'
   })
 })
-const selectedRun = computed(() => props.runs.find((run) => run.id === selectedRunId.value) ?? filteredRuns.value[0] ?? null)
+const selectedRun = computed(() => props.runs.find((run) => run.id === selectedRunId.value) ?? null)
 const boardStatusLabel = computed(() => {
   const activeRuns = props.runs.filter(isCollaborationRunActive)
   if (activeRuns.length > 0) {
@@ -118,8 +123,12 @@ const boardStatusLabel = computed(() => {
 })
 
 watch(filteredRuns, (runs) => {
-  if (!runs.some((run) => run.id === selectedRunId.value)) selectedRunId.value = runs[0]?.id ?? ''
-}, { immediate: true })
+  if (!runs.some((run) => run.id === selectedRunId.value)) selectedRunId.value = ''
+})
+
+watch(filter, () => {
+  selectedRunId.value = ''
+})
 
 function isActive(run: CollaborationRun): boolean { return isCollaborationRunActive(run) }
 function agentLabel(id: CollaborationAgentId): string { return id === 'claude' ? 'Claude Code' : id === 'minis' ? 'Minis' : 'Codex' }
@@ -159,7 +168,7 @@ function deleteSelected(): void {
 
 <style scoped>
 .collaboration-board { width: min(100%, 760px); max-height: 70vh; margin: 0 auto 12px; padding: 12px 20px; overflow: auto; border-block: 1px solid #d4d4d8; background: #fafafa; color: #18181b; }
-.collaboration-board-header, .collaboration-actions, .collaboration-filters { display: flex; align-items: center; gap: 8px; }
+.collaboration-board-header, .collaboration-board-header-actions, .collaboration-actions, .collaboration-filters { display: flex; align-items: center; gap: 8px; }
 .collaboration-board-header { justify-content: space-between; }
 .collaboration-board h2, .collaboration-board h3, .collaboration-board h4 { margin: 0; letter-spacing: 0; }
 .collaboration-board h2 { font-size: 17px; }

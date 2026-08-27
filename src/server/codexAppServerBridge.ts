@@ -2829,6 +2829,59 @@ async function renameClaudeSession(sessionKey: string, title: string): Promise<v
   await writeClaudeState(state)
 }
 
+function claudeMessageText(message: ClaudeHistoryMessage): string {
+  return message.content
+    .filter((item) => item.type === 'text' && typeof item.text === 'string')
+    .map((item) => item.text?.trim() ?? '')
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+}
+
+function isInternalCollaborationCoordinatorPrompt(value: string): boolean {
+  const text = value.trim()
+  return text.startsWith('[口袋大龙虾三智能体协作：总调度') ||
+    text.startsWith('[三智能体协作任务：总调度最终审核]')
+}
+
+function visibleCollaborationUserPrompt(value: string): string {
+  const text = value.trim()
+  const backgroundMarker = '用户原始消息仅作为背景，不代表要求您重复执行全部任务：'
+  if (text.includes(backgroundMarker)) return text.slice(text.lastIndexOf(backgroundMarker) + backgroundMarker.length).trim()
+  const requestMarker = '用户原始请求：'
+  if (text.includes(requestMarker)) return text.slice(text.lastIndexOf(requestMarker) + requestMarker.length).trim()
+  return ''
+}
+
+function projectClaudeVisibleHistory(messages: ClaudeHistoryMessage[]): ClaudeHistoryMessage[] {
+  const visible: ClaudeHistoryMessage[] = []
+  let hideCoordinatorResponse = false
+  for (const message of messages) {
+    if (message.role === 'user') {
+      const raw = claudeMessageText(message)
+      if (isInternalCollaborationCoordinatorPrompt(raw)) {
+        hideCoordinatorResponse = true
+        continue
+      }
+      const isCollaboration = raw.startsWith('[口袋大龙虾三智能体协作') || raw.startsWith('[三智能体协作任务')
+      if (isCollaboration) {
+        const publicPrompt = visibleCollaborationUserPrompt(raw)
+        if (!publicPrompt) continue
+        visible.push({ ...message, content: [{ type: 'text', text: publicPrompt }] })
+        continue
+      }
+      visible.push(message)
+      continue
+    }
+    if (hideCoordinatorResponse) {
+      if (message.role === 'assistant') hideCoordinatorResponse = false
+      continue
+    }
+    visible.push(message)
+  }
+  return visible
+}
+
 async function readClaudeHistory(sessionKey: string, limit: number): Promise<{
   sessionKey: string
   messages: ClaudeHistoryMessage[]
@@ -2837,7 +2890,7 @@ async function readClaudeHistory(sessionKey: string, limit: number): Promise<{
   const state = await readClaudeState()
   const target = await ensureClaudeSession(state, sessionKey)
   const normalizedLimit = clampInt(limit, 10, 400)
-  const messages = target.messages.slice(-normalizedLimit)
+  const messages = projectClaudeVisibleHistory(target.messages).slice(-normalizedLimit)
   await writeClaudeState(state)
   return {
     sessionKey: target.key,
@@ -5071,6 +5124,54 @@ async function abortCollaborationRun(appServer: AppServerProcess, run: Collabora
   await persistCollaborationRunsNow()
 }
 
+async function cleanupCollaborationSessions(
+  appServer: AppServerProcess,
+  run: CollaborationRun,
+): Promise<string[]> {
+  const warnings: string[] = []
+  const codexThreadId = run.agents.codex.sessionId
+  if (codexThreadId) {
+    try {
+      await appServer.rpc('thread/archive', { threadId: codexThreadId })
+    } catch (error) {
+      warnings.push(`Codex协作会话归档失败：${getErrorMessage(error, 'unknown')}`)
+    }
+  }
+
+  const claudeSessionId = run.agents.claude.sessionId
+  if (claudeSessionId) {
+    try {
+      const state = await readClaudeState()
+      const nextSessions = state.sessions.filter((session) => session.key !== claudeSessionId)
+      if (nextSessions.length !== state.sessions.length) {
+        state.sessions = nextSessions
+        await writeClaudeState(state)
+      }
+      for (const [runId, child] of claudeRuns.entries()) {
+        if (child.sessionKey === claudeSessionId) claudeRuns.delete(runId)
+      }
+      const persistedRuns = await readClaudeRunsState()
+      await writeClaudeRunsState(persistedRuns.filter((child) => child.sessionKey !== claudeSessionId))
+      if (homeDir) {
+        const mirrorId = claudeSessionId.replace(/[^a-zA-Z0-9._-]/gu, '_')
+        await unlink(join(homeDir, '.pocketlobster', 'agent-sessions', 'claude-code', `${mirrorId}.json`)).catch(() => undefined)
+      }
+    } catch (error) {
+      warnings.push(`Claude Code协作会话清理失败：${getErrorMessage(error, 'unknown')}`)
+    }
+  }
+
+  const minisSessionId = run.agents.minis.sessionId
+  if (minisSessionId) {
+    try {
+      await callMinisChatRpc('chat.session.delete', { sessionId: minisSessionId })
+    } catch (error) {
+      warnings.push(`Minis协作会话清理失败：${getErrorMessage(error, 'unknown')}`)
+    }
+  }
+  return warnings
+}
+
 function publicCollaborationText(value: string, limit = 80_000): string {
   return truncateText(normalizeText(value).replace(/collab_[a-z0-9_]+/giu, '本轮协作'), limit)
 }
@@ -5316,9 +5417,10 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           setJson(res, 409, { ok: false, error: '请先终止运行中的协作任务再删除' })
           return
         }
+        const cleanupWarnings = await cleanupCollaborationSessions(appServer, run)
         collaborationRuns.delete(runId)
         await persistCollaborationRunsNow()
-        setJson(res, 200, { ok: true, runId })
+        setJson(res, 200, { ok: true, runId, cleanupWarnings })
         return
       }
 

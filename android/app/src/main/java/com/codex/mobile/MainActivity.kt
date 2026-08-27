@@ -18,6 +18,7 @@ import android.view.View
 import android.webkit.ConsoleMessage
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.ValueCallback
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -345,8 +346,14 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 view: WebView,
+                request: WebResourceRequest,
+            ): Boolean = handleInternalNavigation(request.url.toString())
+
+            @Suppress("DEPRECATION")
+            override fun shouldOverrideUrlLoading(
+                view: WebView,
                 url: String,
-            ): Boolean = false
+            ): Boolean = handleInternalNavigation(url)
 
             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
@@ -473,6 +480,12 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun handleInternalNavigation(url: String): Boolean {
+        if (url != "pocketlobster://collaboration") return false
+        startActivity(Intent(this, CollaborationActivity::class.java))
+        return true
     }
 
     private fun collectFileChooserUris(resultCode: Int, data: Intent?): Array<Uri>? {
