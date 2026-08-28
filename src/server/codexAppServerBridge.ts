@@ -5214,6 +5214,33 @@ function collaborationRunSummary(run: CollaborationRun): Record<string, unknown>
   }
 }
 
+function collaborationRunExport(run: CollaborationRun): Record<string, unknown> {
+  const summary = collaborationRunSummary(run)
+  const agents = Object.fromEntries((['codex', 'claude', 'minis'] as const).map((agentId) => {
+    const state = run.agents[agentId]
+    return [agentId, {
+      agentId,
+      role: state.role,
+      status: state.status,
+      startedAtMs: state.startedAtMs,
+      updatedAtMs: state.updatedAtMs,
+      assignmentText: publicCollaborationText(state.assignmentText),
+      actionText: publicCollaborationText(state.actionText),
+      responseText: publicCollaborationText(state.responseText),
+      errorText: publicCollaborationText(state.errorText),
+    }]
+  }))
+  return {
+    ...summary,
+    prompt: publicCollaborationText(run.prompt),
+    events: run.events.map((event) => ({
+      ...event,
+      text: publicCollaborationText(event.text),
+    })),
+    agents,
+  }
+}
+
 export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
   const { appServer, methodCatalog } = getSharedBridgeState()
 
@@ -5253,6 +5280,18 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
         setJson(res, 200, { ok: true, run: collaborationRunSummary(run) })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/collaboration-api/export') {
+        await ensureCollaborationRunsLoaded()
+        const runId = normalizeText(url.searchParams.get('runId'))
+        const run = collaborationRuns.get(runId)
+        if (!run) {
+          setJson(res, 404, { ok: false, error: 'Collaboration run not found' })
+          return
+        }
+        setJson(res, 200, { ok: true, run: collaborationRunExport(run) })
         return
       }
 

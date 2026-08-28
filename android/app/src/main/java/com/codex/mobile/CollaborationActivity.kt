@@ -1,5 +1,7 @@
 package com.codex.mobile
 
+import android.content.ClipData
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -16,9 +18,18 @@ import android.widget.ListView
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 class CollaborationActivity : AppCompatActivity() {
     private data class RunRow(
@@ -55,8 +66,10 @@ class CollaborationActivity : AppCompatActivity() {
         val input: EditText,
         val send: Button,
         val abort: Button,
+        val more: Button,
         val rename: Button,
-        val archive: Button,
+        val export: Button,
+        val share: Button,
         val delete: Button,
     )
 
@@ -73,10 +86,34 @@ class CollaborationActivity : AppCompatActivity() {
     private var detailDialog: AlertDialog? = null
     private var detailRunId = ""
     private var detailViews: DetailViews? = null
+    private var detailScrollView: ScrollView? = null
     private var detailInput: EditText? = null
+    private var detailMoreExpanded = false
     private var detailFingerprint = ""
     private var detailTurnNumber = 0
     private var detailLastFinalSummary = ""
+    private var pendingExportFile: File? = null
+    private val exportDocumentLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip"),
+    ) { uri ->
+        val source = pendingExportFile
+        pendingExportFile = null
+        if (uri == null || source == null) return@registerForActivityResult
+        Thread {
+            val result = runCatching {
+                contentResolver.openOutputStream(uri)?.use { output ->
+                    source.inputStream().use { input -> input.copyTo(output) }
+                } ?: error("无法打开导出位置")
+            }
+            runOnUiThread {
+                result.onSuccess {
+                    Toast.makeText(this, "协作任务已导出", Toast.LENGTH_SHORT).show()
+                }.onFailure { error ->
+                    Toast.makeText(this, "导出失败：${error.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
     private val poll = object : Runnable { override fun run() = refresh() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -284,6 +321,7 @@ class CollaborationActivity : AppCompatActivity() {
         detailFingerprint = ""
         detailTurnNumber = 0
         detailLastFinalSummary = ""
+        detailMoreExpanded = false
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), dp(16))
@@ -311,13 +349,15 @@ class CollaborationActivity : AppCompatActivity() {
         content.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         val send = Button(this).apply { text = "发送" }
         val abort = Button(this).apply { text = "终止协作" }
+        val more = Button(this).apply { text = "更多" }
         val rename = Button(this).apply { text = "重命名" }
-        val archive = Button(this)
+        val export = Button(this).apply { text = "导出" }
+        val share = Button(this).apply { text = "分享" }
         val delete = Button(this).apply { text = "删除" }
-        listOf(send, abort, rename, archive, delete).forEach { button ->
+        listOf(send, abort, more, rename, export, share, delete).forEach { button ->
             content.addView(button, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         }
-        detailViews = DetailViews(status, error, summaryHeading, summary, agentViews, input, send, abort, rename, archive, delete)
+        detailViews = DetailViews(status, error, summaryHeading, summary, agentViews, input, send, abort, more, rename, export, share, delete)
         detailInput = input
         bindDetailActions()
         renderRunDetails(row)
@@ -325,6 +365,7 @@ class CollaborationActivity : AppCompatActivity() {
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             addView(content)
         }
+        detailScrollView = scroll
         detailDialog = AlertDialog.Builder(this)
             .setTitle(row.title)
             .setView(scroll)
@@ -334,14 +375,16 @@ class CollaborationActivity : AppCompatActivity() {
                 dialog.setOnDismissListener {
                     detailRunId = ""
                     detailViews = null
+                    detailScrollView = null
                     detailInput = null
+                    detailMoreExpanded = false
                     detailFingerprint = ""
                     detailTurnNumber = 0
                     detailLastFinalSummary = ""
                     detailDialog = null
                 }
                 dialog.show()
-                focusFinalSummary()
+                focusContinuationControls()
             }
         handler.removeCallbacks(poll)
         if (active) handler.postDelayed(poll, 700L)
@@ -398,10 +441,17 @@ class CollaborationActivity : AppCompatActivity() {
 
         views.input.hint = if (isActiveStatus(row.status)) "补充指令" else "继续协作"
         views.abort.visibility = if (isActiveStatus(row.status)) View.VISIBLE else View.GONE
-        views.rename.visibility = if (isActiveStatus(row.status)) View.GONE else View.VISIBLE
-        views.archive.visibility = if (isActiveStatus(row.status)) View.GONE else View.VISIBLE
-        views.delete.visibility = if (isActiveStatus(row.status)) View.GONE else View.VISIBLE
-        views.archive.text = if (run.optBoolean("archived")) "取消归档" else "归档"
+        updateMoreActions(row)
+    }
+
+    private fun updateMoreActions(row: RunRow) {
+        val views = detailViews ?: return
+        views.more.text = if (detailMoreExpanded) "收起更多操作" else "更多"
+        val managementVisibility = if (detailMoreExpanded) View.VISIBLE else View.GONE
+        views.rename.visibility = if (!isActiveStatus(row.status) && detailMoreExpanded) View.VISIBLE else View.GONE
+        views.export.visibility = managementVisibility
+        views.share.visibility = managementVisibility
+        views.delete.visibility = if (!isActiveStatus(row.status) && detailMoreExpanded) View.VISIBLE else View.GONE
     }
 
     private fun focusFinalSummary() {
@@ -409,6 +459,17 @@ class CollaborationActivity : AppCompatActivity() {
         if (summary.visibility != View.VISIBLE || summary.text.isBlank()) return
         summary.post {
             summary.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null)
+        }
+    }
+
+    private fun focusContinuationControls() {
+        val scroll = detailScrollView ?: return
+        val input = detailViews?.input ?: return
+        scroll.post {
+            scroll.fullScroll(View.FOCUS_DOWN)
+            input.post {
+                input.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null)
+            }
         }
     }
 
@@ -432,15 +493,21 @@ class CollaborationActivity : AppCompatActivity() {
             }
         }
         views.abort.setOnClickListener { currentDetailRow()?.let { abort(it.id) } }
-        views.rename.setOnClickListener { currentDetailRow()?.let(::showRename) }
-        views.archive.setOnClickListener {
-            currentDetailRow()?.let { row ->
-                val archived = row.payload.optBoolean("archived")
-                perform("归档状态已更新", { CollaborationClient.archive(this, row.id, !archived) }) {
-                    applyReturnedRun(it)
-                }
+        views.more.setOnClickListener {
+            val row = currentDetailRow() ?: return@setOnClickListener
+            detailMoreExpanded = !detailMoreExpanded
+            updateMoreActions(row)
+            if (detailMoreExpanded) {
+                views.rename.takeIf { it.visibility == View.VISIBLE }
+                    ?.post { it.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null) }
+                    ?: views.export.post {
+                        views.export.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null)
+                    }
             }
         }
+        views.rename.setOnClickListener { currentDetailRow()?.let(::showRename) }
+        views.export.setOnClickListener { currentDetailRow()?.let(::exportRun) }
+        views.share.setOnClickListener { currentDetailRow()?.let(::shareRun) }
         views.delete.setOnClickListener {
             val row = currentDetailRow() ?: return@setOnClickListener
             AlertDialog.Builder(this)
@@ -479,6 +546,131 @@ class CollaborationActivity : AppCompatActivity() {
                 }
             }
             .show()
+    }
+
+    private fun exportRun(row: RunRow) {
+        Thread {
+            val result = runCatching {
+                val payload = CollaborationClient.exportRun(this, row.id).optJSONObject("run") ?: row.payload
+                buildRunExport(row.copy(payload = payload))
+            }
+            runOnUiThread {
+                result.onSuccess { file ->
+                    pendingExportFile = file
+                    exportDocumentLauncher.launch(file.name)
+                }.onFailure { error ->
+                    Toast.makeText(this, "导出准备失败：${error.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun shareRun(row: RunRow) {
+        Thread {
+            val result = runCatching {
+                val payload = CollaborationClient.exportRun(this, row.id).optJSONObject("run") ?: row.payload
+                buildRunExport(row.copy(payload = payload))
+            }
+            runOnUiThread {
+                result.onSuccess { file ->
+                    val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "application/zip"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        clipData = ClipData.newRawUri("三智能体协作任务", uri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    runCatching { startActivity(Intent.createChooser(intent, "分享协作任务")) }
+                        .onFailure { error ->
+                            Toast.makeText(this, "分享失败：${error.message}", Toast.LENGTH_LONG).show()
+                        }
+                }.onFailure { error ->
+                    Toast.makeText(this, "分享准备失败：${error.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun buildRunExport(row: RunRow): File {
+        val exportDirectory = File(cacheDir, "share").apply {
+            if (!exists() && !mkdirs()) error("无法创建分享缓存目录")
+        }
+        exportDirectory.listFiles()
+            ?.filter { it.name.startsWith("三智能体协作_") && it.lastModified() < System.currentTimeMillis() - 86_400_000L }
+            ?.forEach { it.delete() }
+        val safeTitle = row.title.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_").trim().take(48).ifBlank { "协作任务" }
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val target = File(exportDirectory, "三智能体协作_${safeTitle}_${stamp}.zip")
+        val readable = buildReadableExport(row)
+        ZipOutputStream(target.outputStream().buffered()).use { zip ->
+            addZipText(zip, "协作任务详情.txt", readable)
+            addZipText(zip, "协作任务原始记录.json", row.payload.toString(2))
+        }
+        return target
+    }
+
+    private fun addZipText(zip: ZipOutputStream, name: String, text: String) {
+        zip.putNextEntry(ZipEntry(name))
+        zip.write(text.toByteArray(Charsets.UTF_8))
+        zip.closeEntry()
+    }
+
+    private fun buildReadableExport(row: RunRow): String {
+        val run = row.payload
+        val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US)
+        fun time(value: Long): String = if (value > 0L) formatter.format(Date(value)) else "无"
+        fun appendField(builder: StringBuilder, label: String, value: String) {
+            builder.append(label).append("：").append(value.ifBlank { "无" }).append('\n')
+        }
+        val output = StringBuilder()
+        appendField(output, "任务标题", row.title)
+        appendField(output, "任务编号", row.id)
+        appendField(output, "任务状态", statusLabel(row.status))
+        appendField(output, "总调度", agentLabel(row.leader))
+        appendField(output, "当前轮次", run.optInt("turnNumber", 1).toString())
+        appendField(output, "创建时间", time(run.optLong("createdAtMs")))
+        appendField(output, "更新时间", time(run.optLong("updatedAtMs")))
+        appendField(output, "完成时间", time(run.optLong("completedAtMs")))
+        appendField(output, "用户原始任务", run.optString("prompt"))
+        appendField(output, "任务错误", run.optString("errorText"))
+        output.append('\n').append("三智能体详情").append('\n')
+        val agents = run.optJSONObject("agents") ?: JSONObject()
+        listOf(row.leader).plus(listOf("codex", "claude", "minis").filter { it != row.leader }).forEach { id ->
+            val agent = agents.optJSONObject(id) ?: JSONObject()
+            output.append('\n').append("【").append(agentLabel(id)).append("】").append('\n')
+            appendField(output, "角色", if (agent.optString("role") == "leader") "总调度" else "协作成员")
+            appendField(output, "状态", statusLabel(agent.optString("status")))
+            appendField(output, "本轮任务", agent.optString("assignmentText"))
+            appendField(output, "当前进展", agent.optString("actionText"))
+            appendField(output, "协作结果", agent.optString("responseText"))
+            appendField(output, "失败原因", agent.optString("errorText"))
+        }
+        output.append('\n').append("协作事件时间线").append('\n')
+        val events = run.optJSONArray("events") ?: JSONArray()
+        for (index in 0 until events.length()) {
+            val event = events.optJSONObject(index) ?: continue
+            val agent = event.optString("agentId").takeIf { it.isNotBlank() }?.let(::agentLabel) ?: "系统"
+            output.append(index + 1).append(". ")
+                .append(time(event.optLong("atMs"))).append("，")
+                .append(agent).append("，")
+                .append(eventTypeLabel(event.optString("type"))).append('\n')
+                .append(event.optString("text").ifBlank { "无" }).append('\n')
+        }
+        output.append('\n').append("总调度最终回复").append('\n')
+            .append(run.optString("finalSummary").ifBlank { "无" }).append('\n')
+        return output.toString()
+    }
+
+    private fun eventTypeLabel(type: String): String = when (type) {
+        "user" -> "用户消息"
+        "decision" -> "调度决策"
+        "assignment" -> "任务委派"
+        "progress" -> "执行进展"
+        "result" -> "成员结果"
+        "final" -> "最终回复"
+        "error" -> "错误"
+        "control" -> "控制操作"
+        else -> type.ifBlank { "事件" }
     }
 
     private fun perform(

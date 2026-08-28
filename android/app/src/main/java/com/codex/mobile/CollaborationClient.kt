@@ -5,6 +5,7 @@ import java.io.OutputStreamWriter
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import org.json.JSONObject
 
 object CollaborationPreferences {
@@ -25,6 +26,12 @@ object CollaborationPreferences {
 
 object CollaborationClient {
     fun listRuns(context: Context): JSONObject = request(context, "GET", "/collaboration-api/runs")
+
+    fun exportRun(context: Context, runId: String): JSONObject = request(
+        context,
+        "GET",
+        "/collaboration-api/export?runId=${URLEncoder.encode(runId.trim(), Charsets.UTF_8.name())}",
+    )
 
     fun start(context: Context, leader: String, prompt: String): JSONObject = request(
         context = context,
