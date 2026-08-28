@@ -417,6 +417,13 @@ function getErrorMessage(payload: unknown, fallback: string): string {
   return fallback
 }
 
+function isMissingAgentSessionError(error: unknown, agentId: 'codex' | 'minis'): boolean {
+  const message = getErrorMessage(error, '').toLowerCase()
+  return agentId === 'codex'
+    ? message.includes('thread not found') || message.includes('persisted thread not found')
+    : message.includes('session not found')
+}
+
 function setJson(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.statusCode = statusCode
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -4330,6 +4337,7 @@ async function ensureCollaborationRunsLoaded(): Promise<void> {
         }
       }
       const restoredStatus = normalizeText(row?.status)
+      const wasInterrupted = ['planning', 'running', 'reviewing'].includes(restoredStatus)
       const sourceEvents = Array.isArray(row?.events) ? row.events : []
       const events = sourceEvents.map((value): CollaborationEvent | null => {
         const event = asRecord(value)
@@ -4350,7 +4358,7 @@ async function ensureCollaborationRunsLoaded(): Promise<void> {
         title: normalizeText(row?.title) || `三智能体协作 ${id.slice(-6)}`,
         prompt,
         leader,
-        status: ['planning', 'running', 'reviewing'].includes(restoredStatus)
+        status: wasInterrupted
           ? 'failed'
           : (restoredStatus as CollaborationRunStatus || 'failed'),
         createdAtMs: typeof row?.createdAtMs === 'number' ? row.createdAtMs : Date.now(),
@@ -4360,13 +4368,13 @@ async function ensureCollaborationRunsLoaded(): Promise<void> {
         roundNumber: typeof row?.roundNumber === 'number' ? row.roundNumber : 0,
         archived: row?.archived === true,
         workspaceReady: row?.workspaceReady === true,
-        pendingUserMessages: Array.isArray(row?.pendingUserMessages)
+        pendingUserMessages: !wasInterrupted && Array.isArray(row?.pendingUserMessages)
           ? row.pendingUserMessages.map(normalizeText).filter(Boolean)
           : [],
         events,
         agents,
         finalSummary: normalizeText(row?.finalSummary),
-        errorText: ['planning', 'running', 'reviewing'].includes(restoredStatus)
+        errorText: wasInterrupted
           ? '应用重启导致协作中断'
           : normalizeText(row?.errorText),
       })
@@ -4652,21 +4660,71 @@ async function runCodexCollaborationTurn(
 ): Promise<string> {
   const state = run.agents.codex
   let threadId = state.sessionId
-  if (!threadId) {
-    const started = await appServer.rpc('thread/start', {
+
+  const prepareThreadParams = async (params: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    await ensureCodexProviderDefinitions(appServer)
+    const injected = await buildInjectedDeveloperInstructions(params)
+    if (injected) {
+      params.developerInstructions = mergeDeveloperInstructions(params.developerInstructions, injected)
+    }
+    return params
+  }
+
+  const startReplacementThread = async (replacingMissingThread: boolean): Promise<string> => {
+    const params = await prepareThreadParams({
       cwd: homeDir || undefined,
       approvalPolicy: 'never',
       sandbox: 'danger-full-access',
       developerInstructions: 'This thread is part of Pocket Lobster three-agent collaboration. Preserve the collaboration run id and produce inspectable factual output.',
     })
-    threadId = extractThreadId(started)
-    if (!threadId) throw new Error('Codex collaboration thread/start returned no thread id')
-    setCollaborationAgentState(run, 'codex', { sessionId: threadId })
+    const started = await appServer.rpc('thread/start', params)
+    const nextThreadId = extractThreadId(started)
+    if (!nextThreadId) throw new Error('Codex collaboration thread/start returned no thread id')
+    setCollaborationAgentState(run, 'codex', { sessionId: nextThreadId, turnId: '' })
+    if (replacingMissingThread) {
+      addCollaborationEvent(run, 'control', 'Codex历史会话已失效，宿主已自动创建替代会话并继续本轮任务', 'codex')
+    }
+    return nextThreadId
   }
-  const startedTurn = await appServer.rpc('turn/start', {
-    threadId,
-    input: [{ type: 'text', text: prompt }],
-  })
+
+  const recoverThread = async (missingThreadId: string): Promise<string> => {
+    try {
+      const params = await prepareThreadParams({ threadId: missingThreadId })
+      const resumed = await appServer.rpc('thread/resume', params)
+      const resumedId = extractThreadId(resumed) || missingThreadId
+      setCollaborationAgentState(run, 'codex', { sessionId: resumedId, turnId: '' })
+      return resumedId
+    } catch (error) {
+      if (!isMissingAgentSessionError(error, 'codex')) throw error
+      return await startReplacementThread(true)
+    }
+  }
+
+  if (threadId) {
+    try {
+      await appServer.rpc('thread/read', { threadId, includeTurns: false })
+    } catch (error) {
+      if (!isMissingAgentSessionError(error, 'codex')) throw error
+      threadId = await recoverThread(threadId)
+    }
+  } else {
+    threadId = await startReplacementThread(false)
+  }
+
+  let startedTurn: unknown
+  try {
+    startedTurn = await appServer.rpc('turn/start', {
+      threadId,
+      input: [{ type: 'text', text: prompt }],
+    })
+  } catch (error) {
+    if (!isMissingAgentSessionError(error, 'codex')) throw error
+    threadId = await recoverThread(threadId)
+    startedTurn = await appServer.rpc('turn/start', {
+      threadId,
+      input: [{ type: 'text', text: prompt }],
+    })
+  }
   const turnId = extractStartedTurnId(startedTurn)
   if (!turnId) throw new Error('Codex collaboration turn/start returned no turn id')
   setCollaborationAgentState(run, 'codex', { turnId })
@@ -4740,7 +4798,15 @@ async function runClaudeCollaborationTurn(
   const sessionId = state.sessionId || `collab-claude-${run.id}`
   const titleSeed = run.prompt.replace(/\s+/gu, ' ').trim().slice(0, 42)
   const title = titleSeed ? `三智能体协作：${titleSeed}` : '三智能体协作'
-  if (!state.sessionId) setCollaborationAgentState(run, 'claude', { sessionId })
+  let rebuiltMissingHistory = false
+  if (!state.sessionId) {
+    setCollaborationAgentState(run, 'claude', { sessionId })
+  } else {
+    const storedState = await readClaudeState()
+    if (!storedState.sessions.some((session) => session.key === sessionId)) {
+      rebuiltMissingHistory = true
+    }
+  }
   const isCoordinatorInternal = prompt.startsWith('[口袋大龙虾三智能体协作：总调度')
   const isCoordinatorReview = prompt.startsWith('[口袋大龙虾三智能体协作：总调度审核]')
   if (!isCoordinatorReview) {
@@ -4752,6 +4818,9 @@ async function runClaudeCollaborationTurn(
     allowSharedStorage: true,
     dangerousMode: true,
   })
+  if (rebuiltMissingHistory) {
+    addCollaborationEvent(run, 'control', 'Claude Code本地协作历史缺失，宿主已按当前协作公开历史重建并继续本轮任务', 'claude')
+  }
   setCollaborationAgentState(run, 'claude', { runId: started.runId })
   const response = await waitForClaudeCollaborationRun(started.runId, timeoutMs)
   if (!isCoordinatorInternal) {
@@ -4767,15 +4836,42 @@ async function runMinisCollaborationTurn(
 ): Promise<string> {
   const state = run.agents.minis
   const titleSeed = run.prompt.replace(/\s+/gu, ' ').trim().slice(0, 42)
-  const started = await callMinisChatRpc('chat.prompt', {
-    ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+  let sessionId = state.sessionId
+  let replacedMissingSession = false
+  if (sessionId) {
+    try {
+      await callMinisChatRpc('chat.sessions.get', { sessionId })
+    } catch (error) {
+      if (!isMissingAgentSessionError(error, 'minis')) throw error
+      sessionId = ''
+      replacedMissingSession = true
+    }
+  }
+  const promptParams = (): Record<string, unknown> => ({
+    ...(sessionId ? { sessionId } : {}),
     prompt,
     sessionTitle: titleSeed ? `三智能体协作：${titleSeed}` : '三智能体协作',
     wait: false,
   })
-  const sessionId = normalizeText(started.sessionId)
+  let started: Record<string, unknown>
+  try {
+    started = await callMinisChatRpc('chat.prompt', promptParams())
+  } catch (error) {
+    if (!sessionId || !isMissingAgentSessionError(error, 'minis')) throw error
+    sessionId = ''
+    replacedMissingSession = true
+    started = await callMinisChatRpc('chat.prompt', promptParams())
+  }
+  const startedStatus = normalizeText(started.status).toLowerCase()
+  if (startedStatus === 'error' || startedStatus === 'failed') {
+    throw new Error(normalizeText(started.responseText) || `Minis collaboration prompt ${startedStatus}`)
+  }
+  sessionId = normalizeText(started.sessionId)
   if (!sessionId) throw new Error('Minis collaboration prompt returned no session id')
   setCollaborationAgentState(run, 'minis', { sessionId, actionText: 'Minis 已收到任务，正在执行' })
+  if (replacedMissingSession) {
+    addCollaborationEvent(run, 'control', 'Minis历史会话已失效，宿主已自动创建替代会话并继续本轮任务', 'minis')
+  }
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (run.status === 'aborted') throw new Error('Collaboration run aborted')
@@ -5380,6 +5476,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         run.completedAtMs = null
         run.finalSummary = ''
         run.errorText = ''
+        run.pendingUserMessages = []
         await persistCollaborationRunsNow()
         void executeCollaborationRun(appServer, run.id, prompt)
         setJson(res, 202, { ok: true, queued: false, run: collaborationRunSummary(run) })
