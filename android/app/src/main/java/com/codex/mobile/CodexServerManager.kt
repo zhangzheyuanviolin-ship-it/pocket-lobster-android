@@ -1574,6 +1574,7 @@ EOF
         ensureAnyClawDevicePlugin(paths.homeDir)
         ensureAnyClawRuntimePlugin(paths.homeDir)
         ensureAnyClawUbuntuPlugin(paths.homeDir)
+        ensureCollaborationMcpConfig(paths)
         val plugins = ensureObject(root, "plugins")
         plugins.put("enabled", true)
         val entries = ensureObject(plugins, "entries")
@@ -4316,6 +4317,89 @@ EOF
         val indexChanged = writeAssetIfChanged("plugins/$ANYCLAW_UBUNTU_PLUGIN_ID/index.ts", indexFile)
         if (manifestChanged || indexChanged) {
             Log.i(TAG, "Installed/updated plugin $ANYCLAW_UBUNTU_PLUGIN_ID at $pluginRoot")
+        }
+    }
+
+    private fun ensureCollaborationMcpConfig(paths: BootstrapInstaller.Paths) {
+        val mcpRoot = File(paths.homeDir, ".pocketlobster/mcp")
+        mcpRoot.mkdirs()
+        val collaborationServerFile = File(mcpRoot, "collaboration-mcp-server.cjs")
+        val collaborationServerChanged = writeAssetIfChanged(
+            "anyclaw/collaboration-mcp-server.js",
+            collaborationServerFile,
+        )
+        collaborationServerFile.setExecutable(true, true)
+
+        val toolboxServerFile = File(mcpRoot, "anyclaw-toolbox-server.cjs")
+        val toolboxServerChanged = writeAssetIfChanged(
+            "anyclaw/claude-toolbox-server.js",
+            toolboxServerFile,
+        )
+        toolboxServerFile.setExecutable(true, true)
+
+        val configFile = File(mcpRoot, "collaboration-mcp.json")
+        val nodePath = File(paths.prefixDir, "bin/node").absolutePath
+        val runtimePath = "${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin"
+        val collaborationServer = JSONObject()
+            .put("command", nodePath)
+            .put("args", JSONArray().put(collaborationServerFile.absolutePath))
+            .put(
+                "env",
+                JSONObject()
+                    .put("HOME", paths.homeDir)
+                    .put("PREFIX", paths.prefixDir)
+                    .put("PATH", runtimePath)
+                    .put("POCKET_LOBSTER_COLLABORATION_URL", "http://127.0.0.1:$SERVER_PORT"),
+            )
+        val toolboxEnv = JSONObject()
+            .put("HOME", paths.homeDir)
+            .put("PREFIX", paths.prefixDir)
+            .put("PATH", runtimePath)
+            .put("ANYCLAW_WEB_BRIDGE_URL", "http://127.0.0.1:${ShizukuShellBridgeServer.BRIDGE_PORT}/web/call")
+            .put("ANYCLAW_MINIS_BRIDGE_URL", "http://127.0.0.1:${com.openminis.app.integration.MinisRuntimeBridgeRuntime.PORT}")
+            .put("ANYCLAW_SHARED_BRIDGE_TOKEN_FILE", SharedBridgeTokenStore.tokenFile(context).absolutePath)
+            .put("ANYCLAW_TAVILY_BASE_URL", "https://api.tavily.com/search")
+            .put("ANYCLAW_EXA_MCP_URL", "https://mcp.exa.ai/mcp")
+            .put("ANYCLAW_EXA_MCP_TOOLS", "web_search_exa,web_search_advanced_exa,get_code_context_exa,company_research_exa,people_search_exa,crawling_exa,deep_researcher_start,deep_researcher_check,web_fetch_exa")
+            .put("ANYCLAW_EXA_API_BASE_URL", "https://api.exa.ai")
+            .put("ANYCLAW_GITHUB_API_BASE_URL", "https://api.github.com")
+            .put("ANYCLAW_WORKSPACE_ROOT", "${paths.homeDir}/.openclaw/workspace")
+            .put("ANYCLAW_UBUNTU_BIN", "${paths.homeDir}/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh")
+            .put("ANYCLAW_ALLOW_SHARED_STORAGE", "1")
+            .put("ANYCLAW_MCP_CONFIG_PATH", configFile.absolutePath)
+        val systemShellPath = File(paths.prefixDir, "bin/system-shell")
+        if (systemShellPath.exists()) {
+            toolboxEnv.put("ANYCLAW_SYSTEM_SHELL_BIN", systemShellPath.absolutePath)
+        }
+        listOf(
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "ANYCLAW_GITHUB_TOKEN",
+            "TAVILY_API_KEY",
+            "ANYCLAW_TAVILY_API_KEY",
+            "EXA_API_KEY",
+            "ANYCLAW_EXA_API_KEY",
+        ).forEach { key ->
+            val value = System.getenv(key)?.trim()
+            if (!value.isNullOrBlank()) toolboxEnv.put(key, value)
+        }
+        val toolboxServer = JSONObject()
+            .put("command", nodePath)
+            .put("args", JSONArray().put(toolboxServerFile.absolutePath))
+            .put("env", toolboxEnv)
+        val desired = JSONObject()
+            .put(
+                "mcpServers",
+                JSONObject()
+                    .put("anyclaw_toolbox", toolboxServer)
+                    .put("pocket_collaboration", collaborationServer),
+            )
+            .toString(2) + "\n"
+        if (!configFile.exists() || configFile.readText() != desired) {
+            configFile.writeText(desired)
+        }
+        if (collaborationServerChanged || toolboxServerChanged) {
+            Log.i(TAG, "Installed/updated Claude collaboration MCP servers at $mcpRoot")
         }
     }
 

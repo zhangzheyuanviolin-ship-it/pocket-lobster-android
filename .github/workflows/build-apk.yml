@@ -161,7 +161,7 @@ jobs:
           PACKAGE_LINE="$(echo "$BADGING" | head -n 1)"
           echo "$PACKAGE_LINE"
           echo "$PACKAGE_LINE" | grep -F "name='$EXPECTED_PACKAGE_ID'"
-          echo "$PACKAGE_LINE" | grep -F "versionCode='321'"
+          echo "$PACKAGE_LINE" | grep -F "versionCode='322'"
           test "$(echo "$BADGING" | grep -c '^launchable-activity:')" -eq 1
           echo "$BADGING" | grep -F "launchable-activity: name='com.codex.mobile.MainActivity'"
           if echo "$BADGING" | grep -E "^application-label[^:]*:'Minis'$"; then
@@ -169,7 +169,7 @@ jobs:
             exit 1
           fi
           if [ "$RELEASE_CHANNEL" = "beta" ]; then
-            echo "$PACKAGE_LINE" | grep -F "versionName='1.0.80-codex-cli-0.147.0-gpt-5.6-openminis-1.12-collaboration-delegation-recovery-v321-beta'"
+            echo "$PACKAGE_LINE" | grep -F "versionName='1.0.81-codex-cli-0.147.0-gpt-5.6-openminis-1.12-collaboration-agent-tools-v322-beta'"
             echo "$BADGING" | grep -F "application-label:'口袋大龙虾测试版'"
             test "$EXPECTED_PACKAGE_ID" = "com.codex.mobile.pocketlobster.beta"
           fi
@@ -193,6 +193,10 @@ jobs:
           grep -F 'ShizukuProvider.requestBinderForNonProviderProcess' android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt
           grep -F 'PocketLobsterHostTools.localTerminalDefinition' android/openminis/build.gradle.kts
           grep -F 'PocketLobsterHostTools.ubuntuDefinition' android/openminis/build.gradle.kts
+          grep -F 'PocketLobsterCollaborationTools.definitions' android/openminis/build.gradle.kts
+          grep -F 'PocketLobsterCollaborationTools.execute' android/openminis/build.gradle.kts
+          test -f android/openminis/src/main/java/com/openminis/app/integration/PocketLobsterCollaborationTools.kt
+          test -f android/app/src/main/assets/anyclaw/collaboration-mcp-server.js
           grep -F 'tool("anyclaw_alpine"' android/app/src/main/assets/anyclaw/claude-toolbox-server.js
           grep -F 'tool("minis_browser"' android/app/src/main/assets/anyclaw/claude-toolbox-server.js
           test -f android/app/src/main/assets/shared-runtime/alpine-shell

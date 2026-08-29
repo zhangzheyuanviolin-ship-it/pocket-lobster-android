@@ -264,9 +264,30 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
             com.openminis.app.integration.PocketLobsterHostTools.LOCAL_TOOL,
             com.openminis.app.integration.PocketLobsterHostTools.UBUNTU_TOOL ->
                 com.openminis.app.integration.PocketLobsterHostTools.execute(name, argsJson, context)
+            in com.openminis.app.integration.PocketLobsterCollaborationTools.NAMES ->
+                com.openminis.app.integration.PocketLobsterCollaborationTools.execute(name, argsJson)
             else -> ToolExecutionResult("Unknown tool: ${'$'}name", false)""",
         )
         generatedSources.get().file("com/openminis/app/ui/chat/ChatViewModel.kt").asFile.apply {
+            replaceRequired(
+                """            visionGroupConfigured = com.openminis.app.tools.VisionGroupResolver.isConfigured(
+                providerRepository, context,
+            ),
+            memoryEnabled = _memoryEnabled.value,
+        )""",
+                """            visionGroupConfigured = com.openminis.app.tools.VisionGroupResolver.isConfigured(
+                providerRepository, context,
+            ),
+            memoryEnabled = _memoryEnabled.value,
+        ) + if (agentHistory.any {
+            it.role == LLMMessage.Role.USER &&
+                it.content.trim().startsWith("[口袋大龙虾三智能体协作：总调度工具运行时]")
+        }) {
+            com.openminis.app.integration.PocketLobsterCollaborationTools.definitions()
+        } else {
+            emptyList()
+        }""",
+            )
             replaceRequired(
                 """        BrowserTabPool(context).also {
             it.setSession(activeSessionId)""",
@@ -283,6 +304,17 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
             )
         }
         generatedSources.get().file("com/openminis/app/ui/chat/ChatFlatItems.kt").asFile.replaceRequired(
+            """    for (idx in fromIndex until messages.size) {""",
+            """    val followsInternalCoordinatorPrompt = messages.any { row ->
+        row.role == "user" && (
+            row.content.trim().startsWith("[口袋大龙虾三智能体协作：总调度") ||
+                row.content.trim().startsWith("[三智能体协作任务：总调度最终审核]")
+            )
+    }
+    if (followsInternalCoordinatorPrompt) return emptyList()
+    for (idx in fromIndex until messages.size) {""",
+        )
+        generatedSources.get().file("com/openminis/app/ui/chat/ChatFlatItems.kt").asFile.replaceRequired(
             """        if (message.role == "user") {
             // [T-android-candidate-bubble-gap] Flag when the previous message
             // is also a user message so the bubble can add a separating top
@@ -292,21 +324,7 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
             out.add(dedupe(FlatChatItem.UserBubble(message, precededByUser = prevIsUser)))
             continue
         }""",
-            """        val previousUserPrompt = (idx - 1 downTo 0).asSequence()
-            .map { messages[it] }
-            .firstOrNull { it.role == "user" }
-            ?.content
-            ?.trim()
-            .orEmpty()
-        val followsInternalCoordinatorPrompt = message.role == "assistant" && (
-            previousUserPrompt.startsWith("[口袋大龙虾三智能体协作：总调度") ||
-                previousUserPrompt.startsWith("[三智能体协作任务：总调度最终审核]")
-            )
-        if (followsInternalCoordinatorPrompt) {
-            // Coordinator JSON is consumed by the host and rendered on the board.
-            continue
-        }
-        if (message.role == "user") {
+            """        if (message.role == "user") {
             // Collaboration routing instructions remain in model context but
             // never appear as user-visible chat content.
             val raw = message.content.trim()
@@ -438,6 +456,9 @@ val verifyOpenMinisIntegrationSources by tasks.registering {
         check("PocketLobsterHostTools.localTerminalDefinition" in agentTools)
         check("PocketLobsterHostTools.ubuntuDefinition" in agentTools)
         check("PocketLobsterHostTools.execute" in chatViewModel)
+        check("PocketLobsterCollaborationTools.definitions" in chatViewModel)
+        check("PocketLobsterCollaborationTools.execute" in chatViewModel)
+        check("[口袋大龙虾三智能体协作：总调度工具运行时]" in chatViewModel)
         check("SharedMinisRuntime.registerBrowser" in chatViewModel)
         check("SharedMinisRuntime.executeBrowser" in chatViewModel)
         val chatScreen = generatedSources.get()

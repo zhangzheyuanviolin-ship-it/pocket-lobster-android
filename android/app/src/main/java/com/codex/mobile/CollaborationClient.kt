@@ -27,6 +27,13 @@ object CollaborationPreferences {
 object CollaborationClient {
     fun listRuns(context: Context): JSONObject = request(context, "GET", "/collaboration-api/runs")
 
+    fun getRun(context: Context, runId: String, turnNumber: Int): JSONObject = request(
+        context,
+        "GET",
+        "/collaboration-api/status?runId=${URLEncoder.encode(runId.trim(), Charsets.UTF_8.name())}" +
+            "&turnNumber=$turnNumber",
+    )
+
     fun exportRun(context: Context, runId: String): JSONObject = request(
         context,
         "GET",

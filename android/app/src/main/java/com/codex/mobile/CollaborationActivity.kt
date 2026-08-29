@@ -57,12 +57,28 @@ class CollaborationActivity : AppCompatActivity() {
         val error: TextView,
     )
 
+    private data class TaskDetailViews(
+        val heading: TextView,
+        val objective: CollapsibleBlock,
+        val progress: TextView,
+        val response: CollapsibleBlock,
+        val error: TextView,
+    )
+
     private data class DetailViews(
+        val turnLabel: TextView,
+        val previousTurn: Button,
+        val nextTurn: Button,
         val status: TextView,
         val error: TextView,
+        val userHeading: TextView,
+        val userMessage: TextView,
         val summaryHeading: TextView,
         val summary: TextView,
         val agents: Map<String, AgentDetailViews>,
+        val tasksHeading: TextView,
+        val taskContainer: LinearLayout,
+        val tasks: MutableMap<String, TaskDetailViews>,
         val input: EditText,
         val send: Button,
         val abort: Button,
@@ -90,7 +106,11 @@ class CollaborationActivity : AppCompatActivity() {
     private var detailInput: EditText? = null
     private var detailMoreExpanded = false
     private var detailFingerprint = ""
-    private var detailTurnNumber = 0
+    private var detailSelectedTurnNumber = 0
+    private var detailRenderedTurnNumber = 0
+    private var detailLatestTurnNumber = 0
+    private var detailOldestTurnNumber = 1
+    private var detailLoading = false
     private var detailLastFinalSummary = ""
     private var pendingExportFile: File? = null
     private val exportDocumentLauncher = registerForActivityResult(
@@ -234,13 +254,17 @@ class CollaborationActivity : AppCompatActivity() {
 
     private fun statusLabel(status: String): String = when (status) {
         "idle" -> "未调用"
+        "queued" -> "已排队"
         "pending" -> "等待中"
         "planning" -> "总调度分析中"
         "running" -> "成员执行中"
+        "retrying" -> "恢复重试中"
         "reviewing" -> "总调度审核中"
         "waiting_user" -> "等待用户"
         "completed" -> "已完成"
         "failed" -> "失败"
+        "canceled" -> "已取消"
+        "stalled" -> "已停滞"
         "aborted" -> "已终止"
         else -> status.ifBlank { "未知" }
     }
@@ -313,22 +337,93 @@ class CollaborationActivity : AppCompatActivity() {
             updateCollapsibleBlock(agent.assignment)
             updateCollapsibleBlock(agent.response)
         }
+        detailViews?.tasks?.values?.forEach { task ->
+            task.objective.expanded = false
+            task.response.expanded = false
+            updateCollapsibleBlock(task.objective)
+            updateCollapsibleBlock(task.response)
+        }
+    }
+
+    private fun createTaskDetailViews(container: LinearLayout): TaskDetailViews = TaskDetailViews(
+        heading = createText(container, heading = true),
+        objective = createCollapsibleBlock(container),
+        progress = createText(container),
+        response = createCollapsibleBlock(container),
+        error = createText(container),
+    )
+
+    private fun clearTaskDetails() {
+        val views = detailViews ?: return
+        views.taskContainer.removeAllViews()
+        views.tasks.clear()
+        setTextBlock(views.tasksHeading, "")
+    }
+
+    private fun renderTaskDetails(run: JSONObject) {
+        val views = detailViews ?: return
+        val taskRows = run.optJSONArray("selectedTasks") ?: run.optJSONArray("tasks") ?: JSONArray()
+        setTextBlock(views.tasksHeading, if (taskRows.length() > 0) "成员任务记录" else "")
+        for (index in 0 until taskRows.length()) {
+            val task = taskRows.optJSONObject(index) ?: continue
+            val taskId = task.optString("taskId").ifBlank { "task-$index" }
+            val taskViews = views.tasks.getOrPut(taskId) { createTaskDetailViews(views.taskContainer) }
+            val agent = agentLabel(task.optString("agentId"))
+            val status = statusLabel(task.optString("status"))
+            setTextBlock(taskViews.heading, "第${index + 1}项成员任务，$agent，$status")
+            val objective = buildString {
+                append(task.optString("objective").trim())
+                val expected = task.optString("expectedOutput").trim()
+                if (expected.isNotEmpty()) append("\n预期结果：").append(expected)
+            }
+            setCollapsibleBlock(taskViews.objective, "第${index + 1}项任务要求", objective)
+            val attempt = task.optInt("attempt", 0)
+            setTextBlock(
+                taskViews.progress,
+                "任务状态：$status${if (attempt > 0) "，第${attempt}次执行" else ""}",
+            )
+            setCollapsibleBlock(taskViews.response, "第${index + 1}项任务结果", task.optString("responseText"))
+            setTextBlock(
+                taskViews.error,
+                task.optString("errorText").trim().takeIf { it.isNotEmpty() }?.let { "失败原因：$it" }.orEmpty(),
+            )
+        }
     }
 
     private fun showRunDetails(row: RunRow) {
         detailDialog?.dismiss()
         detailRunId = row.id
         detailFingerprint = ""
-        detailTurnNumber = 0
+        detailSelectedTurnNumber = row.payload.optInt("turnNumber", 1)
+        detailRenderedTurnNumber = 0
+        detailLatestTurnNumber = detailSelectedTurnNumber
+        detailOldestTurnNumber = row.payload.optInt("oldestTurnNumber", 1)
+        detailLoading = false
         detailLastFinalSummary = ""
         detailMoreExpanded = false
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(10))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        val turnLabel = createText(root)
+        val navigation = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        val previousTurn = Button(this).apply { text = "上一轮" }
+        val nextTurn = Button(this).apply { text = "下一轮" }
+        navigation.addView(previousTurn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        navigation.addView(nextTurn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(navigation, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(8), dp(20), dp(16))
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
         val status = createText(content)
         val error = createText(content)
+        val userHeading = createText(content, heading = true)
+        val userMessage = createText(content)
         val agentViews = linkedMapOf<String, AgentDetailViews>()
         val orderedIds = listOf(row.leader) + listOf("codex", "claude", "minis").filter { it != row.leader }
         orderedIds.forEach { id ->
@@ -340,13 +435,29 @@ class CollaborationActivity : AppCompatActivity() {
                 error = createText(content),
             )
         }
+        val tasksHeading = createText(content, heading = true)
+        val taskContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        content.addView(taskContainer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        val taskViews = linkedMapOf<String, TaskDetailViews>()
         val summaryHeading = createText(content, heading = true)
         val summary = createText(content)
+        val scroll = ScrollView(this).apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            addView(content)
+        }
+        root.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
         val input = EditText(this).apply {
             minLines = 2
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         }
-        content.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        footer.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         val send = Button(this).apply { text = "发送" }
         val abort = Button(this).apply { text = "终止协作" }
         val more = Button(this).apply { text = "更多" }
@@ -355,20 +466,17 @@ class CollaborationActivity : AppCompatActivity() {
         val share = Button(this).apply { text = "分享" }
         val delete = Button(this).apply { text = "删除" }
         listOf(send, abort, more, rename, export, share, delete).forEach { button ->
-            content.addView(button, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            footer.addView(button, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         }
-        detailViews = DetailViews(status, error, summaryHeading, summary, agentViews, input, send, abort, more, rename, export, share, delete)
+        root.addView(footer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        detailViews = DetailViews(turnLabel, previousTurn, nextTurn, status, error, userHeading, userMessage, summaryHeading, summary, agentViews, tasksHeading, taskContainer, taskViews, input, send, abort, more, rename, export, share, delete)
         detailInput = input
+        detailScrollView = scroll
         bindDetailActions()
         renderRunDetails(row)
-        val scroll = ScrollView(this).apply {
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            addView(content)
-        }
-        detailScrollView = scroll
         detailDialog = AlertDialog.Builder(this)
             .setTitle(row.title)
-            .setView(scroll)
+            .setView(root)
             .setNegativeButton("关闭", null)
             .create()
             .also { dialog ->
@@ -379,13 +487,19 @@ class CollaborationActivity : AppCompatActivity() {
                     detailInput = null
                     detailMoreExpanded = false
                     detailFingerprint = ""
-                    detailTurnNumber = 0
+                    detailSelectedTurnNumber = 0
+                    detailRenderedTurnNumber = 0
+                    detailLatestTurnNumber = 0
+                    detailOldestTurnNumber = 1
+                    detailLoading = false
                     detailLastFinalSummary = ""
                     detailDialog = null
                 }
                 dialog.show()
+                dialog.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                 focusContinuationControls()
             }
+        loadDetailTurn(detailSelectedTurnNumber)
         handler.removeCallbacks(poll)
         if (active) handler.postDelayed(poll, 700L)
     }
@@ -397,7 +511,36 @@ class CollaborationActivity : AppCompatActivity() {
             detailDialog?.dismiss()
             return
         }
-        renderRunDetails(row)
+        val nextLatest = row.payload.optInt("turnNumber", detailLatestTurnNumber.coerceAtLeast(1))
+        if (detailSelectedTurnNumber == detailLatestTurnNumber || detailSelectedTurnNumber == 0) {
+            detailSelectedTurnNumber = nextLatest
+        }
+        detailLatestTurnNumber = nextLatest
+        detailOldestTurnNumber = row.payload.optInt("oldestTurnNumber", detailOldestTurnNumber)
+        loadDetailTurn(detailSelectedTurnNumber)
+    }
+
+    private fun loadDetailTurn(turnNumber: Int) {
+        if (detailLoading || detailRunId.isBlank() || detailDialog?.isShowing != true) return
+        val requestedTurn = turnNumber.coerceIn(detailOldestTurnNumber, detailLatestTurnNumber.coerceAtLeast(detailOldestTurnNumber))
+        detailSelectedTurnNumber = requestedTurn
+        detailLoading = true
+        detailViews?.previousTurn?.isEnabled = false
+        detailViews?.nextTurn?.isEnabled = false
+        Thread {
+            val result = runCatching { CollaborationClient.getRun(this, detailRunId, requestedTurn) }
+            runOnUiThread {
+                detailLoading = false
+                if (detailDialog?.isShowing != true || requestedTurn != detailSelectedTurnNumber) return@runOnUiThread
+                result.onSuccess { payload ->
+                    val run = payload.optJSONObject("run") ?: return@onSuccess
+                    renderRunDetails(parseRun(run))
+                }.onFailure { error ->
+                    Toast.makeText(this, "协作轮次加载失败：${error.message}", Toast.LENGTH_LONG).show()
+                    updateTurnNavigation()
+                }
+            }
+        }.start()
     }
 
     private fun renderRunDetails(row: RunRow) {
@@ -407,13 +550,25 @@ class CollaborationActivity : AppCompatActivity() {
         detailFingerprint = fingerprint
         detailDialog?.setTitle(row.title)
         val run = row.payload
-        val turnNumber = run.optInt("turnNumber", 1)
-        if (detailTurnNumber != 0 && detailTurnNumber != turnNumber) collapseAgentDetails()
-        detailTurnNumber = turnNumber
-        setTextBlock(views.status, "${statusLabel(row.status)}，总调度${agentLabel(row.leader)}，第${turnNumber}轮对话")
-        setTextBlock(views.error, run.optString("errorText").trim().takeIf { it.isNotEmpty() }?.let { "任务异常：$it" }.orEmpty())
-        val finalSummary = run.optString("finalSummary").trim()
-        val agents = run.optJSONObject("agents")
+        detailLatestTurnNumber = run.optInt("turnNumber", detailLatestTurnNumber.coerceAtLeast(1))
+        detailOldestTurnNumber = run.optInt("oldestTurnNumber", detailOldestTurnNumber)
+        val turn = run.optJSONObject("selectedTurn") ?: run
+        val turnNumber = turn.optInt("turnNumber", detailLatestTurnNumber)
+        if (detailRenderedTurnNumber != 0 && detailRenderedTurnNumber != turnNumber) {
+            collapseAgentDetails()
+            clearTaskDetails()
+            detailLastFinalSummary = ""
+        }
+        detailRenderedTurnNumber = turnNumber
+        detailSelectedTurnNumber = turnNumber
+        setTextBlock(views.turnLabel, "第${turnNumber}轮，共${run.optInt("turnCount", detailLatestTurnNumber)}轮")
+        setTextBlock(views.status, "${statusLabel(turn.optString("status", row.status))}，总调度${agentLabel(row.leader)}，第${turnNumber}轮对话")
+        setTextBlock(views.error, turn.optString("errorText").trim().takeIf { it.isNotEmpty() }?.let { "任务异常：$it" }.orEmpty())
+        val turnUserMessage = turn.optString("userMessage").ifBlank { if (turnNumber == 1) run.optString("prompt") else "" }
+        setTextBlock(views.userHeading, if (turnUserMessage.isBlank()) "" else "用户本轮消息")
+        setTextBlock(views.userMessage, turnUserMessage)
+        val finalSummary = turn.optString("finalSummary").trim()
+        val agents = turn.optJSONObject("agents")
         views.agents.forEach { (id, agentViews) ->
             val agent = agents?.optJSONObject(id) ?: JSONObject()
             val role = if (agent.optString("role") == "leader") "总调度" else "协作成员"
@@ -430,18 +585,26 @@ class CollaborationActivity : AppCompatActivity() {
             )
             setTextBlock(agentViews.error, agent.optString("errorText").trim().takeIf { it.isNotEmpty() }?.let { "失败原因：$it" }.orEmpty())
         }
+        renderTaskDetails(run)
 
         val previousFinalSummary = detailLastFinalSummary
         detailLastFinalSummary = finalSummary
         setTextBlock(views.summaryHeading, if (finalSummary.isEmpty()) "" else "总调度最终回复")
         setTextBlock(views.summary, finalSummary)
-        if (detailDialog?.isShowing == true && finalSummary.isNotEmpty() && finalSummary != previousFinalSummary) {
+        if (detailDialog?.isShowing == true && turnNumber == detailLatestTurnNumber && finalSummary.isNotEmpty() && finalSummary != previousFinalSummary) {
             focusFinalSummary()
         }
 
         views.input.hint = if (isActiveStatus(row.status)) "补充指令" else "继续协作"
         views.abort.visibility = if (isActiveStatus(row.status)) View.VISIBLE else View.GONE
+        updateTurnNavigation()
         updateMoreActions(row)
+    }
+
+    private fun updateTurnNavigation() {
+        val views = detailViews ?: return
+        views.previousTurn.isEnabled = !detailLoading && detailSelectedTurnNumber > detailOldestTurnNumber
+        views.nextTurn.isEnabled = !detailLoading && detailSelectedTurnNumber < detailLatestTurnNumber
     }
 
     private fun updateMoreActions(row: RunRow) {
@@ -463,13 +626,9 @@ class CollaborationActivity : AppCompatActivity() {
     }
 
     private fun focusContinuationControls() {
-        val scroll = detailScrollView ?: return
         val input = detailViews?.input ?: return
-        scroll.post {
-            scroll.fullScroll(View.FOCUS_DOWN)
-            input.post {
-                input.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null)
-            }
+        input.post {
+            input.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null)
         }
     }
 
@@ -477,6 +636,12 @@ class CollaborationActivity : AppCompatActivity() {
 
     private fun bindDetailActions() {
         val views = detailViews ?: return
+        views.previousTurn.setOnClickListener {
+            if (detailSelectedTurnNumber > detailOldestTurnNumber) loadDetailTurn(detailSelectedTurnNumber - 1)
+        }
+        views.nextTurn.setOnClickListener {
+            if (detailSelectedTurnNumber < detailLatestTurnNumber) loadDetailTurn(detailSelectedTurnNumber + 1)
+        }
         views.send.setOnClickListener {
             val row = currentDetailRow() ?: return@setOnClickListener
             val prompt = views.input.text.toString().trim()
@@ -486,6 +651,11 @@ class CollaborationActivity : AppCompatActivity() {
                 views.input.isEnabled = false
                 perform("消息已提交", { CollaborationClient.continueRun(this, row.id, prompt) }) { payload ->
                     views.input.text.clear()
+                    payload.optJSONObject("run")?.let { run ->
+                        detailLatestTurnNumber = run.optInt("turnNumber", detailLatestTurnNumber)
+                        detailSelectedTurnNumber = detailLatestTurnNumber
+                        detailFingerprint = ""
+                    }
                     applyReturnedRun(payload)
                     handler.removeCallbacks(poll)
                     if (active) handler.postDelayed(poll, 400L)
@@ -622,6 +792,18 @@ class CollaborationActivity : AppCompatActivity() {
         fun appendField(builder: StringBuilder, label: String, value: String) {
             builder.append(label).append("：").append(value.ifBlank { "无" }).append('\n')
         }
+        fun appendAgents(builder: StringBuilder, agents: JSONObject) {
+            listOf(row.leader).plus(listOf("codex", "claude", "minis").filter { it != row.leader }).forEach { id ->
+                val agent = agents.optJSONObject(id) ?: JSONObject()
+                builder.append('\n').append("【").append(agentLabel(id)).append("】").append('\n')
+                appendField(builder, "角色", if (agent.optString("role") == "leader") "总调度" else "协作成员")
+                appendField(builder, "状态", statusLabel(agent.optString("status")))
+                appendField(builder, "本轮任务", agent.optString("assignmentText"))
+                appendField(builder, "当前进展", agent.optString("actionText"))
+                appendField(builder, "协作结果", agent.optString("responseText"))
+                appendField(builder, "失败原因", agent.optString("errorText"))
+            }
+        }
         val output = StringBuilder()
         appendField(output, "任务标题", row.title)
         appendField(output, "任务编号", row.id)
@@ -633,17 +815,21 @@ class CollaborationActivity : AppCompatActivity() {
         appendField(output, "完成时间", time(run.optLong("completedAtMs")))
         appendField(output, "用户原始任务", run.optString("prompt"))
         appendField(output, "任务错误", run.optString("errorText"))
-        output.append('\n').append("三智能体详情").append('\n')
-        val agents = run.optJSONObject("agents") ?: JSONObject()
-        listOf(row.leader).plus(listOf("codex", "claude", "minis").filter { it != row.leader }).forEach { id ->
-            val agent = agents.optJSONObject(id) ?: JSONObject()
-            output.append('\n').append("【").append(agentLabel(id)).append("】").append('\n')
-            appendField(output, "角色", if (agent.optString("role") == "leader") "总调度" else "协作成员")
-            appendField(output, "状态", statusLabel(agent.optString("status")))
-            appendField(output, "本轮任务", agent.optString("assignmentText"))
-            appendField(output, "当前进展", agent.optString("actionText"))
-            appendField(output, "协作结果", agent.optString("responseText"))
-            appendField(output, "失败原因", agent.optString("errorText"))
+        val turns = run.optJSONArray("turns") ?: JSONArray()
+        if (turns.length() > 0) {
+            output.append('\n').append("各轮协作详情").append('\n')
+            for (index in 0 until turns.length()) {
+                val turn = turns.optJSONObject(index) ?: continue
+                output.append('\n').append("第").append(turn.optInt("turnNumber", index + 1)).append("轮").append('\n')
+                appendField(output, "用户消息", turn.optString("userMessage"))
+                appendField(output, "轮次状态", statusLabel(turn.optString("status")))
+                appendAgents(output, turn.optJSONObject("agents") ?: JSONObject())
+                appendField(output, "总调度最终回复", turn.optString("finalSummary"))
+                appendField(output, "任务错误", turn.optString("errorText"))
+            }
+        } else {
+            output.append('\n').append("三智能体详情").append('\n')
+            appendAgents(output, run.optJSONObject("agents") ?: JSONObject())
         }
         output.append('\n').append("协作事件时间线").append('\n')
         val events = run.optJSONArray("events") ?: JSONArray()
