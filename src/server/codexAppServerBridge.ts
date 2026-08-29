@@ -6,6 +6,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, dirname, extname } from 'node:path'
 import { handleCodexProviderAdapterRequest } from './codexProviderAdapter.js'
+import {
+  decisionMissingRequiredTargets,
+  detectRequiredCollaborationTargets,
+  ensureCodexCollaborationThread,
+  enforceRequiredCollaborationDecision,
+  isMissingAgentSessionMessage,
+  startCodexCollaborationTurnWithRecovery,
+} from './collaborationPolicy.js'
 
 const prefixBin = process.env.PREFIX ? join(process.env.PREFIX, 'bin') : ''
 const shellPath = prefixBin ? join(prefixBin, 'sh') : '/bin/sh'
@@ -418,10 +426,7 @@ function getErrorMessage(payload: unknown, fallback: string): string {
 }
 
 function isMissingAgentSessionError(error: unknown, agentId: 'codex' | 'minis'): boolean {
-  const message = getErrorMessage(error, '').toLowerCase()
-  return agentId === 'codex'
-    ? message.includes('thread not found') || message.includes('persisted thread not found')
-    : message.includes('session not found')
+  return isMissingAgentSessionMessage(getErrorMessage(error, ''), agentId)
 }
 
 function setJson(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -4490,7 +4495,9 @@ function buildCollaborationCoordinatorPrompt(run: CollaborationRun, userMessage:
   return [
     '[口袋大龙虾三智能体协作：总调度决策]',
     `您是用户当前选择的总调度${collaborationAgentLabel(run.leader)}，您始终负责与用户对话和最终回复。可按需调用的协作成员是${workers}。`,
-    '先判断这条消息是否真的需要其他智能体。问候、连通性确认、简单问答、澄清和单智能体即可完成的任务必须直接回复，不得委派，不得创建文件。',
+    '先判断这条消息是否真的需要其他智能体。问候、仅确认总调度自身能否收到消息、简单问答、澄清和单智能体即可完成的任务必须直接回复，不得委派，不得创建文件。',
+    '如果用户明确要求联系、调用、委派、发送消息给其他智能体，或验证与其他智能体的双向连通性，必须delegate给用户指定的成员；不得因为您自己没有跨智能体工具而拒绝，成员消息由宿主负责投递。',
+    '连通性测试只要求成员返回接收回执，禁止扩展为环境自检、文件写入或共享工作区测试，requiresSharedWorkspace必须为false。',
     '只有任务能够拆成明确且有价值的专门子任务时才委派；只选择确实需要的成员，不要默认全选。成员不会直接面对用户，您必须审核其结果并最终回复。',
     '共享工作区默认关闭。只有用户明确要求共同产出文件，或多个智能体确实必须交换文件产物时，requiresSharedWorkspace才可为true。',
     '请只输出一个JSON对象，不要输出Markdown、解释或代码围栏。格式为：',
@@ -4687,44 +4694,32 @@ async function runCodexCollaborationTurn(
     return nextThreadId
   }
 
-  const recoverThread = async (missingThreadId: string): Promise<string> => {
-    try {
-      const params = await prepareThreadParams({ threadId: missingThreadId })
-      const resumed = await appServer.rpc('thread/resume', params)
-      const resumedId = extractThreadId(resumed) || missingThreadId
-      setCollaborationAgentState(run, 'codex', { sessionId: resumedId, turnId: '' })
-      return resumedId
-    } catch (error) {
-      if (!isMissingAgentSessionError(error, 'codex')) throw error
-      return await startReplacementThread(true)
-    }
+  const resumeThread = async (missingThreadId: string): Promise<string> => {
+    const params = await prepareThreadParams({ threadId: missingThreadId })
+    const resumed = await appServer.rpc('thread/resume', params)
+    const resumedId = extractThreadId(resumed) || missingThreadId
+    setCollaborationAgentState(run, 'codex', { sessionId: resumedId, turnId: '' })
+    return resumedId
   }
 
-  if (threadId) {
-    try {
-      await appServer.rpc('thread/read', { threadId, includeTurns: false })
-    } catch (error) {
-      if (!isMissingAgentSessionError(error, 'codex')) throw error
-      threadId = await recoverThread(threadId)
-    }
-  } else {
-    threadId = await startReplacementThread(false)
+  const recoveryHandlers = {
+    readThread: async (candidateThreadId: string): Promise<void> => {
+      await appServer.rpc('thread/read', { threadId: candidateThreadId, includeTurns: false })
+    },
+    resumeThread,
+    startThread: startReplacementThread,
   }
-
-  let startedTurn: unknown
-  try {
-    startedTurn = await appServer.rpc('turn/start', {
-      threadId,
+  threadId = await ensureCodexCollaborationThread(threadId, recoveryHandlers)
+  const started = await startCodexCollaborationTurnWithRecovery(threadId, {
+    resumeThread,
+    startThread: startReplacementThread,
+    startTurn: async (candidateThreadId: string): Promise<unknown> => await appServer.rpc('turn/start', {
+      threadId: candidateThreadId,
       input: [{ type: 'text', text: prompt }],
-    })
-  } catch (error) {
-    if (!isMissingAgentSessionError(error, 'codex')) throw error
-    threadId = await recoverThread(threadId)
-    startedTurn = await appServer.rpc('turn/start', {
-      threadId,
-      input: [{ type: 'text', text: prompt }],
-    })
-  }
+    }),
+  })
+  threadId = started.threadId
+  const startedTurn = started.value
   const turnId = extractStartedTurnId(startedTurn)
   if (!turnId) throw new Error('Codex collaboration turn/start returned no turn id')
   setCollaborationAgentState(run, 'codex', { turnId })
@@ -5068,11 +5063,22 @@ async function executeCollaborationRun(
       { publishResponse: false, timeoutMs: COLLABORATION_COORDINATOR_TIMEOUT_MS },
     )
     if (isCollaborationRunAborted(run)) return
-    let decision = parseCollaborationDecision(planningResponse, run.leader) ?? {
+    const parsedPlanningDecision = parseCollaborationDecision(planningResponse, run.leader) ?? {
       action: 'respond' as const,
       message: planningResponse || '总调度未返回可解析的回复。',
       assignments: [],
       requiresSharedWorkspace: false,
+    }
+    const requiredPlanningTargets = detectRequiredCollaborationTargets(userMessage, run.leader)
+    const correctedPlanningDecision = decisionMissingRequiredTargets(parsedPlanningDecision, requiredPlanningTargets)
+    let decision = enforceRequiredCollaborationDecision(parsedPlanningDecision, requiredPlanningTargets, userMessage)
+    if (correctedPlanningDecision) {
+      addCollaborationEvent(
+        run,
+        'control',
+        `宿主已按用户明确要求补齐协作成员：${requiredPlanningTargets.map(collaborationAgentLabel).join('、')}`,
+        run.leader,
+      )
     }
     let coordinatorNotes = decision.message
     addCollaborationEvent(
@@ -5153,11 +5159,23 @@ async function executeCollaborationRun(
         { publishResponse: false, timeoutMs: COLLABORATION_COORDINATOR_TIMEOUT_MS },
       )
       if (isCollaborationRunAborted(run)) return
-      decision = parseCollaborationDecision(reviewResponse, run.leader) ?? {
+      const parsedReviewDecision = parseCollaborationDecision(reviewResponse, run.leader) ?? {
         action: 'respond',
         message: reviewResponse || '总调度审核完成，但未返回可解析的最终回复。',
         assignments: [],
         requiresSharedWorkspace: false,
+      }
+      const supplementalMessage = additionalUserMessages.join('\n')
+      const requiredSupplementalTargets = detectRequiredCollaborationTargets(supplementalMessage, run.leader)
+      const correctedReviewDecision = decisionMissingRequiredTargets(parsedReviewDecision, requiredSupplementalTargets)
+      decision = enforceRequiredCollaborationDecision(parsedReviewDecision, requiredSupplementalTargets, supplementalMessage)
+      if (correctedReviewDecision) {
+        addCollaborationEvent(
+          run,
+          'control',
+          `宿主已按用户补充要求补齐协作成员：${requiredSupplementalTargets.map(collaborationAgentLabel).join('、')}`,
+          run.leader,
+        )
       }
       if (decision.action === 'delegate' && run.roundNumber >= COLLABORATION_MAX_DELEGATION_ROUNDS) {
         decision = {
