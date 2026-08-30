@@ -45,19 +45,27 @@ cp -r "$PROJECT_ROOT/dist/"* "$ASSETS_DIR/dist/"
 cp -r "$PROJECT_ROOT/dist-cli/"* "$ASSETS_DIR/dist-cli/"
 cp "$PROJECT_ROOT/package.json" "$ASSETS_DIR/package.json"
 
-BUNDLE_ID="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"[[:space:]]*$/\1/p' "$ANDROID_DIR/app/build.gradle.kts" | head -n 1)"
-if [ -z "$BUNDLE_ID" ]; then
-    echo "Could not derive server bundle id from android/app/build.gradle.kts" >&2
-    exit 1
-fi
-printf '%s\n' "$BUNDLE_ID" > "$ASSETS_DIR/bundle-id"
-echo "Embedded server bundle id: $BUNDLE_ID"
-
 # Install production dependencies into the bundle
 echo "Installing production dependencies for bundle..."
 cd "$ASSETS_DIR"
 npm install --omit=dev --ignore-scripts 2>/dev/null || true
 cd "$PROJECT_ROOT"
+
+BUNDLE_VERSION="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"[[:space:]]*$/\1/p' "$ANDROID_DIR/app/build.gradle.kts" | head -n 1)"
+if [ -z "$BUNDLE_VERSION" ]; then
+    echo "Could not derive server bundle version from android/app/build.gradle.kts" >&2
+    exit 1
+fi
+BUNDLE_HASH="$(
+    (
+        cd "$ASSETS_DIR"
+        find dist dist-cli -type f -print0 | sort -z | xargs -0 sha256sum
+        sha256sum package.json
+    ) | sha256sum | awk '{print $1}'
+)"
+BUNDLE_ID="$BUNDLE_VERSION:$BUNDLE_HASH"
+printf '%s\n' "$BUNDLE_ID" > "$ASSETS_DIR/bundle-id"
+echo "Embedded server bundle id: $BUNDLE_ID"
 
 echo ""
 echo "=== Server bundle ready ==="

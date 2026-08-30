@@ -25,6 +25,7 @@ object CollaborationPreferences {
 }
 
 object CollaborationClient {
+    private const val COLLABORATION_PROTOCOL_ID = "durable-agent-tools-v2"
     fun listRuns(context: Context): JSONObject = request(context, "GET", "/collaboration-api/runs")
 
     fun getRun(context: Context, runId: String, turnNumber: Int): JSONObject = request(
@@ -133,18 +134,27 @@ object CollaborationClient {
                 return@runCatching false
             }
             val raw = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            JSONObject(raw).optString("bundleId") == expectedBundleId(context)
+            val payload = JSONObject(raw)
+            payload.optString("bundleId") == expectedBundleId(context)
+                && payload.optString("collaborationProtocol") == COLLABORATION_PROTOCOL_ID
+                && payload.optBoolean("claudeCollaborationReady", false)
         } finally {
             connection.disconnect()
         }
     }.getOrDefault(false)
 
     private fun expectedBundleId(context: Context): String {
-        val versionName = runCatching {
+        val embedded = runCatching {
+            context.assets.open("server-bundle/bundle-id")
+                .bufferedReader(Charsets.UTF_8)
+                .use { it.readText().trim() }
+        }.getOrDefault("")
+        if (embedded.isNotBlank()) return embedded
+        return runCatching {
             @Suppress("DEPRECATION")
             context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+                .removeSuffix("-beta")
         }.getOrDefault("")
-        return versionName.removeSuffix("-beta")
     }
 
     private fun requestOnce(

@@ -89,6 +89,9 @@ const CLAUDE_STATE_PATH = homeDir
 const CLAUDE_RUNS_STATE_PATH = homeDir
   ? join(homeDir, '.pocketlobster', 'claude-web', 'runs.json')
   : join(process.cwd(), '.pocketlobster', 'claude-web', 'runs.json')
+const CLAUDE_COLLABORATION_MCP_CONFIG_PATH = homeDir
+  ? join(homeDir, '.pocketlobster', 'mcp', 'collaboration-mcp.json')
+  : ''
 const CLAUDE_UPLOAD_DIR = homeDir
   ? join(homeDir, '.pocketlobster', 'claude-web', 'uploads')
   : join(process.cwd(), '.pocketlobster', 'claude-web', 'uploads')
@@ -115,6 +118,7 @@ const COLLABORATION_MAX_TASKS_PER_TURN = 12
 const COLLABORATION_TOOL_WAIT_MAX_MS = 120_000
 const COLLABORATION_LEADER_MAX_ATTEMPTS = 2
 const COLLABORATION_HISTORY_LIMIT = 40
+const COLLABORATION_PROTOCOL_ID = 'durable-agent-tools-v2'
 const SERVER_BUNDLE_ID = (() => {
   try {
     const entryPath = process.argv[1] || ''
@@ -127,6 +131,25 @@ const SERVER_BUNDLE_ID = (() => {
   }
   return normalizeText(process.env.POCKET_LOBSTER_SERVER_BUNDLE_ID)
 })()
+
+function isClaudeCollaborationMcpReady(): boolean {
+  if (!CLAUDE_COLLABORATION_MCP_CONFIG_PATH) return false
+  try {
+    const root = asRecord(JSON.parse(readFileSync(CLAUDE_COLLABORATION_MCP_CONFIG_PATH, 'utf8')))
+    const servers = asRecord(root?.mcpServers)
+    for (const key of ['anyclaw_toolbox', 'pocket_collaboration']) {
+      const server = asRecord(servers?.[key])
+      const command = normalizeText(server?.command)
+      const args = Array.isArray(server?.args) ? server.args.map(normalizeText).filter(Boolean) : []
+      if (!command || args.length === 0) return false
+      accessSync(command, fsConstants.X_OK)
+      accessSync(args[0], fsConstants.R_OK)
+    }
+    return true
+  } catch {
+    return false
+  }
+}
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -3213,13 +3236,10 @@ async function sendClaudeMessage(payload: Record<string, unknown>): Promise<{ ru
   const dangerArg = dangerousMode ? '--dangerously-skip-permissions ' : ''
   let collaborationMcpArg = ''
   if (collaborationRunId) {
-    const collaborationMcpConfig = join(homeDir, '.pocketlobster', 'mcp', 'collaboration-mcp.json')
-    try {
-      accessSync(collaborationMcpConfig, fsConstants.R_OK)
-    } catch {
+    if (!isClaudeCollaborationMcpReady()) {
       throw new Error('Claude collaboration MCP config is unavailable')
     }
-    collaborationMcpArg = `--mcp-config ${shellQuote(collaborationMcpConfig)} --strict-mcp-config `
+    collaborationMcpArg = `--mcp-config ${shellQuote(CLAUDE_COLLABORATION_MCP_CONFIG_PATH)} --strict-mcp-config `
   }
   const cmd = `${baseEnv}${keyEnv}claude -p ${dangerArg}${collaborationMcpArg}${addDirArg} ${modelArg}${shellQuote(prompt)} < /dev/null 2>&1`
 
@@ -6087,6 +6107,8 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         setJson(res, 200, {
           ok: true,
           bundleId: SERVER_BUNDLE_ID,
+          collaborationProtocol: COLLABORATION_PROTOCOL_ID,
+          claudeCollaborationReady: isClaudeCollaborationMcpReady(),
         })
         return
       }
@@ -6154,6 +6176,13 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
         const leader = normalizeCollaborationAgent(payload?.leader)
+        if (leader === 'claude' && !isClaudeCollaborationMcpReady()) {
+          setJson(res, 503, {
+            ok: false,
+            error: 'Claude协作工具运行时尚未就绪，请等待宿主完成部署后重试',
+          })
+          return
+        }
         const activeRun = [...collaborationRuns.values()].find(isCollaborationRunActive)
         if (activeRun) {
           setJson(res, 409, {

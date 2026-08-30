@@ -76,6 +76,7 @@ class CodexForegroundService : Service() {
                     reportState("bootstrap_missing")
                     return@Thread
                 }
+                serverManager.ensureCollaborationRuntimeAssets()
                 val bundleReady = serverManager.installServerBundle { progress ->
                     Log.i("CodexForegroundService", progress)
                 }
@@ -101,7 +102,7 @@ class CodexForegroundService : Service() {
                         return@Thread
                     }
                 }
-                reportState("ready")
+                reportState("ready", serverManager.describeServerHealth())
             } catch (error: Throwable) {
                 Log.w("CodexForegroundService", "Host health check failed: ${error.message}")
                 reportState("health_check_exception", error.message.orEmpty())

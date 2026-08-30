@@ -30,6 +30,7 @@ class CodexServerManager(private val context: Context) {
         private const val PROXY_PORT = 18924
         private const val CODEX_VERSION = "0.147.0"
         private const val CLAUDE_CODE_VERSION = "2.1.112"
+        private const val COLLABORATION_PROTOCOL_ID = "durable-agent-tools-v2"
         const val OPENCLAW_GATEWAY_PORT = 18789
         const val OPENCLAW_CONTROL_UI_PORT = 19001
         private const val ANYCLAW_SEARCH_PLUGIN_ID = "anyclaw-search-suite"
@@ -2530,22 +2531,57 @@ WEOF
             val stateDir = File(paths.homeDir, ".openclaw-android/state").apply { mkdirs() }
             val markerFile = File(stateDir, "server-bundle.marker")
             val markerValue = buildServerBundleMarker()
+            val expectedBundleId = buildServerBundleVersion()
 
             try {
                 val assetFiles = context.assets.list("server-bundle") ?: emptyArray()
                 if (assetFiles.isNotEmpty()) {
                     val indexFile = File(targetDir, "dist-cli/index.js")
-                    if (indexFile.exists() && markerFile.exists() && markerFile.readText() == markerValue) {
+                    val installedBundleId = File(targetDir, "bundle-id")
+                        .takeIf { it.isFile }
+                        ?.readText()
+                        ?.trim()
+                        .orEmpty()
+                    if (
+                        indexFile.isFile
+                        && installedBundleId == expectedBundleId
+                        && markerFile.isFile
+                        && markerFile.readText() == markerValue
+                    ) {
                         onProgress("Web UI already up to date")
                         return true
                     }
                     onProgress("Stopping previous server version…")
                     stopManagedServerProcess()
                     onProgress("Installing server bundle from APK…")
-                    targetDir.deleteRecursively()
-                    targetDir.mkdirs()
-                    extractAssetDir("server-bundle", targetDir)
+                    val stagingDir = File(targetDir.parentFile, "${targetDir.name}.staging")
+                    val backupDir = File(targetDir.parentFile, "${targetDir.name}.backup")
+                    stagingDir.deleteRecursively()
+                    backupDir.deleteRecursively()
+                    extractAssetDir("server-bundle", stagingDir)
+                    val stagedIndex = File(stagingDir, "dist-cli/index.js")
+                    val stagedBundleId = File(stagingDir, "bundle-id")
+                        .takeIf { it.isFile }
+                        ?.readText()
+                        ?.trim()
+                        .orEmpty()
+                    check(stagedIndex.isFile && stagedIndex.length() > 0L) {
+                        "Bundled server entry point is missing"
+                    }
+                    check(stagedBundleId == expectedBundleId) {
+                        "Bundled server content identity mismatch"
+                    }
+                    if (targetDir.exists()) {
+                        check(targetDir.renameTo(backupDir)) {
+                            "Could not preserve the previous server bundle"
+                        }
+                    }
+                    if (!stagingDir.renameTo(targetDir)) {
+                        if (backupDir.exists()) backupDir.renameTo(targetDir)
+                        error("Could not activate the verified server bundle")
+                    }
                     markerFile.writeText(markerValue)
+                    backupDir.deleteRecursively()
                     Log.i(TAG, "Server bundle extracted to $targetDir marker=$markerValue")
                     return true
                 }
@@ -2558,21 +2594,21 @@ WEOF
     }
 
     private fun buildServerBundleMarker(): String {
-        val versionName =
-            runCatching {
-                @Suppress("DEPRECATION")
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
-            }.getOrElse { "" }
-        return "${context.packageName}:$versionName"
+        return "${context.packageName}:${buildServerBundleVersion()}"
     }
 
     private fun buildServerBundleVersion(): String {
-        val versionName =
-            runCatching {
-                @Suppress("DEPRECATION")
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
-            }.getOrElse { "" }
-        return versionName.removeSuffix("-beta")
+        val embedded = runCatching {
+            context.assets.open("server-bundle/bundle-id")
+                .bufferedReader(Charsets.UTF_8)
+                .use { it.readText().trim() }
+        }.getOrDefault("")
+        if (embedded.isNotBlank()) return embedded
+        return runCatching {
+            @Suppress("DEPRECATION")
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+                .removeSuffix("-beta")
+        }.getOrDefault("")
     }
 
     /**
@@ -2921,7 +2957,10 @@ WEOF
             val contentType = connection.contentType.orEmpty().lowercase()
             if (!contentType.contains("application/json")) return false
             val raw = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            JSONObject(raw).optString("bundleId") == buildServerBundleVersion()
+            val payload = JSONObject(raw)
+            payload.optString("bundleId") == buildServerBundleVersion()
+                && payload.optString("collaborationProtocol") == COLLABORATION_PROTOCOL_ID
+                && payload.optBoolean("claudeCollaborationReady", false)
         } catch (_: Exception) {
             false
         } finally {
@@ -4320,6 +4359,10 @@ EOF
         }
     }
 
+    fun ensureCollaborationRuntimeAssets() {
+        ensureCollaborationMcpConfig(BootstrapInstaller.getPaths(context))
+    }
+
     private fun ensureCollaborationMcpConfig(paths: BootstrapInstaller.Paths) {
         val mcpRoot = File(paths.homeDir, ".pocketlobster/mcp")
         mcpRoot.mkdirs()
@@ -4397,6 +4440,16 @@ EOF
             .toString(2) + "\n"
         if (!configFile.exists() || configFile.readText() != desired) {
             configFile.writeText(desired)
+        }
+        check(File(nodePath).isFile) { "Claude collaboration Node runtime is missing" }
+        check(collaborationServerFile.isFile && collaborationServerFile.length() > 0L) {
+            "Claude collaboration MCP server is missing"
+        }
+        check(toolboxServerFile.isFile && toolboxServerFile.length() > 0L) {
+            "Claude toolbox MCP server is missing"
+        }
+        check(configFile.isFile && configFile.readText() == desired) {
+            "Claude collaboration MCP config verification failed"
         }
         if (collaborationServerChanged || toolboxServerChanged) {
             Log.i(TAG, "Installed/updated Claude collaboration MCP servers at $mcpRoot")
