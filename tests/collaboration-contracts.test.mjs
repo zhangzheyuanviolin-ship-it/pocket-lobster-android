@@ -73,7 +73,7 @@ test('all three agent pages expose the collaboration switch and board', async ()
   assert.match(minisTransform, /CollaborationClient\.startIfEnabled/)
 })
 
-test('shared Alpine and browser calls are isolated by agent identity', async () => {
+test('shared Alpine sessions stay isolated while explicit browser tabs support agent handoff', async () => {
   const sharedCli = await read('android/app/src/main/assets/shared-runtime/shared-runtime-cli.js')
   const bridge = await read('android/openminis/src/main/java/com/openminis/app/integration/MinisRuntimeBridge.kt')
   const manager = await read('android/app/src/main/java/com/codex/mobile/CodexServerManager.kt')
@@ -81,6 +81,11 @@ test('shared Alpine and browser calls are isolated by agent identity', async () 
   assert.match(sharedCli, /ANYCLAW_AGENT_ID/)
   assert.match(sharedCli, /agent_id: agentId/)
   assert.match(bridge, /browserTabsByAgent/)
+  assert.match(bridge, /input\.tabId != null && pool\.tabs\.value\.none/)
+  assert.match(bridge, /val requestedTab = input\.tabId/)
+  assert.match(bridge, /call list_tabs and retry with an existing tab_id/)
+  assert.doesNotMatch(bridge, /entries\.none \{ it\.key != normalizedAgentId/)
+  assert.match(sharedCli, /Explicit shared tab handoff/)
   assert.match(bridge, /sessionId = "\$SHARED_SESSION_ID-\$\{normalizeAgentId\(agentId\)\}"/)
   assert.match(manager, /"ANYCLAW_AGENT_ID" to "codex"/)
   assert.match(claude, /"ANYCLAW_AGENT_ID" to "claude"/)
@@ -226,16 +231,17 @@ test('collaboration UI exposes public progress without internal routing payloads
   assert.match(nativeBoard, /importantForAccessibility = View\.IMPORTANT_FOR_ACCESSIBILITY_NO/)
   assert.match(nativeBoard, /isScreenReaderFocusable = true/)
   assert.match(nativeBoard, /private data class AgentDetailViews/)
-  assert.match(nativeBoard, /setTextBlock\(views\.summaryHeading/)
-  assert.match(nativeBoard, /private data class CollapsibleBlock/)
-  assert.match(nativeBoard, /createCollapsibleBlock/)
-  assert.match(nativeBoard, /setCollapsibleBlock\(agentViews\.assignment/)
-  assert.match(nativeBoard, /setCollapsibleBlock\([\s\S]*agentViews\.response/)
-  assert.match(nativeBoard, /"成员任务记录"/)
+  assert.match(nativeBoard, /private fun createAgentDetailViews/)
+  assert.match(nativeBoard, /private fun updateAgentDetailViews/)
+  assert.match(nativeBoard, /views\.content\.visibility = if \(hasDetails && views\.expanded\)/)
+  assert.match(nativeBoard, /"展开\$\{views\.label\}详情"/)
+  assert.match(nativeBoard, /val orderedIds = listOf\("codex", "claude", "minis"\)\.filter \{ it != row\.leader \} \+ row\.leader/)
   assert.match(nativeBoard, /run\.optJSONArray\("selectedTasks"\)/)
-  assert.match(nativeBoard, /"第\$\{index \+ 1\}项任务结果"/)
-  assert.match(nativeBoard, /"展开\$\{block\.label\}"/)
+  assert.match(nativeBoard, /selectedTasksForAgent\(run, id\)/)
+  assert.doesNotMatch(nativeBoard, /"成员任务记录"/)
+  assert.doesNotMatch(nativeBoard, /private data class TaskDetailViews/)
   assert.match(nativeBoard, /focusFinalSummary/)
+  assert.match(nativeBoard, /leaderToggle\.announceForAccessibility\("总调度最终回复已更新"\)/)
   assert.match(nativeBoard, /focusContinuationControls/)
   assert.doesNotMatch(nativeBoard, /fullScroll\(View\.FOCUS_DOWN\)/)
   assert.match(nativeBoard, /input\.performAccessibilityAction\(AccessibilityNodeInfo\.ACTION_ACCESSIBILITY_FOCUS/)
@@ -269,12 +275,8 @@ test('collaboration UI exposes public progress without internal routing payloads
     'detail nodes must be populated before the dialog is shown',
   )
   assert.ok(
-    nativeBoard.indexOf('val agentViews = linkedMapOf') < nativeBoard.indexOf('val summaryHeading = createText'),
-    'agent progress must precede the final coordinator response',
-  )
-  assert.ok(
-    nativeBoard.indexOf('val summary = createText') < nativeBoard.indexOf('val input = EditText'),
-    'the final coordinator response must stay directly above the continuation controls',
+    nativeBoard.indexOf('orderedIds.forEach') < nativeBoard.indexOf('val input = EditText'),
+    'all three agent blocks, with the coordinator last, must stay above the continuation controls',
   )
   assert.match(board, /selectedRunId\.value\) \?\? null/)
   assert.doesNotMatch(board, /filteredRuns\.value\[0\]/)

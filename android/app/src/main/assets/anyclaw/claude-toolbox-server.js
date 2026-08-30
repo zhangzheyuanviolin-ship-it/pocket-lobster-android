@@ -313,14 +313,14 @@ const TOOL_DEFS = [
     command: { type: "string", minLength: 1 },
     timeoutMs: { type: "integer", minimum: 1000, maximum: 900000 }
   }, ["command"]),
-  tool("minis_browser", "Control the real visible OpenMinis browser shared by Codex, Claude, and Minis. Navigate first, then use wait_for_dom_stable or selector actions; selector actions automatically wait and retry. Screenshots return a directly viewable PNG image plus imageFilePath. Use list_tabs for tab IDs.", {
+  tool("minis_browser", "Control the real visible OpenMinis browser shared by Codex, Claude, and Minis. Navigate first, then use wait_for_dom_stable or selector actions; selector actions automatically wait and retry. Screenshots return a directly viewable PNG image plus imageFilePath. Use list_tabs for tab IDs. To continue another agent's page, pass its exact tab_id; explicit shared-tab actions are serialized safely.", {
     action: { type: "string", enum: ["navigate", "back", "forward", "reload", "screenshot", "click", "type", "get_text", "scroll", "get_page_info", "execute_js", "find_elements", "hover", "get_readable", "set_user_agent", "set_viewport", "get_backbone", "fetch", "new_tab", "close_tab", "list_tabs", "get_cookies", "set_cookies", "scroll_and_collect", "wait_for_dom_stable"] },
     url: { type: "string" },
     selector: { type: "string" },
     selector_type: { type: "string", enum: ["css", "xpath", "text"], description: "Selector interpretation for click/type; defaults to css." },
     text: { type: "string" },
     script: { type: "string" },
-    tab_id: { type: "integer" },
+    tab_id: { type: "integer", description: "Explicit shared tab handoff; any agent may continue work on this tab ID." },
     direction: { type: "string", enum: ["up", "down"] },
     amount: { type: "integer" },
     coordinate_x: { type: "integer" },

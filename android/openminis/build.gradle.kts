@@ -253,7 +253,7 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
             replaceRequired(
                 """Use navigate to open URLs, screenshot to see the page (returns an image), " +
             "click/type to interact with elements, get_text/get_readable to extract content, " +""",
-                """Use navigate to open URLs; use back, forward, and reload for normal history navigation. Use screenshot to see the page (returns a directly readable image), " +
+                """Use navigate to open URLs; use back, forward, and reload for normal history navigation. Use list_tabs and an explicit tab_id to continue another agent's shared tab; same-tab actions are serialized safely. Use screenshot to see the page (returns a directly readable image), " +
             "click/type to interact with elements and automatically retry transient selector misses; after navigate, use wait_for_dom_stable before interaction on dynamic pages. Use get_text/get_readable to extract content, " +""",
             )
         }

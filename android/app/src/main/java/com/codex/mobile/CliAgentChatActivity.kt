@@ -1398,7 +1398,7 @@ class CliAgentChatActivity : AppCompatActivity() {
         out.appendLine("17) 若 anyclaw_ 工具不可见或调用失败，必须输出 MCP_TOOLBOX_STATUS=UNAVAILABLE，并给出 reason 与 step。")
         out.appendLine("18) 需要真实可见且用户可接管的浏览器时，必须使用 mcp__anyclaw_toolbox__minis_browser；旧 web_* 仅用于无需用户接管的兼容任务。")
         out.appendLine("19) Alpine Linux 命令使用 mcp__anyclaw_toolbox__anyclaw_alpine，本地终端与 Ubuntu 分别使用 anyclaw_terminal 和 anyclaw_ubuntu。")
-        out.appendLine("20) Minis浏览器标准流程为list_tabs、navigate、wait_for_dom_stable，再执行get_text、get_readable、click或type；禁止猜测动作名。")
+        out.appendLine("20) Minis浏览器标准流程为list_tabs、navigate、wait_for_dom_stable，再执行get_text、get_readable、click或type；需要接手其他智能体的页面时必须传入list_tabs返回的明确tab_id，同一标签上的动作会自动串行，禁止猜测动作名或标签编号。")
         out.appendLine("21) click和type的selector_type支持css、xpath、text；元素暂时不存在时工具会自动等待重试并返回页面上下文。")
         out.appendLine("22) screenshot会直接返回PNG图像内容和imageFilePath；需要视觉判断时必须读取该图像，不得仅凭截图成功文案推断页面状态。")
     }

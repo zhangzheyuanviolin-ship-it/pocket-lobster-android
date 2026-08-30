@@ -64,11 +64,14 @@ object SharedMinisRuntime {
             result.tabId?.let { browserTabsByAgent[normalizedAgentId] = it }
             return result
         }
+        if (input.tabId != null && pool.tabs.value.none { it.id == input.tabId }) {
+            return BrowserActionResult.error("Tab ${input.tabId} not found; call list_tabs and retry with an existing tab_id")
+        }
 
         val targetTab = browserAllocationLock.withLock {
-            val requestedTab = input.tabId?.takeIf { id ->
-                browserTabsByAgent.entries.none { it.key != normalizedAgentId && it.value == id }
-            }
+            // An explicit tab ID is a deliberate handoff. BrowserTabPool serializes
+            // concurrent actions on that tab, so every agent may safely take it over.
+            val requestedTab = input.tabId
             val mappedTab = browserTabsByAgent[normalizedAgentId]
                 ?.takeIf { id -> pool.tabs.value.any { it.id == id } }
             requestedTab ?: mappedTab ?: allocateBrowserTab(pool, normalizedAgentId)

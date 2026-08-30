@@ -42,27 +42,15 @@ class CollaborationActivity : AppCompatActivity() {
         val payload: JSONObject,
     )
 
-    private data class CollapsibleBlock(
+    private data class AgentDetailViews(
         val toggle: Button,
-        val content: TextView,
+        val content: LinearLayout,
+        val assignment: TextView,
+        val action: TextView,
+        val response: TextView,
+        val error: TextView,
         var label: String = "",
         var expanded: Boolean = false,
-    )
-
-    private data class AgentDetailViews(
-        val heading: TextView,
-        val assignment: CollapsibleBlock,
-        val action: TextView,
-        val response: CollapsibleBlock,
-        val error: TextView,
-    )
-
-    private data class TaskDetailViews(
-        val heading: TextView,
-        val objective: CollapsibleBlock,
-        val progress: TextView,
-        val response: CollapsibleBlock,
-        val error: TextView,
     )
 
     private data class DetailViews(
@@ -73,12 +61,7 @@ class CollaborationActivity : AppCompatActivity() {
         val error: TextView,
         val userHeading: TextView,
         val userMessage: TextView,
-        val summaryHeading: TextView,
-        val summary: TextView,
         val agents: Map<String, AgentDetailViews>,
-        val tasksHeading: TextView,
-        val taskContainer: LinearLayout,
-        val tasks: MutableMap<String, TaskDetailViews>,
         val input: EditText,
         val send: Button,
         val abort: Button,
@@ -295,98 +278,54 @@ class CollaborationActivity : AppCompatActivity() {
         if (view.text.toString() != normalized) view.text = normalized
     }
 
-    private fun createCollapsibleBlock(container: LinearLayout): CollapsibleBlock {
+    private fun createAgentDetailViews(container: LinearLayout): AgentDetailViews {
         val toggle = Button(this).apply {
-            visibility = View.GONE
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         }
         container.addView(toggle, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        val content = createText(container).apply { visibility = View.GONE }
-        val block = CollapsibleBlock(toggle = toggle, content = content)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        container.addView(content, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        val views = AgentDetailViews(
+            toggle = toggle,
+            content = content,
+            assignment = createText(content),
+            action = createText(content),
+            response = createText(content),
+            error = createText(content),
+        )
         toggle.setOnClickListener {
-            block.expanded = !block.expanded
-            updateCollapsibleBlock(block)
-            if (block.expanded) {
-                block.content.post {
-                    block.content.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null)
-                }
+            views.expanded = !views.expanded
+            updateAgentDetailViews(views)
+            if (views.expanded) {
+                listOf(views.assignment, views.action, views.response, views.error)
+                    .firstOrNull { it.visibility == View.VISIBLE }
+                    ?.post { it.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null) }
             }
         }
-        return block
+        return views
     }
 
-    private fun setCollapsibleBlock(block: CollapsibleBlock, label: String, text: String) {
-        val normalized = text.trim()
-        block.label = label
-        block.toggle.visibility = if (normalized.isEmpty()) View.GONE else View.VISIBLE
-        if (block.content.text.toString() != normalized) block.content.text = normalized
-        if (normalized.isEmpty()) block.expanded = false
-        updateCollapsibleBlock(block)
-    }
-
-    private fun updateCollapsibleBlock(block: CollapsibleBlock) {
-        val hasContent = block.content.text.isNotBlank()
-        block.toggle.text = if (block.expanded) "收起${block.label}" else "展开${block.label}"
-        block.content.visibility = if (hasContent && block.expanded) View.VISIBLE else View.GONE
+    private fun updateAgentDetailViews(views: AgentDetailViews) {
+        val hasDetails = listOf(views.assignment, views.action, views.response, views.error)
+            .any { it.visibility == View.VISIBLE && it.text.isNotBlank() }
+        if (!hasDetails) views.expanded = false
+        views.toggle.isEnabled = hasDetails
+        views.toggle.text = when {
+            !hasDetails -> views.label
+            views.expanded -> "收起${views.label}详情"
+            else -> "展开${views.label}详情"
+        }
+        views.content.visibility = if (hasDetails && views.expanded) View.VISIBLE else View.GONE
     }
 
     private fun collapseAgentDetails() {
         detailViews?.agents?.values?.forEach { agent ->
-            agent.assignment.expanded = false
-            agent.response.expanded = false
-            updateCollapsibleBlock(agent.assignment)
-            updateCollapsibleBlock(agent.response)
-        }
-        detailViews?.tasks?.values?.forEach { task ->
-            task.objective.expanded = false
-            task.response.expanded = false
-            updateCollapsibleBlock(task.objective)
-            updateCollapsibleBlock(task.response)
-        }
-    }
-
-    private fun createTaskDetailViews(container: LinearLayout): TaskDetailViews = TaskDetailViews(
-        heading = createText(container, heading = true),
-        objective = createCollapsibleBlock(container),
-        progress = createText(container),
-        response = createCollapsibleBlock(container),
-        error = createText(container),
-    )
-
-    private fun clearTaskDetails() {
-        val views = detailViews ?: return
-        views.taskContainer.removeAllViews()
-        views.tasks.clear()
-        setTextBlock(views.tasksHeading, "")
-    }
-
-    private fun renderTaskDetails(run: JSONObject) {
-        val views = detailViews ?: return
-        val taskRows = run.optJSONArray("selectedTasks") ?: run.optJSONArray("tasks") ?: JSONArray()
-        setTextBlock(views.tasksHeading, if (taskRows.length() > 0) "成员任务记录" else "")
-        for (index in 0 until taskRows.length()) {
-            val task = taskRows.optJSONObject(index) ?: continue
-            val taskId = task.optString("taskId").ifBlank { "task-$index" }
-            val taskViews = views.tasks.getOrPut(taskId) { createTaskDetailViews(views.taskContainer) }
-            val agent = agentLabel(task.optString("agentId"))
-            val status = statusLabel(task.optString("status"))
-            setTextBlock(taskViews.heading, "第${index + 1}项成员任务，$agent，$status")
-            val objective = buildString {
-                append(task.optString("objective").trim())
-                val expected = task.optString("expectedOutput").trim()
-                if (expected.isNotEmpty()) append("\n预期结果：").append(expected)
-            }
-            setCollapsibleBlock(taskViews.objective, "第${index + 1}项任务要求", objective)
-            val attempt = task.optInt("attempt", 0)
-            setTextBlock(
-                taskViews.progress,
-                "任务状态：$status${if (attempt > 0) "，第${attempt}次执行" else ""}",
-            )
-            setCollapsibleBlock(taskViews.response, "第${index + 1}项任务结果", task.optString("responseText"))
-            setTextBlock(
-                taskViews.error,
-                task.optString("errorText").trim().takeIf { it.isNotEmpty() }?.let { "失败原因：$it" }.orEmpty(),
-            )
+            agent.expanded = false
+            updateAgentDetailViews(agent)
         }
     }
 
@@ -425,25 +364,10 @@ class CollaborationActivity : AppCompatActivity() {
         val userHeading = createText(content, heading = true)
         val userMessage = createText(content)
         val agentViews = linkedMapOf<String, AgentDetailViews>()
-        val orderedIds = listOf(row.leader) + listOf("codex", "claude", "minis").filter { it != row.leader }
+        val orderedIds = listOf("codex", "claude", "minis").filter { it != row.leader } + row.leader
         orderedIds.forEach { id ->
-            agentViews[id] = AgentDetailViews(
-                heading = createText(content, heading = true),
-                assignment = createCollapsibleBlock(content),
-                action = createText(content),
-                response = createCollapsibleBlock(content),
-                error = createText(content),
-            )
+            agentViews[id] = createAgentDetailViews(content)
         }
-        val tasksHeading = createText(content, heading = true)
-        val taskContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }
-        content.addView(taskContainer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        val taskViews = linkedMapOf<String, TaskDetailViews>()
-        val summaryHeading = createText(content, heading = true)
-        val summary = createText(content)
         val scroll = ScrollView(this).apply {
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             addView(content)
@@ -469,7 +393,7 @@ class CollaborationActivity : AppCompatActivity() {
             footer.addView(button, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         }
         root.addView(footer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        detailViews = DetailViews(turnLabel, previousTurn, nextTurn, status, error, userHeading, userMessage, summaryHeading, summary, agentViews, tasksHeading, taskContainer, taskViews, input, send, abort, more, rename, export, share, delete)
+        detailViews = DetailViews(turnLabel, previousTurn, nextTurn, status, error, userHeading, userMessage, agentViews, input, send, abort, more, rename, export, share, delete)
         detailInput = input
         detailScrollView = scroll
         bindDetailActions()
@@ -543,6 +467,22 @@ class CollaborationActivity : AppCompatActivity() {
         }.start()
     }
 
+    private fun selectedTasksForAgent(run: JSONObject, agentId: String): List<JSONObject> {
+        val rows = run.optJSONArray("selectedTasks") ?: run.optJSONArray("tasks") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val task = rows.optJSONObject(index) ?: continue
+                if (task.optString("agentId") == agentId) add(task)
+            }
+        }
+    }
+
+    private fun joinedTaskText(tasks: List<JSONObject>, key: String): String {
+        val values = tasks.mapNotNull { task -> task.optString(key).trim().takeIf { it.isNotEmpty() } }
+        if (values.size <= 1) return values.firstOrNull().orEmpty()
+        return values.mapIndexed { index, text -> "第${index + 1}项：$text" }.joinToString("\n")
+    }
+
     private fun renderRunDetails(row: RunRow) {
         val views = detailViews ?: return
         val fingerprint = row.payload.toString()
@@ -556,7 +496,6 @@ class CollaborationActivity : AppCompatActivity() {
         val turnNumber = turn.optInt("turnNumber", detailLatestTurnNumber)
         if (detailRenderedTurnNumber != 0 && detailRenderedTurnNumber != turnNumber) {
             collapseAgentDetails()
-            clearTaskDetails()
             detailLastFinalSummary = ""
         }
         detailRenderedTurnNumber = turnNumber
@@ -572,27 +511,26 @@ class CollaborationActivity : AppCompatActivity() {
         views.agents.forEach { (id, agentViews) ->
             val agent = agents?.optJSONObject(id) ?: JSONObject()
             val role = if (agent.optString("role") == "leader") "总调度" else "协作成员"
-            setTextBlock(agentViews.heading, "${agentLabel(id)}，$role，${statusLabel(agent.optString("status"))}")
-            setCollapsibleBlock(agentViews.assignment, "${agentLabel(id)}本轮任务", agent.optString("assignmentText"))
+            val tasks = selectedTasksForAgent(run, id)
+            val durableStatus = tasks.lastOrNull()?.optString("status").orEmpty()
+            val status = statusLabel(durableStatus.ifBlank { agent.optString("status") })
+            val assignment = agent.optString("assignmentText").ifBlank { joinedTaskText(tasks, "objective") }
+            val taskResponse = joinedTaskText(tasks, "responseText")
+            val response = if (role == "总调度") finalSummary else agent.optString("responseText").ifBlank { taskResponse }
+            val taskError = joinedTaskText(tasks, "errorText")
+            val errorText = agent.optString("errorText").ifBlank { taskError }
+            agentViews.label = "${agentLabel(id)}，$role，$status"
+            setTextBlock(agentViews.assignment, assignment.takeIf { it.isNotBlank() }?.let { "本轮任务：$it" }.orEmpty())
             setTextBlock(agentViews.action, agent.optString("actionText").trim().takeIf { it.isNotEmpty() }?.let { "当前进展：$it" }.orEmpty())
-            val response = agent.optString("responseText").trim()
-                .takeIf { it.isNotEmpty() && !(role == "总调度" && it == finalSummary) }
-                .orEmpty()
-            setCollapsibleBlock(
-                agentViews.response,
-                "${agentLabel(id)}${if (role == "总调度") "阶段回复" else "分工结果"}",
-                response,
-            )
-            setTextBlock(agentViews.error, agent.optString("errorText").trim().takeIf { it.isNotEmpty() }?.let { "失败原因：$it" }.orEmpty())
+            setTextBlock(agentViews.response, response.trim().takeIf { it.isNotEmpty() }?.let { if (role == "总调度") "最终回复：$it" else "分工结果：$it" }.orEmpty())
+            setTextBlock(agentViews.error, errorText.trim().takeIf { it.isNotEmpty() }?.let { "失败原因：$it" }.orEmpty())
+            updateAgentDetailViews(agentViews)
         }
-        renderTaskDetails(run)
 
         val previousFinalSummary = detailLastFinalSummary
         detailLastFinalSummary = finalSummary
-        setTextBlock(views.summaryHeading, if (finalSummary.isEmpty()) "" else "总调度最终回复")
-        setTextBlock(views.summary, finalSummary)
         if (detailDialog?.isShowing == true && turnNumber == detailLatestTurnNumber && finalSummary.isNotEmpty() && finalSummary != previousFinalSummary) {
-            focusFinalSummary()
+            focusFinalSummary(row.leader)
         }
 
         views.input.hint = if (isActiveStatus(row.status)) "补充指令" else "继续协作"
@@ -617,11 +555,11 @@ class CollaborationActivity : AppCompatActivity() {
         views.delete.visibility = if (!isActiveStatus(row.status) && detailMoreExpanded) View.VISIBLE else View.GONE
     }
 
-    private fun focusFinalSummary() {
-        val summary = detailViews?.summary ?: return
-        if (summary.visibility != View.VISIBLE || summary.text.isBlank()) return
-        summary.post {
-            summary.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null)
+    private fun focusFinalSummary(leader: String) {
+        val leaderToggle = detailViews?.agents?.get(leader)?.toggle ?: return
+        leaderToggle.post {
+            leaderToggle.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null)
+            leaderToggle.announceForAccessibility("总调度最终回复已更新")
         }
     }
 
