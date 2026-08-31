@@ -7,6 +7,7 @@ const bridge = readFileSync('src/server/codexAppServerBridge.ts', 'utf8')
 const normalizer = readFileSync('src/api/normalizers/v2.ts', 'utf8')
 const layout = readFileSync('src/components/layout/DesktopLayout.vue', 'utf8')
 const tree = readFileSync('src/components/sidebar/SidebarThreadTree.vue', 'utf8')
+const gateway = readFileSync('src/api/codexGateway.ts', 'utf8')
 
 assert.match(rpcClient, /fetchWithTimeout\('\/codex-api\/rpc'/)
 assert.match(rpcClient, /RPC_TIMEOUT_BY_METHOD/)
@@ -41,6 +42,16 @@ const startTurnFlow = state.match(
 )?.[0] ?? ''
 assert.match(startTurnFlow, /void syncFromNotifications\(\)/)
 assert.doesNotMatch(startTurnFlow, /await syncFromNotifications\(\)/)
+
+const loadThreadsFlow = state.match(
+  /async function loadThreads[\s\S]*?\n  async function loadMessages/,
+)?.[0] ?? ''
+assert.match(loadThreadsFlow, /selectedExistedBeforeRefresh/)
+assert.match(loadThreadsFlow, /options\.allowEmpty !== true/)
+assert.match(loadThreadsFlow, /pendingThreadIds\.add\(selectedId\)/)
+assert.match(gateway, /isThreadMaterializationPending/)
+assert.match(gateway, /THREAD_MATERIALIZATION_RETRIES/)
+assert.match(gateway, /thread\/read returned no payload/)
 
 for (const rawToolType of ['commandExecution', 'fileChange', 'mcpToolCall', 'collabAgentToolCall', 'webSearch', 'imageView']) {
   assert.doesNotMatch(normalizer, new RegExp(`item\\.type === '${rawToolType}'`))

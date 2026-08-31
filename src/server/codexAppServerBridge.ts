@@ -8,6 +8,7 @@ import { join, dirname, extname } from 'node:path'
 import { handleCodexProviderAdapterRequest } from './codexProviderAdapter.js'
 import {
   ensureCodexCollaborationThread,
+  isCodexThreadMaterializationPendingMessage,
   isMissingAgentSessionMessage,
   startCodexCollaborationTurnWithRecovery,
 } from './collaborationPolicy.js'
@@ -5302,7 +5303,14 @@ async function waitForCodexCollaborationTurn(
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const read = asRecord(await appServer.rpc('thread/read', { threadId, includeTurns: true }))
+    let read: Record<string, unknown> | null
+    try {
+      read = asRecord(await appServer.rpc('thread/read', { threadId, includeTurns: true }))
+    } catch (error) {
+      if (!isCodexThreadMaterializationPendingMessage(getErrorMessage(error, ''))) throw error
+      await sleepMs(100)
+      continue
+    }
     const thread = asRecord(read?.thread)
     const turns = Array.isArray(thread?.turns) ? thread.turns : []
     const turn = turns.map(asRecord).find((row) => normalizeText(row?.id) === turnId)

@@ -3,6 +3,8 @@ export function isMissingAgentSessionMessage(
   agentId: 'codex' | 'minis',
 ): boolean
 
+export function isCodexThreadMaterializationPendingMessage(message: string): boolean
+
 export type CodexThreadRecoveryHandlers = {
   readThread: (threadId: string) => Promise<unknown>
   resumeThread: (threadId: string) => Promise<string>

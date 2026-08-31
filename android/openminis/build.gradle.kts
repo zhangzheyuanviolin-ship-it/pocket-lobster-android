@@ -164,6 +164,46 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
         }
         generatedSources.get().file("com/openminis/app/browser/BrowserUseManager.kt").asFile.apply {
             replaceRequired(
+                """        var normalized = urlString
+        if (!normalized.contains("://")) normalized = "https://${'$'}normalized"
+
+        val deferred = CompletableDeferred<Unit>()""",
+                """        var normalized = urlString
+        if (!normalized.contains("://")) normalized = "https://${'$'}normalized"
+
+        if (GoogleAuthRouter.shouldRouteExternally(normalized)) {
+            withContext(Dispatchers.Main) {
+                _isLoading.value = false
+                GoogleAuthRouter.openInCustomTab(webView.context, normalized)
+            }
+            return BrowserActionResult(
+                text = "Google sign-in cannot run inside Android WebView. Opened a secure Chrome Custom Tab for user takeover. Chrome cookies are isolated from this automated WebView; do not claim that this WebView is signed in. Continue only through a site-supported callback or another non-embedded authentication method.",
+                pageURL = normalized,
+            )
+        }
+
+        val deferred = CompletableDeferred<Unit>()""",
+            )
+            replaceRequired(
+                """    fun loadURL(urlString: String) {
+        var normalized = urlString
+        if (!normalized.contains("://")) normalized = "https://${'$'}normalized"
+        _isLoading.value = true
+        webView.loadUrl(normalized)
+    }""",
+                """    fun loadURL(urlString: String) {
+        var normalized = urlString
+        if (!normalized.contains("://")) normalized = "https://${'$'}normalized"
+        if (GoogleAuthRouter.shouldRouteExternally(normalized)) {
+            _isLoading.value = false
+            GoogleAuthRouter.openInCustomTab(webView.context, normalized)
+            return
+        }
+        _isLoading.value = true
+        webView.loadUrl(normalized)
+    }""",
+            )
+            replaceRequired(
                 """            BrowserAction.NAVIGATE -> navigate(input.url)
             BrowserAction.SCREENSHOT -> return screenshot(fullPage = input.fullPage)""",
                 """            BrowserAction.NAVIGATE -> navigate(input.url)
@@ -243,6 +283,44 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
     // -- Get Text --""",
             )
         }
+        generatedSources.get().file("com/openminis/app/browser/GoogleAuthRouter.kt").asFile.apply {
+            replaceRequired(
+                """import android.content.Context
+import android.content.Intent""",
+                """import android.app.Activity
+import android.content.Context
+import android.content.Intent""",
+            )
+            replaceRequired(
+                """            CustomTabsIntent.Builder()
+                .setShowTitle(true)
+                .setUrlBarHidingEnabled(false)
+                .build()
+                .launchUrl(context, Uri.parse(url))""",
+                """            val customTab = CustomTabsIntent.Builder()
+                .setShowTitle(true)
+                .setUrlBarHidingEnabled(false)
+                .build()
+            if (context !is Activity) {
+                customTab.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            customTab.launchUrl(context, Uri.parse(url))""",
+            )
+        }
+        generatedSources.get().file("com/openminis/app/ui/preview/WebViewHolder.kt").asFile.replaceRequired(
+            """    fun startIfNeeded() {
+        if (hasLoaded) return
+        // T-htmlpreview-2d5c4f3d: defer the actual loadUrl until the""",
+            """    fun startIfNeeded() {
+        if (hasLoaded) return
+        if (com.openminis.app.browser.GoogleAuthRouter.shouldRouteExternally(currentUrl)) {
+            hasLoaded = true
+            isLoading = false
+            com.openminis.app.browser.GoogleAuthRouter.openInCustomTab(appContext, currentUrl)
+            return
+        }
+        // T-htmlpreview-2d5c4f3d: defer the actual loadUrl until the""",
+        )
         generatedSources.get().file("com/openminis/app/tools/AgentTools.kt").asFile.replaceRequired(
             "        add(shellExecuteDefinition())",
             """        add(shellExecuteDefinition())
@@ -471,11 +549,20 @@ val verifyOpenMinisIntegrationSources by tasks.registering {
             .file("com/openminis/app/browser/BrowserActionInput.kt").asFile.readText()
         val browserManager = generatedSources.get()
             .file("com/openminis/app/browser/BrowserUseManager.kt").asFile.readText()
+        val googleAuthRouter = generatedSources.get()
+            .file("com/openminis/app/browser/GoogleAuthRouter.kt").asFile.readText()
+        val webViewHolder = generatedSources.get()
+            .file("com/openminis/app/ui/preview/WebViewHolder.kt").asFile.readText()
         check("BACK(\"back\")" in browserAction)
         check("FORWARD(\"forward\")" in browserAction)
         check("RELOAD(\"reload\")" in browserAction)
         check("obj.has(\"timeout_ms\")" in browserInput)
         check("evaluateSelectorWithRetry" in browserManager)
+        check("Chrome cookies are isolated from this automated WebView" in browserManager)
+        check(browserManager.indexOf("GoogleAuthRouter.shouldRouteExternally(normalized)") < browserManager.indexOf("webView.loadUrl(normalized)"))
+        check("context !is Activity" in googleAuthRouter)
+        check("Intent.FLAG_ACTIVITY_NEW_TASK" in googleAuthRouter)
+        check("GoogleAuthRouter.shouldRouteExternally(currentUrl)" in webViewHolder)
         check(generatedSources.get().asFile.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
             .none { "R.string.app_name" in it.readText() })

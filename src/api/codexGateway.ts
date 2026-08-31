@@ -56,6 +56,15 @@ type StoredCodexModelCatalog = {
 const REASONING_EFFORTS: ReasoningEffort[] = [
   'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
 ]
+const THREAD_MATERIALIZATION_RETRIES = 12
+const THREAD_MATERIALIZATION_RETRY_MS = 100
+
+export function isThreadMaterializationPending(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return message.toLowerCase().includes(
+    'is not materialized yet; includeturns is unavailable before first user message',
+  )
+}
 
 export function encodeModelValue(providerId: string, modelId: string): string {
   return `${encodeURIComponent(providerId)}::${encodeURIComponent(modelId)}`
@@ -150,10 +159,22 @@ async function getThreadGroupsV2(): Promise<UiProjectGroup[]> {
 }
 
 async function getThreadSnapshotV2(threadId: string): Promise<ThreadSnapshot> {
-  const payload = await callRpc<ThreadReadResponse>('thread/read', {
-    threadId,
-    includeTurns: true,
-  })
+  let payload: ThreadReadResponse | null = null
+  for (let attempt = 0; attempt <= THREAD_MATERIALIZATION_RETRIES; attempt += 1) {
+    try {
+      payload = await callRpc<ThreadReadResponse>('thread/read', {
+        threadId,
+        includeTurns: true,
+      })
+      break
+    } catch (error) {
+      if (!isThreadMaterializationPending(error) || attempt === THREAD_MATERIALIZATION_RETRIES) {
+        throw error
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, THREAD_MATERIALIZATION_RETRY_MS))
+    }
+  }
+  if (!payload) throw new Error(`thread/read returned no payload for ${threadId}`)
   const turns = Array.isArray(payload.thread.turns) ? payload.thread.turns : []
   const latestTurn = turns[turns.length - 1]
   return {

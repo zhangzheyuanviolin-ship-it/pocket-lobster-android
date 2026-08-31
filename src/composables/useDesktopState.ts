@@ -1879,6 +1879,12 @@ export function useDesktopState() {
       for (const [threadId, active] of Object.entries(inProgressById.value)) {
         if (active) pendingThreadIds.add(threadId)
       }
+      const selectedId = selectedThreadId.value.trim()
+      const selectedExistedBeforeRefresh = selectedId.length > 0 && flattenThreads(sourceGroups.value)
+        .some((thread) => thread.id === selectedId)
+      if (options.allowEmpty !== true && selectedExistedBeforeRefresh) {
+        pendingThreadIds.add(selectedId)
+      }
       sourceGroups.value = mergeThreadGroups(sourceGroups.value, orderedGroups, pendingThreadIds)
       inProgressById.value = pruneThreadStateMap(
         inProgressById.value,

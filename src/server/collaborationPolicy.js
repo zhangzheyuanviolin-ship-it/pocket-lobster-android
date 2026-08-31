@@ -8,6 +8,13 @@ export function isMissingAgentSessionMessage(message, agentId) {
       : false
 }
 
+export function isCodexThreadMaterializationPendingMessage(message) {
+  const normalized = typeof message === 'string' ? message.trim().toLowerCase() : ''
+  return normalized.includes(
+    'is not materialized yet; includeturns is unavailable before first user message',
+  )
+}
+
 function errorMessage(error) {
   if (error instanceof Error) return error.message
   if (typeof error === 'string') return error

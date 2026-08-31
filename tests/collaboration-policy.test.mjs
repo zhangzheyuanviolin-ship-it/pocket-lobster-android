@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   ensureCodexCollaborationThread,
+  isCodexThreadMaterializationPendingMessage,
   isMissingAgentSessionMessage,
   startCodexCollaborationTurnWithRecovery,
 } from '../src/server/collaborationPolicy.js'
@@ -14,6 +15,14 @@ test('session recovery classification is narrow and does not hide unrelated fail
   assert.equal(isMissingAgentSessionMessage('invalid encrypted content', 'codex'), false)
   assert.equal(isMissingAgentSessionMessage('provider authentication failed', 'minis'), false)
   assert.equal(isMissingAgentSessionMessage('codex app-server exited unexpectedly', 'codex'), false)
+})
+
+test('Codex materialization classification only matches the transient first-turn race', () => {
+  assert.equal(isCodexThreadMaterializationPendingMessage(
+    'thread abc is not materialized yet; includeTurns is unavailable before first user message',
+  ), true)
+  assert.equal(isCodexThreadMaterializationPendingMessage('thread not found: abc'), false)
+  assert.equal(isCodexThreadMaterializationPendingMessage('provider authentication failed'), false)
 })
 
 test('Codex collaboration thread recovery covers new, active, persisted and missing sessions', async () => {

@@ -324,7 +324,9 @@ try {
   assert.equal(encryptedResponseItems(rollout).length, 1)
   if (process.env.E2E_DIAGNOSTICS_BLOCKED !== '1') {
     await sleep(200)
-    const diagnostics = (await readFile(join(exportDir, 'diagnostics', 'codex-chat-latest.jsonl'), 'utf8'))
+    const diagnostics = (await readFile(join(stateDir, 'codex-chat-latest.jsonl'), 'utf8'))
+      .trim().split('\n').map((line) => JSON.parse(line))
+    const sharedDiagnostics = (await readFile(join(exportDir, 'codex-chat-latest.jsonl'), 'utf8'))
       .trim().split('\n').map((line) => JSON.parse(line))
     assert.ok(diagnostics.some((event) => event.event === 'engine_initialized' && event.engine === 'codex app-server'))
     assert.ok(diagnostics.some((event) => event.event === 'rpc_success' && event.method === 'thread/start'))
@@ -333,6 +335,8 @@ try {
       expectedModels.length,
     )
     assert.ok(diagnostics.some((event) => event.event === 'codex_notification' && event.method === 'turn/completed'))
+    assert.ok(sharedDiagnostics.some((event) => event.event === 'engine_initialized' && event.engine === 'codex app-server'))
+    assert.ok(sharedDiagnostics.some((event) => event.event === 'rpc_success' && event.method === 'thread/start'))
   }
   console.log(JSON.stringify({ ok: true, turns: finalThread.turns.length, models: requests.map((request) => request.model), finalRoute }))
 } finally {

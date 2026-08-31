@@ -177,6 +177,8 @@ test('collaboration persistence, continuation, abort races and overload are guar
   assert.match(server, /isMissingAgentSessionError/)
   assert.match(server, /ensureCodexCollaborationThread/)
   assert.match(server, /startCodexCollaborationTurnWithRecovery/)
+  assert.match(server, /isCodexThreadMaterializationPendingMessage/)
+  assert.match(server, /await sleepMs\(100\)/)
   assert.match(server, /appServer\.rpc\('thread\/read', \{ threadId: candidateThreadId, includeTurns: false \}\)/)
   assert.match(server, /prepareThreadParams/)
   assert.match(server, /ensureCodexProviderDefinitions\(appServer\)/)
