@@ -3776,6 +3776,9 @@ class AppServerProcess {
         name: 'codex-web-local',
         version: '0.1.0',
       },
+      capabilities: {
+        experimentalApi: true,
+      },
     })
 
     this.initialized = true
@@ -5982,7 +5985,7 @@ function publicCollaborationTasksForTurn(run: CollaborationRun, turnNumber: numb
       ...publicCollaborationTask(task),
       objective: publicCollaborationText(task.objective, 1_200),
       expectedOutput: publicCollaborationText(task.expectedOutput, 1_200),
-      responseText: publicCollaborationText(task.responseText, 4_000),
+      responseText: publicCollaborationText(task.responseText),
       errorText: publicCollaborationText(task.errorText, 1_200),
     }))
 }

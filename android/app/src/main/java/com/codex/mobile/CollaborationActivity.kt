@@ -478,9 +478,11 @@ class CollaborationActivity : AppCompatActivity() {
     }
 
     private fun joinedTaskText(tasks: List<JSONObject>, key: String): String {
-        val values = tasks.mapNotNull { task -> task.optString(key).trim().takeIf { it.isNotEmpty() } }
-        if (values.size <= 1) return values.firstOrNull().orEmpty()
-        return values.mapIndexed { index, text -> "第${index + 1}项：$text" }.joinToString("\n")
+        val values = tasks.mapIndexedNotNull { index, task ->
+            task.optString(key).trim().takeIf { it.isNotEmpty() }?.let { index to it }
+        }
+        if (tasks.size <= 1) return values.firstOrNull()?.second.orEmpty()
+        return values.joinToString("\n") { (index, text) -> "第${index + 1}次：$text" }
     }
 
     private fun renderRunDetails(row: RunRow) {
@@ -514,11 +516,11 @@ class CollaborationActivity : AppCompatActivity() {
             val tasks = selectedTasksForAgent(run, id)
             val durableStatus = tasks.lastOrNull()?.optString("status").orEmpty()
             val status = statusLabel(durableStatus.ifBlank { agent.optString("status") })
-            val assignment = agent.optString("assignmentText").ifBlank { joinedTaskText(tasks, "objective") }
+            val assignment = joinedTaskText(tasks, "objective").ifBlank { agent.optString("assignmentText") }
             val taskResponse = joinedTaskText(tasks, "responseText")
-            val response = if (role == "总调度") finalSummary else agent.optString("responseText").ifBlank { taskResponse }
+            val response = if (role == "总调度") finalSummary else taskResponse.ifBlank { agent.optString("responseText") }
             val taskError = joinedTaskText(tasks, "errorText")
-            val errorText = agent.optString("errorText").ifBlank { taskError }
+            val errorText = taskError.ifBlank { agent.optString("errorText") }
             agentViews.label = "${agentLabel(id)}，$role，$status"
             setTextBlock(agentViews.assignment, assignment.takeIf { it.isNotBlank() }?.let { "本轮任务：$it" }.orEmpty())
             setTextBlock(agentViews.action, agent.optString("actionText").trim().takeIf { it.isNotEmpty() }?.let { "当前进展：$it" }.orEmpty())
