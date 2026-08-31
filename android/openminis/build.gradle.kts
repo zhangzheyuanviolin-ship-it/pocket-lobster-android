@@ -316,7 +316,7 @@ import android.content.Intent""",
         if (com.openminis.app.browser.GoogleAuthRouter.shouldRouteExternally(currentUrl)) {
             hasLoaded = true
             isLoading = false
-            com.openminis.app.browser.GoogleAuthRouter.openInCustomTab(appContext, currentUrl)
+            com.openminis.app.browser.GoogleAuthRouter.openInCustomTab(webView.context, currentUrl)
             return
         }
         // T-htmlpreview-2d5c4f3d: defer the actual loadUrl until the""",
@@ -563,6 +563,7 @@ val verifyOpenMinisIntegrationSources by tasks.registering {
         check("context !is Activity" in googleAuthRouter)
         check("Intent.FLAG_ACTIVITY_NEW_TASK" in googleAuthRouter)
         check("GoogleAuthRouter.shouldRouteExternally(currentUrl)" in webViewHolder)
+        check("GoogleAuthRouter.openInCustomTab(webView.context, currentUrl)" in webViewHolder)
         check(generatedSources.get().asFile.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
             .none { "R.string.app_name" in it.readText() })

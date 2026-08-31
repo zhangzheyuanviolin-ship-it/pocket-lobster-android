@@ -14,6 +14,8 @@ test('all shared-browser Google authentication entry points leave WebView', asyn
   assert.match(integration, /GoogleAuthRouter\.openInCustomTab/)
   assert.match(integration, /Chrome cookies are isolated from this automated WebView/)
   assert.match(integration, /GoogleAuthRouter\.shouldRouteExternally\(currentUrl\)/)
+  assert.match(integration, /GoogleAuthRouter\.openInCustomTab\(webView\.context, currentUrl\)/)
+  assert.doesNotMatch(integration, /GoogleAuthRouter\.openInCustomTab\(appContext, currentUrl\)/)
   assert.match(integration, /context !is Activity/)
   assert.match(integration, /Intent\.FLAG_ACTIVITY_NEW_TASK/)
   assert.match(integration, /check\("Chrome cookies are isolated from this automated WebView" in browserManager\)/)
