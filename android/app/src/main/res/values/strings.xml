@@ -54,6 +54,13 @@
     <string name="conversation_state_active">活跃</string>
     <string name="conversation_state_archived">归档</string>
     <string name="conversation_refresh">刷新</string>
+    <string name="conversation_clear_independent">清空独立聊天记录</string>
+    <string name="conversation_clear_independent_title">清空所有独立聊天记录</string>
+    <string name="conversation_clear_independent_message">将永久删除 %1$d 条独立聊天记录。三智能体协作会话和协作看板记录不会被删除。是否继续？</string>
+    <string name="conversation_clear_independent_confirm">确认清空</string>
+    <string name="conversation_clear_independent_empty">没有可清空的独立聊天记录。</string>
+    <string name="conversation_clear_independent_done">已清空 %1$d 条独立聊天记录。</string>
+    <string name="conversation_clear_independent_partial">已清空 %1$d 条独立聊天记录，%2$d 条删除失败。</string>
     <string name="conversation_action_rename">设置标题</string>
     <string name="conversation_action_delete">删除</string>
     <string name="conversation_action_copy">复制</string>

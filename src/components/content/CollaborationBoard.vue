@@ -16,6 +16,16 @@
       <button type="button" :aria-pressed="filter === 'archived'" @click="filter = 'archived'">已归档</button>
     </nav>
 
+    <button
+      type="button"
+      class="danger collaboration-clear-history"
+      :disabled="historicalRunCount === 0"
+      aria-label="一键清空所有已结束和已归档的协作任务记录"
+      @click="clearHistory"
+    >
+      清空所有历史任务
+    </button>
+
     <p v-if="filteredRuns.length === 0" class="collaboration-empty">没有符合条件的协作任务</p>
     <div v-else class="collaboration-run-list" aria-label="协作任务列表">
       <button
@@ -96,6 +106,7 @@ const emit = defineEmits<{
   rename: [runId: string, title: string]
   archive: [runId: string, archived: boolean]
   delete: [runId: string]
+  clearHistory: []
 }>()
 
 const filter = ref<'current' | 'history' | 'archived'>('current')
@@ -111,6 +122,7 @@ const filteredRuns = computed(() => {
   })
 })
 const selectedRun = computed(() => props.runs.find((run) => run.id === selectedRunId.value) ?? null)
+const historicalRunCount = computed(() => props.runs.filter((run) => !isCollaborationRunActive(run) && run.status !== 'waiting_user').length)
 const boardStatusLabel = computed(() => {
   const activeRuns = props.runs.filter(isCollaborationRunActive)
   if (activeRuns.length > 0) {
@@ -164,6 +176,11 @@ function deleteSelected(): void {
   if (!selectedRun.value || !window.confirm(`删除“${selectedRun.value.title}”？`)) return
   emit('delete', selectedRun.value.id)
 }
+function clearHistory(): void {
+  if (historicalRunCount.value === 0) return
+  const message = `将永久删除${historicalRunCount.value}项已结束或已归档任务及其关联协作会话。运行中和等待您回复的任务不会被删除。是否继续？`
+  if (window.confirm(message)) emit('clearHistory')
+}
 </script>
 
 <style scoped>
@@ -175,6 +192,7 @@ function deleteSelected(): void {
 .collaboration-board h3 { font-size: 16px; }
 .collaboration-board h4 { font-size: 15px; }
 .collaboration-filters { margin: 10px 0; }
+.collaboration-clear-history { margin-bottom: 10px; }
 .collaboration-run-list { border-block: 1px solid #e4e4e7; }
 .collaboration-run-row { display: flex; width: 100%; min-height: 54px; flex-direction: column; align-items: flex-start; justify-content: center; border: 0; border-bottom: 1px solid #e4e4e7; border-radius: 0; }
 .collaboration-run-row[aria-current="true"] { background: #e8f1ed; }

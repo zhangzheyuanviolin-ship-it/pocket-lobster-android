@@ -60,6 +60,7 @@ class ConversationManagerActivity : AppCompatActivity() {
 
     private lateinit var spinnerSource: Spinner
     private lateinit var btnRefresh: Button
+    private lateinit var btnClearIndependent: Button
     private lateinit var progressBar: ProgressBar
     private lateinit var tvStatus: TextView
     private lateinit var listView: ListView
@@ -77,6 +78,7 @@ class ConversationManagerActivity : AppCompatActivity() {
 
         spinnerSource = findViewById(R.id.spinnerConversationSource)
         btnRefresh = findViewById(R.id.btnConversationRefresh)
+        btnClearIndependent = findViewById(R.id.btnConversationClearIndependent)
         progressBar = findViewById(R.id.progressConversation)
         tvStatus = findViewById(R.id.tvConversationStatus)
         listView = findViewById(R.id.listConversations)
@@ -104,6 +106,7 @@ class ConversationManagerActivity : AppCompatActivity() {
         btnRefresh.setOnClickListener {
             loadConversations()
         }
+        btnClearIndependent.setOnClickListener { confirmClearIndependentConversations() }
 
     }
 
@@ -124,6 +127,7 @@ class ConversationManagerActivity : AppCompatActivity() {
     private fun loadConversations() {
         if (loading) return
         loading = true
+        btnClearIndependent.isEnabled = false
         progressBar.visibility = View.VISIBLE
         tvStatus.visibility = View.VISIBLE
         tvStatus.text = getString(R.string.conversation_loading)
@@ -330,6 +334,7 @@ class ConversationManagerActivity : AppCompatActivity() {
                 collaboration.forEach { add(ConversationListItem.Row(it)) }
             }
         }.toMutableList()
+        btnClearIndependent.isEnabled = !loading && allRows.any(::isBulkClearIndependent)
 
         listView.adapter = object : android.widget.BaseAdapter() {
             override fun getCount(): Int = visibleItems.size
@@ -549,33 +554,61 @@ class ConversationManagerActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun confirmClearIndependentConversations() {
+        val count = allRows.count(::isBulkClearIndependent)
+        if (count == 0) {
+            Toast.makeText(this, getString(R.string.conversation_clear_independent_empty), Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.conversation_clear_independent_title))
+            .setMessage(getString(R.string.conversation_clear_independent_message, count))
+            .setNegativeButton(getString(R.string.cancel), null)
+            .setPositiveButton(getString(R.string.conversation_clear_independent_confirm)) { _, _ ->
+                clearIndependentConversations()
+            }
+            .show()
+    }
+
+    private fun clearIndependentConversations() {
+        if (loading) return
+        val targets = allRows.filter(::isBulkClearIndependent)
+        if (targets.isEmpty()) return
+        loading = true
+        btnClearIndependent.isEnabled = false
+        progressBar.visibility = View.VISIBLE
+        tvStatus.visibility = View.VISIBLE
+        tvStatus.text = "正在清空独立聊天记录…"
+        Thread {
+            val deleted = mutableListOf<ConversationRow>()
+            val failures = mutableListOf<String>()
+            targets.forEach { row ->
+                runCatching { deleteConversationRecord(row) }
+                    .onSuccess { deleted += row }
+                    .onFailure { error -> failures += "${row.title}: ${normalizeLoadError(error)}" }
+            }
+            runOnUiThread {
+                allRows.removeAll { row -> deleted.any { it.source == row.source && it.id == row.id } }
+                loading = false
+                progressBar.visibility = View.GONE
+                applyFilterAndRender()
+                val message = if (failures.isEmpty()) {
+                    getString(R.string.conversation_clear_independent_done, deleted.size)
+                } else {
+                    getString(R.string.conversation_clear_independent_partial, deleted.size, failures.size)
+                }
+                tvStatus.visibility = View.VISIBLE
+                tvStatus.text = message
+                tvStatus.announceForAccessibility(message)
+                Toast.makeText(this, message, if (failures.isEmpty()) Toast.LENGTH_SHORT else Toast.LENGTH_LONG).show()
+            }
+        }.start()
+    }
+
     private fun deleteConversation(row: ConversationRow) {
         Thread {
             try {
-                when (row.source) {
-                    SourceType.CODEX -> {
-                        if (!row.archived) {
-                            try {
-                                LocalBridgeClients.callCodexRpc(
-                                    "thread/archive",
-                                    JSONObject().put("threadId", row.id),
-                                )
-                            } catch (archiveError: Exception) {
-                                if (!isMissingCodexRollout(archiveError)) {
-                                    throw archiveError
-                                }
-                            }
-                        }
-                        deleteCodexTranscriptFileIfPossible(row)
-                    }
-                    SourceType.OPENCLAW -> {
-                        deleteOpenClawSession(row.id)
-                    }
-                    SourceType.CLAUDE_CODE -> {
-                        AgentSessionStore.deleteSession(this, ExternalAgentId.CLAUDE_CODE, row.id)
-                    }
-                    SourceType.ALL -> Unit
-                }
+                deleteConversationRecord(row)
                 allRows.removeAll { it.source == row.source && it.id == row.id }
                 runOnUiThread {
                     applyFilterAndRender()
@@ -592,6 +625,33 @@ class ConversationManagerActivity : AppCompatActivity() {
             }
         }.start()
     }
+
+    private fun deleteConversationRecord(row: ConversationRow) {
+        when (row.source) {
+            SourceType.CODEX -> {
+                if (!row.archived) {
+                    try {
+                        LocalBridgeClients.callCodexRpc(
+                            "thread/archive",
+                            JSONObject().put("threadId", row.id),
+                        )
+                    } catch (archiveError: Exception) {
+                        if (!isMissingCodexRollout(archiveError)) throw archiveError
+                    }
+                }
+                deleteCodexTranscriptFileIfPossible(row)
+            }
+            SourceType.OPENCLAW -> check(deleteOpenClawSession(row.id)) { "OpenClaw session deletion failed" }
+            SourceType.CLAUDE_CODE -> check(
+                AgentSessionStore.deleteSession(this, ExternalAgentId.CLAUDE_CODE, row.id),
+            ) { "Claude Code session deletion failed" }
+            SourceType.ALL -> Unit
+        }
+    }
+
+    private fun isBulkClearIndependent(row: ConversationRow): Boolean =
+        row.workMode == WorkMode.INDEPENDENT &&
+            (row.source == SourceType.CODEX || row.source == SourceType.CLAUDE_CODE)
 
     private fun isMissingCodexRollout(error: Exception): Boolean {
         val raw = (error.message ?: "").lowercase(Locale.getDefault())
@@ -835,9 +895,8 @@ class ConversationManagerActivity : AppCompatActivity() {
         OpenClawLocalSessionStore.setAlias(this, sessionKey, label)
     }
 
-    private fun deleteOpenClawSession(sessionKey: String) {
+    private fun deleteOpenClawSession(sessionKey: String): Boolean =
         OpenClawLocalSessionStore.deleteSession(this, sessionKey)
-    }
 
     private fun loadOpenClawHistoryPayload(sessionKey: String): JSONObject {
         return OpenClawLocalSessionStore.loadHistoryPayload(this, sessionKey, limit = 400)

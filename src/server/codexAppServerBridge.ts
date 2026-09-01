@@ -2578,6 +2578,8 @@ function buildRuntimeSummary(
   const runtimeInstalled = runtimeRecord ? '1' : '0'
   const runtimeCheckedAt = normalizeText(healthRecord?.checked_at)
   const runtimeHealthOk = healthRecord?.ok === true ? '1' : '0'
+  const localRgOk = healthRecord?.rg_local_ok === true ? '1' : '0'
+  const ubuntuRgOk = healthRecord?.rg_ubuntu_ok === true ? '1' : '0'
   const prefixDir = normalizeText(process.env.PREFIX)
   const runtimeBinDir = homeDir ? join(homeDir, '.openclaw-android', 'linux-runtime', 'bin') : ''
   const ubuntuBin =
@@ -2586,7 +2588,7 @@ function buildRuntimeSummary(
   const pathValue = normalizeText(process.env.PATH)
 
   const lines = [
-    `Current runtime snapshot: offline_linux_installed=${runtimeInstalled} version=${runtimeVersion} runtime_health_ok=${runtimeHealthOk}${runtimeCheckedAt ? ` checked_at=${runtimeCheckedAt}` : ''}`,
+    `Current runtime snapshot: offline_linux_installed=${runtimeInstalled} version=${runtimeVersion} runtime_health_ok=${runtimeHealthOk} rg_local_ok=${localRgOk} rg_ubuntu_ok=${ubuntuRgOk}${runtimeCheckedAt ? ` checked_at=${runtimeCheckedAt}` : ''}`,
     homeDir ? `Current app home: ${homeDir}` : '',
     prefixDir ? `Current app prefix: ${prefixDir}` : '',
     runtimeBinDir ? `Current runtime bin: ${runtimeBinDir}` : '',
@@ -2595,6 +2597,7 @@ function buildRuntimeSummary(
     'Execution chains available in this app: local app shell, Ubuntu runtime shell via ubuntu-shell or ANYCLAW_UBUNTU_BIN, OpenMinis Alpine via alpine-shell, and system-level shell via system-shell.',
     'The real visible OpenMinis browser is available through minis-browser and can be taken over by the user. Run minis-browser --help before first use; it documents every action and parameter. Start with list_tabs, use navigate, then wait_for_dom_stable before reading or interacting. To continue another agent\'s page, pass the exact tab_id returned by list_tabs; actions on the same shared tab are serialized safely. click and type support CSS, XPath, or text selectors through --selector-type and automatically retry transient lookup failures. Use screenshot --output-path <absolute-path.png> --json, then inspect the returned imageFilePath with the image-view tool; do not guess screenshot paths. Browser history actions are back, forward, and reload.',
     'If the runtime snapshot above is installed and healthy, do not conclude Ubuntu is missing before verifying it with ubuntu-status, echo $ANYCLAW_UBUNTU_BIN, and ls "$HOME/.openclaw-android/linux-runtime/bin" in the local app shell.',
+    'Ripgrep is exposed as rg in the local app shell and bundled Ubuntu runtime. Verify command -v rg and rg --version in the selected shell before reporting it unavailable.',
   ].filter((line) => line.length > 0)
 
   return lines.join('\n')
@@ -6370,6 +6373,26 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         collaborationRuns.delete(runId)
         await persistCollaborationRunsNow()
         setJson(res, 200, { ok: true, runId, cleanupWarnings })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/collaboration-api/history/clear') {
+        await ensureCollaborationRunsLoaded()
+        const completedRuns = Array.from(collaborationRuns.values())
+          .filter((run) => !isCollaborationRunActive(run) && run.status !== 'waiting_user')
+        const cleanupWarnings: string[] = []
+        for (const run of completedRuns) {
+          const warnings = await cleanupCollaborationSessions(appServer, run)
+          cleanupWarnings.push(...warnings.map((warning) => `${run.id}: ${warning}`))
+          collaborationRuns.delete(run.id)
+        }
+        await persistCollaborationRunsNow()
+        setJson(res, 200, {
+          ok: true,
+          deletedCount: completedRuns.length,
+          preservedActiveCount: collaborationRuns.size,
+          cleanupWarnings,
+        })
         return
       }
 

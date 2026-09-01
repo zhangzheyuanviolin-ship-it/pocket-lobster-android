@@ -3098,6 +3098,10 @@ EOF
 
               cat > "${paths.prefixDir}/bin/ubuntu-status" <<'EOF'
 #!/system/bin/sh
+DOCTOR="${'$'}HOME/.openclaw/workspace/scripts/runtime-env-doctor.sh"
+if [ -x "${'$'}DOCTOR" ]; then
+  "${'$'}DOCTOR" --probe --json >/dev/null 2>&1 || true
+fi
 exec "${'$'}HOME/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh" --status
 EOF
               chmod 700 "${paths.prefixDir}/bin/ubuntu-status" 2>/dev/null || true
@@ -3710,6 +3714,7 @@ PY
 
 probe_toolchain() {
   echo "openclaw=$(command -v openclaw || true)"
+  echo "rg=$(command -v rg || true)"
   echo "python3=$(command -v python3 || true)"
   echo "pip=$(command -v pip || command -v pip3 || true)"
   echo "apt=$(command -v apt || true)"
@@ -3755,6 +3760,42 @@ repair_python_modules() {
   "${'$'}pip_bin" install --no-input --disable-pip-version-check duckduckgo-mcp-server >/dev/null 2>&1 || true
 }
 
+ubuntu_bin="${'$'}{ANYCLAW_UBUNTU_BIN:-${'$'}HOME_DIR/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh}"
+ubuntu_status="Ubuntu bridge is missing"
+ubuntu_exit=127
+if [ -x "${'$'}ubuntu_bin" ]; then
+  set +e
+  ubuntu_status="${'$'}("${'$'}ubuntu_bin" --status 2>&1)"
+  ubuntu_exit="${'$'}?"
+  set -e
+fi
+
+local_rg_version=""
+local_rg_exit=127
+if command -v rg >/dev/null 2>&1; then
+  set +e
+  local_rg_version="${'$'}(rg --version 2>&1 | sed -n '1p')"
+  local_rg_exit="${'$'}?"
+  set -e
+fi
+case "${'$'}local_rg_version" in
+  ripgrep\ *) ;;
+  *) local_rg_exit=127 ;;
+esac
+
+ubuntu_rg_version=""
+ubuntu_rg_exit=127
+if [ "${'$'}ubuntu_exit" -eq 0 ]; then
+  set +e
+  ubuntu_rg_version="${'$'}("${'$'}ubuntu_bin" --command "rg --version 2>/dev/null | sed -n '1p'" 2>/dev/null)"
+  ubuntu_rg_exit="${'$'}?"
+  set -e
+fi
+case "${'$'}ubuntu_rg_version" in
+  ripgrep\ *) ;;
+  *) ubuntu_rg_exit=127 ;;
+esac
+
 report="$(
   {
     if [ "${'$'}REPAIR" -eq 1 ]; then
@@ -3763,21 +3804,54 @@ report="$(
     fi
     probe_toolchain
     probe_python_modules
+    echo "ubuntu_bridge=${'$'}ubuntu_bin"
+    echo "ubuntu_status_exit=${'$'}ubuntu_exit"
+    printf '%s\n' "${'$'}ubuntu_status"
+    echo "local_rg_exit=${'$'}local_rg_exit"
+    echo "local_rg_version=${'$'}local_rg_version"
+    echo "ubuntu_rg_exit=${'$'}ubuntu_rg_exit"
+    echo "ubuntu_rg_version=${'$'}ubuntu_rg_version"
   } 2>&1
 )"
 
-escaped="$(printf "%s" "${'$'}report" | sed 's/\\/\\\\/g; s/\"/\\"/g')"
-ts="$(date -Iseconds 2>/dev/null || date)"
-printf '{\"ok\":true,\"probe\":%s,\"repair\":%s,\"aggressive\":%s,\"timestamp\":\"%s\",\"report\":\"%s\"}\n' \
-  "${'$'}PROBE" "${'$'}REPAIR" "${'$'}AGGRESSIVE" "${'$'}ts" "${'$'}escaped" > "${'$'}OUT_JSON"
+ok=0
+error_code="ubuntu_unhealthy"
+if [ "${'$'}ubuntu_exit" -eq 0 ]; then
+  ok=1
+  error_code="none"
+fi
+checked_at="${'$'}(date -Iseconds 2>/dev/null || date)"
+report_file="${'$'}STATE_DIR/runtime-health-report.${'$'}${'$'}"
+printf '%s\n' "${'$'}report" > "${'$'}report_file"
+"${'$'}PREFIX/bin/node" - "${'$'}OUT_JSON" "${'$'}report_file" "${'$'}ok" "${'$'}PROBE" "${'$'}REPAIR" "${'$'}AGGRESSIVE" \
+  "${'$'}checked_at" "${'$'}ubuntu_exit" "${'$'}local_rg_exit" "${'$'}ubuntu_rg_exit" "${'$'}error_code" <<'NODE'
+const fs = require('fs');
+const [target, reportFile, ok, probe, repair, aggressive, checkedAt, ubuntuExit, localRgExit, ubuntuRgExit, errorCode] = process.argv.slice(2);
+const payload = {
+  ok: ok === '1',
+  probe: probe === '1',
+  repair: repair === '1',
+  aggressive: aggressive === '1',
+  checked_at: checkedAt,
+  exit_code: Number(ubuntuExit),
+  error_code: errorCode,
+  rg_local_ok: localRgExit === '0',
+  rg_ubuntu_ok: ubuntuRgExit === '0',
+  report: fs.readFileSync(reportFile, 'utf8').trim(),
+};
+const temporary = `${'$'}{target}.tmp.${'$'}{process.pid}`;
+fs.writeFileSync(temporary, `${'$'}{JSON.stringify(payload, null, 2)}\n`);
+fs.renameSync(temporary, target);
+fs.unlinkSync(reportFile);
+NODE
 cat "${'$'}OUT_JSON"
-exit 0
+exit "${'$'}ubuntu_exit"
 EOF
 
             sed -i "s#__PREFIX__#${paths.prefixDir}#g" "${'$'}scripts/runtime-env-doctor.sh"
             sed -i "s#__HOME__#${paths.homeDir}#g" "${'$'}scripts/runtime-env-doctor.sh"
             chmod 700 "${'$'}scripts/runtime-env-doctor.sh" 2>/dev/null || true
-            "${'$'}scripts/runtime-env-doctor.sh" --probe --json > "${'$'}state_dir/runtime-health.json" 2>/dev/null || true
+            "${'$'}scripts/runtime-env-doctor.sh" --probe --json >/dev/null 2>&1 || true
             echo "runtime-doctor-ready"
         """.trimIndent()
 

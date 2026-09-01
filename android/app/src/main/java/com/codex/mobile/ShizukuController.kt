@@ -213,11 +213,27 @@ object ShizukuController {
                     error = "Timed out while reading Shizuku process output",
                 )
             } else {
+                val stderr = stderrHolder.toString()
+                val stdout = stdoutHolder.toString()
+                val commandErrorCode = when (exitCode) {
+                    126, 127 -> "command_unavailable"
+                    0 -> null
+                    else -> "command_failed"
+                }
+                val commandError = if (exitCode == 0) {
+                    null
+                } else {
+                    stderr.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
+                        ?: stdout.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
+                        ?: "Command exited with code $exitCode"
+                }
                 ShizukuExecResult(
                     success = exitCode == 0,
-                    stdout = stdoutHolder.toString(),
-                    stderr = stderrHolder.toString(),
+                    stdout = stdout,
+                    stderr = stderr,
                     exitCode = exitCode,
+                    errorCode = commandErrorCode,
+                    error = commandError,
                 )
             }
         } catch (e: Exception) {

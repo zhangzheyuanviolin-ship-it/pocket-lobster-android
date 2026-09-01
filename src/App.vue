@@ -499,7 +499,7 @@
                 @refresh="refreshCollaborationRuns"
                 @abort="onAbortCollaborationRun" @continue="onContinueCollaborationRun"
                 @rename="onRenameCollaborationRun" @archive="onArchiveCollaborationRun"
-                @delete="onDeleteCollaborationRun" />
+                @delete="onDeleteCollaborationRun" @clear-history="onClearCollaborationHistory" />
 
               <ThreadComposer :active-thread-id="composerThreadContextId" :disabled="isSendingMessage"
                 :providers="availableProviders" :selected-provider="selectedProviderId"
@@ -531,7 +531,7 @@
                 @refresh="refreshCollaborationRuns"
                 @abort="onAbortCollaborationRun" @continue="onContinueCollaborationRun"
                 @rename="onRenameCollaborationRun" @archive="onArchiveCollaborationRun"
-                @delete="onDeleteCollaborationRun" />
+                @delete="onDeleteCollaborationRun" @clear-history="onClearCollaborationHistory" />
 
               <ThreadComposer :active-thread-id="composerThreadContextId"
                 :disabled="isSendingMessage || isLoadingMessages" :providers="availableProviders"
@@ -578,6 +578,7 @@ import type { ClaudeComposerSubmitPayload } from './types/claude'
 import {
   abortCollaborationRun,
   archiveCollaborationRun,
+  clearCollaborationHistory,
   continueCollaborationRun,
   deleteCollaborationRun,
   isCollaborationRunActive,
@@ -1129,6 +1130,20 @@ function onDeleteCollaborationRun(runId: string): void {
       collaborationError.value = ''
     } catch (error) {
       collaborationError.value = error instanceof Error ? error.message : '删除失败'
+    }
+  })()
+}
+
+function onClearCollaborationHistory(): void {
+  void (async () => {
+    try {
+      await clearCollaborationHistory()
+      collaborationRuns.value = collaborationRuns.value.filter((run) =>
+        isCollaborationRunActive(run) || run.status === 'waiting_user',
+      )
+      collaborationError.value = ''
+    } catch (error) {
+      collaborationError.value = error instanceof Error ? error.message : '清空历史任务失败'
     }
   })()
 }

@@ -86,6 +86,14 @@ object CollaborationClient {
         body = JSONObject().put("runId", runId.trim()),
     )
 
+    fun clearHistory(context: Context): JSONObject = request(
+        context = context,
+        method = "POST",
+        path = "/collaboration-api/history/clear",
+        body = JSONObject(),
+        readTimeoutMs = 120_000,
+    )
+
     private fun request(
         context: Context,
         method: String,

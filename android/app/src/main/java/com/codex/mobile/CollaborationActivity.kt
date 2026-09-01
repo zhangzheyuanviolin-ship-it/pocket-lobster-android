@@ -74,11 +74,13 @@ class CollaborationActivity : AppCompatActivity() {
 
     private lateinit var statusView: TextView
     private lateinit var listView: ListView
+    private lateinit var clearHistoryButton: Button
     private val allRows = mutableListOf<RunRow>()
     private val rows = mutableListOf<RunRow>()
     private val adapter = RunAdapter()
     private val handler = Handler(Looper.getMainLooper())
     private var loading = false
+    private var clearingHistory = false
     private var active = false
     private var lastRenderFingerprint = ""
     private var filter = "current"
@@ -124,11 +126,13 @@ class CollaborationActivity : AppCompatActivity() {
         setContentView(R.layout.activity_collaboration)
         statusView = findViewById(R.id.tvCollaborationStatus)
         listView = findViewById(R.id.listCollaborationRuns)
+        clearHistoryButton = findViewById(R.id.btnCollaborationClearHistory)
         listView.adapter = adapter
         findViewById<Button>(R.id.btnCollaborationRefresh).setOnClickListener { refresh() }
         findViewById<Button>(R.id.btnCollaborationCurrent).setOnClickListener { filter = "current"; applyFilter() }
         findViewById<Button>(R.id.btnCollaborationHistory).setOnClickListener { filter = "history"; applyFilter() }
         findViewById<Button>(R.id.btnCollaborationArchived).setOnClickListener { filter = "archived"; applyFilter() }
+        clearHistoryButton.setOnClickListener { confirmClearHistory() }
         listView.setOnItemClickListener { _, _, position, _ -> showRunDetails(rows[position]) }
     }
 
@@ -179,6 +183,9 @@ class CollaborationActivity : AppCompatActivity() {
                         else -> "当前没有协作任务"
                     }
                     if (statusView.text.toString() != nextStatus) statusView.text = nextStatus
+                    clearHistoryButton.isEnabled = !loading && !clearingHistory && allRows.any {
+                        !isActiveStatus(it.status) && it.status != "waiting_user"
+                    }
                     handler.removeCallbacks(poll)
                     if (active && (runningCount > 0 || detailDialog?.isShowing == true)) {
                         handler.postDelayed(poll, 2_000L)
@@ -204,6 +211,51 @@ class CollaborationActivity : AppCompatActivity() {
             }
         }
         adapter.notifyDataSetChanged()
+    }
+
+    private fun confirmClearHistory() {
+        val count = allRows.count { !isActiveStatus(it.status) && it.status != "waiting_user" }
+        if (count == 0) {
+            Toast.makeText(this, "没有可清空的历史任务", Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("清空所有历史任务")
+            .setMessage("将永久删除${count}项已结束或已归档任务及其关联协作会话。运行中和等待您回复的任务不会被删除。是否继续？")
+            .setNegativeButton(getString(R.string.cancel), null)
+            .setPositiveButton("确认清空") { _, _ -> clearHistory() }
+            .show()
+    }
+
+    private fun clearHistory() {
+        if (clearingHistory) return
+        clearingHistory = true
+        clearHistoryButton.isEnabled = false
+        statusView.text = "正在清空历史任务"
+        Thread {
+            val result = runCatching { CollaborationClient.clearHistory(this) }
+            runOnUiThread {
+                clearingHistory = false
+                result.onSuccess { payload ->
+                    val deletedCount = payload.optInt("deletedCount", 0)
+                    val warnings = payload.optJSONArray("cleanupWarnings")?.length() ?: 0
+                    statusView.text = if (warnings > 0) {
+                        "已清空${deletedCount}项历史任务，${warnings}项关联会话清理产生警告"
+                    } else {
+                        "已清空${deletedCount}项历史任务"
+                    }
+                    statusView.announceForAccessibility(statusView.text)
+                    lastRenderFingerprint = ""
+                    refresh()
+                }.onFailure { error ->
+                    statusView.text = "清空历史任务失败：${error.message ?: "unknown"}"
+                    statusView.announceForAccessibility(statusView.text)
+                    clearHistoryButton.isEnabled = allRows.any {
+                        !isActiveStatus(it.status) && it.status != "waiting_user"
+                    }
+                }
+            }
+        }.start()
     }
 
     private fun parseRun(run: JSONObject): RunRow {

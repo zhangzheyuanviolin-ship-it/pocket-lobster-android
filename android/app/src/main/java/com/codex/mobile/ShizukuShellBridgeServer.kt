@@ -106,6 +106,10 @@ class ShizukuShellBridgeServer(
         val result = ShizukuController.executeShellCommand(command)
         if (result.success) {
             clearLastError()
+        } else if (result.errorCode == "command_failed" || result.errorCode == "command_unavailable") {
+            // The Shizuku executor successfully started and waited for the process.
+            // A command-level non-zero exit must not poison capability health.
+            clearLastError()
         } else {
             setLastError(
                 result.errorCode ?: "executor_missing",

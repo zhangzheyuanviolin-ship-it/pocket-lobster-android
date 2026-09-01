@@ -97,3 +97,13 @@ export async function archiveCollaborationRun(runId: string, archived: boolean):
 export async function deleteCollaborationRun(runId: string): Promise<void> {
   await post('/collaboration-api/delete', { runId })
 }
+
+export async function clearCollaborationHistory(): Promise<{ deletedCount: number; cleanupWarnings: string[] }> {
+  const payload = await post('/collaboration-api/history/clear', {})
+  return {
+    deletedCount: typeof payload.deletedCount === 'number' ? payload.deletedCount : 0,
+    cleanupWarnings: Array.isArray(payload.cleanupWarnings)
+      ? payload.cleanupWarnings.filter((value): value is string => typeof value === 'string')
+      : [],
+  }
+}

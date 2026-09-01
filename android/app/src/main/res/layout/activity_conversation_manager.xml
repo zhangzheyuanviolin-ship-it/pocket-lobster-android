@@ -46,6 +46,15 @@
             android:text="@string/conversation_refresh" />
     </LinearLayout>
 
+    <Button
+        android:id="@+id/btnConversationClearIndependent"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:contentDescription="一键清空Codex和Claude Code的所有独立聊天记录"
+        android:importantForAccessibility="yes"
+        android:text="@string/conversation_clear_independent" />
+
     <ProgressBar
         android:id="@+id/progressConversation"
         android:layout_width="wrap_content"

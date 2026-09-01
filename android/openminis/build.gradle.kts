@@ -441,6 +441,82 @@ import android.content.Intent""",
 
         // Resolve model override (mutually exclusive with sessionId binding).""",
         )
+        generatedSources.get().file("com/openminis/app/ui/sessions/SessionListViewModel.kt").asFile.replaceRequired(
+            """    fun deleteSession(id: String) {
+        viewModelScope.launch {
+            chatRepository.deleteSession(id)
+            ChatViewModelStore.release(id)
+            com.openminis.app.service.SessionBadgeStore.clear(id)
+        }
+    }""",
+            """    fun deleteSession(id: String) {
+        viewModelScope.launch {
+            chatRepository.deleteSession(id)
+            ChatViewModelStore.release(id)
+            com.openminis.app.service.SessionBadgeStore.clear(id)
+        }
+    }
+
+    fun deleteAllSessions() {
+        val ids = _allSessions.value.map { it.id }
+        viewModelScope.launch {
+            ids.forEach { id ->
+                chatRepository.deleteSession(id)
+                ChatViewModelStore.release(id)
+                com.openminis.app.service.SessionBadgeStore.clear(id)
+            }
+        }
+        clearSelection()
+    }""",
+        )
+        generatedSources.get().file("com/openminis/app/ui/sessions/SessionListScreen.kt").asFile.apply {
+            replaceRequired(
+                """    var showBulkDeleteDialog by remember { mutableStateOf(false) }
+    var showOverflowMenu by remember { mutableStateOf(false) }""",
+                """    var showBulkDeleteDialog by remember { mutableStateOf(false) }
+    var showClearAllDialog by remember { mutableStateOf(false) }
+    var showOverflowMenu by remember { mutableStateOf(false) }""",
+            )
+            replaceRequired(
+                """                                    MinisMenuDivider()
+                                }
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.sessionlist_shell_terminal)) },""",
+                """                                    DropdownMenuItem(
+                                        text = { Text("一键清空所有聊天记录") },
+                                        enabled = sessions.isNotEmpty(),
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            showClearAllDialog = true
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Outlined.Delete, contentDescription = null)
+                                        },
+                                    )
+                                    MinisMenuDivider()
+                                }
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.sessionlist_shell_terminal)) },""",
+            )
+            replaceRequired(
+                """    // ─── Session groups ────────────────────────────────────────────────────""",
+                """    if (showClearAllDialog) {
+        MinisAlertDialog(
+            onDismissRequest = { showClearAllDialog = false },
+            title = "清空所有聊天记录",
+            text = "将永久删除全部${'$'}{sessions.size}条Minis聊天记录。此操作无法撤销，是否继续？",
+            confirmText = "确认清空",
+            isDestructive = true,
+            onConfirm = {
+                viewModel.deleteAllSessions()
+                showClearAllDialog = false
+            },
+        )
+    }
+
+    // ─── Session groups ────────────────────────────────────────────────────""",
+            )
+        }
         generatedSources.get().file("com/openminis/app/ui/chat/ChatScreen.kt").asFile.apply {
             replaceRequired(
                 """    val snackbarHostState = remember { SnackbarHostState() }""",
@@ -543,6 +619,13 @@ val verifyOpenMinisIntegrationSources by tasks.registering {
             .file("com/openminis/app/ui/chat/ChatScreen.kt").asFile.readText()
         check("CollaborationClient.startIfEnabled" in chatScreen)
         check("pocketLobsterCollaborationEnabled" in chatScreen)
+        val sessionListScreen = generatedSources.get()
+            .file("com/openminis/app/ui/sessions/SessionListScreen.kt").asFile.readText()
+        val sessionListViewModel = generatedSources.get()
+            .file("com/openminis/app/ui/sessions/SessionListViewModel.kt").asFile.readText()
+        check("一键清空所有聊天记录" in sessionListScreen)
+        check("showClearAllDialog" in sessionListScreen)
+        check("fun deleteAllSessions()" in sessionListViewModel)
         val browserAction = generatedSources.get()
             .file("com/openminis/app/browser/BrowserAction.kt").asFile.readText()
         val browserInput = generatedSources.get()

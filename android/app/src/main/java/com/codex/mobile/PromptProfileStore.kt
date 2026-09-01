@@ -188,12 +188,15 @@ object PromptProfileStore {
             else -> "0"
         }
         val runtimeCheckedAt = readJsonString(runtimeHealth, "checked_at")
+        val localRgOk = if (readJsonBoolean(runtimeHealth, "rg_local_ok")) "1" else "0"
+        val ubuntuRgOk = if (readJsonBoolean(runtimeHealth, "rg_ubuntu_ok")) "1" else "0"
         return """
             You are running inside the app-private environment for package ${context.packageName}.
             Default app environment snapshot: HOME=${paths.homeDir} PREFIX=${paths.prefixDir} TMPDIR=${paths.tmpDir} ANYCLAW_UBUNTU_BIN=$ubuntuBin
             Default execution chains in this app: local app shell, Ubuntu runtime shell, and system-shell.
-            Bundled Ubuntu runtime snapshot: installed=$runtimeInstalled version=$runtimeVersion runtime_health_ok=$runtimeHealthOk${if (runtimeCheckedAt.isNotEmpty()) " checked_at=$runtimeCheckedAt" else ""}
+            Bundled Ubuntu runtime snapshot: installed=$runtimeInstalled version=$runtimeVersion runtime_health_ok=$runtimeHealthOk rg_local_ok=$localRgOk rg_ubuntu_ok=$ubuntuRgOk${if (runtimeCheckedAt.isNotEmpty()) " checked_at=$runtimeCheckedAt" else ""}
             When checking the environment, verify ubuntu-status, echo ${'$'}ANYCLAW_UBUNTU_BIN, and list ${'$'}HOME/.openclaw-android/linux-runtime/bin before concluding the Ubuntu runtime is unavailable.
+            Ripgrep is exposed as rg in the local app shell and bundled Ubuntu runtime. Verify command -v rg and rg --version in the selected shell before reporting it unavailable.
         """.trimIndent()
     }
 

@@ -19,6 +19,15 @@
         android:layout_marginTop="12dp"
         android:text="刷新协作状态" />
 
+    <Button
+        android:id="@+id/btnCollaborationClearHistory"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:contentDescription="一键清空所有已结束和已归档的协作任务记录"
+        android:importantForAccessibility="yes"
+        android:text="清空所有历史任务" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
