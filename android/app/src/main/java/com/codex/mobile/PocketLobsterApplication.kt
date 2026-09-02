@@ -63,6 +63,7 @@ class PocketLobsterApplication : MinisApp() {
         SharedBridgeTokenStore.ensure(this)
         ShizukuBridgeRuntime.ensureStarted(this)
         SharedRuntimeCliInstaller.ensureInstalled(this)
+        PhoneUiAgentRuntime.initialize(this)
         runCatching {
             startService(Intent(this, MinisRuntimeBridgeService::class.java))
         }.onFailure { error ->

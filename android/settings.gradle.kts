@@ -19,3 +19,4 @@ dependencyResolutionManagement {
 rootProject.name = "CodexMobile"
 include(":app")
 include(":openminis")
+include(":showerclient")

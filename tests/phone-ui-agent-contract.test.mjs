@@ -1,0 +1,29 @@
+import { readFileSync, statSync } from 'node:fs'
+import { strict as assert } from 'node:assert'
+
+const read = (path) => readFileSync(path, 'utf8')
+const manifest = read('android/app/src/main/AndroidManifest.xml')
+const runtime = read('android/app/src/main/java/com/codex/mobile/PhoneUiAgentRuntime.kt')
+const protocol = read('android/app/src/main/java/com/codex/mobile/PhoneUiAgentProtocol.kt')
+const bridge = read('android/app/src/main/java/com/codex/mobile/ShizukuShellBridgeServer.kt')
+const toolbox = read('android/app/src/main/assets/anyclaw/claude-toolbox-server.js')
+const minisTools = read('android/openminis/src/main/java/com/openminis/app/integration/PocketLobsterHostTools.kt')
+const showerManager = read('android/showerclient/src/main/java/com/ai/assistance/showerclient/ShowerServerManager.kt')
+
+assert.match(manifest, /android:name="\.PhoneUiAgentActivity"/)
+assert.match(manifest, /android:name="\.PhoneUiAgentDisplayActivity"/)
+assert.match(manifest, /android:name="\.PhoneUiShowerBinderReceiver"/)
+assert.match(runtime, /VIRTUAL\("virtual"\)/)
+assert.match(runtime, /isSensitive\(/)
+assert.match(runtime, /startKeepAlive\(/)
+assert.match(protocol, /AUTOGLM_NATIVE/)
+assert.match(protocol, /GENERIC_JSON/)
+assert.match(protocol, /"image_url"/)
+assert.match(bridge, /\/phone-agent\/start/)
+assert.match(bridge, /isSharedRequestAuthorized/)
+for (const name of ['start', 'status', 'pause', 'resume', 'cancel']) {
+  assert.match(toolbox, new RegExp(`tool\\("phone_ui_agent_${name}"`))
+  assert.match(minisTools, new RegExp(`phone_ui_agent_${name}`))
+}
+assert.match(showerManager, />\$processLogPath 2>&1 <\/dev\/null &/)
+assert.ok(statSync('android/showerclient/src/main/assets/shower-server.jar').size > 100_000)

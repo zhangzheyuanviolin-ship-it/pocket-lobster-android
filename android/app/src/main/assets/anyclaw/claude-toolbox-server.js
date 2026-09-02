@@ -9,6 +9,7 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_STDIO_BYTES = 4 * 1024 * 1024;
 const DEFAULT_SEARCH_LIMIT = 6;
 const WEB_BRIDGE_URL = process.env.ANYCLAW_WEB_BRIDGE_URL || "http://127.0.0.1:18926/web/call";
+const HOST_BRIDGE_URL = process.env.ANYCLAW_HOST_BRIDGE_URL || "http://127.0.0.1:18926";
 const MINIS_BRIDGE_URL = process.env.ANYCLAW_MINIS_BRIDGE_URL || "http://127.0.0.1:18927";
 const SHARED_BRIDGE_TOKEN_FILE = process.env.ANYCLAW_SHARED_BRIDGE_TOKEN_FILE || path.resolve(process.env.HOME || "", "..", "shared-runtime", "bridge-token");
 const TAVILY_BASE_URL = process.env.ANYCLAW_TAVILY_BASE_URL || "https://api.tavily.com/search";
@@ -340,6 +341,15 @@ const TOOL_DEFS = [
     output_path: { type: "string", description: "Optional absolute PNG export path in app or shared storage." },
     include_base64: { type: "boolean", description: "Include image data; screenshot defaults to true for direct visual inspection." }
   }, ["action"]),
+  tool("phone_ui_agent_start", "Start the host-owned visual phone UI subagent. It can operate the physical main screen or an isolated virtual screen and continues in the background. Use virtual mode unless the user explicitly requests the main screen. Sensitive actions stop for user takeover.", {
+    task: { type: "string", minLength: 1 },
+    mode: { type: "string", enum: ["virtual", "main"] },
+    maxSteps: { type: "integer", minimum: 1, maximum: 100 }
+  }, ["task"]),
+  tool("phone_ui_agent_status", "Read the authoritative status, step events, result or error for the current phone UI subagent task."),
+  tool("phone_ui_agent_pause", "Pause the current phone UI subagent before user takeover."),
+  tool("phone_ui_agent_resume", "Resume a paused phone UI subagent after user takeover."),
+  tool("phone_ui_agent_cancel", "Cancel the current phone UI subagent and prevent further screen actions."),
   tool("anyclaw_github_repo_info", "Get repository metadata.", {
     repo: { type: "string", minLength: 3 },
     token: { type: "string" }
@@ -1050,6 +1060,32 @@ async function callMinisBridge(route, payload, timeoutMs = 120000) {
     return {
       ok: false,
       error: "minis_bridge_http_" + String(response.status || 0),
+      detail: String(response.text || "").slice(0, 1200)
+    };
+  }
+  return response.data;
+}
+
+async function callHostBridge(route, payload, timeoutMs = 120000) {
+  let token = "";
+  try {
+    token = fs.readFileSync(SHARED_BRIDGE_TOKEN_FILE, "utf8").trim();
+  } catch (error) {
+    return { ok: false, error: "shared_bridge_token_unavailable", detail: String(error.message || error) };
+  }
+  const response = await fetchJson(HOST_BRIDGE_URL + route, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Pocket-Lobster-Token": token,
+      "User-Agent": "PocketLobsterPhoneUiAgent/1.0"
+    },
+    body: JSON.stringify(payload || {})
+  }, timeoutMs);
+  if (!response.ok || !response.data || typeof response.data !== "object") {
+    return {
+      ok: false,
+      error: "phone_ui_agent_http_" + String(response.status || 0),
       detail: String(response.text || "").slice(0, 1200)
     };
   }
@@ -2153,6 +2189,20 @@ async function callTool(name, args) {
       }
       return await callMinisBridge("/browser/call", browserArgs, 120000);
     }
+    case "phone_ui_agent_start":
+      return await callHostBridge("/phone-agent/start", {
+        task: toStringSafe(args.task, "").trim(),
+        mode: toStringSafe(args.mode, "virtual").trim() || "virtual",
+        maxSteps: clampInt(toInt(args.maxSteps, 25), 1, 100)
+      }, 30000);
+    case "phone_ui_agent_status":
+      return await callHostBridge("/phone-agent/status", {}, 30000);
+    case "phone_ui_agent_pause":
+      return await callHostBridge("/phone-agent/pause", {}, 30000);
+    case "phone_ui_agent_resume":
+      return await callHostBridge("/phone-agent/resume", {}, 30000);
+    case "phone_ui_agent_cancel":
+      return await callHostBridge("/phone-agent/cancel", {}, 30000);
     case "anyclaw_github_repo_info": {
       const token = resolveGithubToken(args);
       if (!token) return { ok: false, error: "missing_github_token" };

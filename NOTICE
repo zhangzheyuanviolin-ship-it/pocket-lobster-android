@@ -16,3 +16,10 @@ historical Pocket Lobster MIT license are preserved under LICENSES/.
 
 Additional third-party notices from OpenMinis are preserved in
 LICENSES/OpenMinis-THIRD_PARTY_LICENSES.md and in the APK assets.
+
+The isolated virtual-screen client and server bridge are derived from Operit:
+Repository: https://github.com/AAswordman/Operit
+Component: showerclient and shower-server
+License: GNU Lesser General Public License version 3
+The corresponding license text is preserved with the Android source and in
+the APK assets.

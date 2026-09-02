@@ -57,6 +57,16 @@
             android:textAllCaps="false" />
 
         <Button
+            android:id="@+id/btnAgentHubPhoneUi"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:contentDescription="打开手机操作智能体"
+            android:minHeight="52dp"
+            android:text="手机操作智能体"
+            android:textAllCaps="false" />
+
+        <Button
             android:id="@+id/btnAgentHubPermissionCenter"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

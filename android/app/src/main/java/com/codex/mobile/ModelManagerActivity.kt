@@ -60,6 +60,7 @@ class ModelManagerActivity : AppCompatActivity() {
     private lateinit var btnCodexModelManager: Button
     private lateinit var btnMinisModelManager: Button
     private lateinit var btnClaudeModelManager: Button
+    private lateinit var btnPhoneUiModelManager: Button
     private lateinit var tvCurrentModel: TextView
     private lateinit var progressBar: ProgressBar
     private lateinit var tvStatus: TextView
@@ -87,6 +88,7 @@ class ModelManagerActivity : AppCompatActivity() {
         btnCodexModelManager = findViewById(R.id.btnCodexModelManager)
         btnMinisModelManager = findViewById(R.id.btnMinisModelManager)
         btnClaudeModelManager = findViewById(R.id.btnClaudeModelManager)
+        btnPhoneUiModelManager = findViewById(R.id.btnPhoneUiModelManager)
         tvCurrentModel = findViewById(R.id.tvCurrentModel)
         progressBar = findViewById(R.id.progressModel)
         tvStatus = findViewById(R.id.tvModelStatus)
@@ -108,6 +110,9 @@ class ModelManagerActivity : AppCompatActivity() {
                     putExtra(AgentModelManagerActivity.EXTRA_AGENT_ID, ExternalAgentId.CLAUDE_CODE.value)
                 },
             )
+        }
+        btnPhoneUiModelManager.setOnClickListener {
+            startActivity(android.content.Intent(this, PhoneUiAgentModelManagerActivity::class.java))
         }
 
         findViewById<View>(R.id.layoutModelActions).visibility = View.GONE

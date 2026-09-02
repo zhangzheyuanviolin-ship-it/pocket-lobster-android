@@ -49,6 +49,14 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:text="@string/model_manager_claude_button_text" />
+
+        <Button
+            android:id="@+id/btnPhoneUiModelManager"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:contentDescription="打开手机操作智能体模型管理"
+            android:text="手机操作智能体模型" />
     </LinearLayout>
 
     <LinearLayout

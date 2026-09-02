@@ -366,7 +366,8 @@ import android.content.Intent""",
             "        add(shellExecuteDefinition())",
             """        add(shellExecuteDefinition())
         add(com.openminis.app.integration.PocketLobsterHostTools.localTerminalDefinition())
-        add(com.openminis.app.integration.PocketLobsterHostTools.ubuntuDefinition())""",
+        add(com.openminis.app.integration.PocketLobsterHostTools.ubuntuDefinition())
+        addAll(com.openminis.app.integration.PocketLobsterHostTools.phoneAgentDefinitions())""",
         )
         generatedSources.get().file("com/openminis/app/tools/AgentTools.kt").asFile.apply {
             replaceRequired(
@@ -413,8 +414,7 @@ import android.content.Intent""",
             """            "memory_get" -> executeMemoryGetTool(argsJson)
             else -> ToolExecutionResult("Unknown tool: ${'$'}name", false)""",
             """            "memory_get" -> executeMemoryGetTool(argsJson)
-            com.openminis.app.integration.PocketLobsterHostTools.LOCAL_TOOL,
-            com.openminis.app.integration.PocketLobsterHostTools.UBUNTU_TOOL ->
+            in com.openminis.app.integration.PocketLobsterHostTools.NAMES ->
                 com.openminis.app.integration.PocketLobsterHostTools.execute(name, argsJson, context)
             in com.openminis.app.integration.PocketLobsterCollaborationTools.NAMES ->
                 com.openminis.app.integration.PocketLobsterCollaborationTools.execute(name, argsJson)
@@ -683,6 +683,7 @@ val verifyOpenMinisIntegrationSources by tasks.registering {
             .file("com/openminis/app/ui/chat/ChatViewModel.kt").asFile.readText()
         check("PocketLobsterHostTools.localTerminalDefinition" in agentTools)
         check("PocketLobsterHostTools.ubuntuDefinition" in agentTools)
+        check("PocketLobsterHostTools.phoneAgentDefinitions" in agentTools)
         check("PocketLobsterHostTools.execute" in chatViewModel)
         check("PocketLobsterCollaborationTools.definitions" in chatViewModel)
         check("PocketLobsterCollaborationTools.execute" in chatViewModel)

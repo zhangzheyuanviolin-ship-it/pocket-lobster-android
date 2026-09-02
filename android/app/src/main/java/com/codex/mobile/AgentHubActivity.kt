@@ -32,6 +32,10 @@ class AgentHubActivity : AppCompatActivity() {
             )
         }
 
+        findViewById<Button>(R.id.btnAgentHubPhoneUi).setOnClickListener {
+            startActivity(Intent(this, PhoneUiAgentActivity::class.java))
+        }
+
         findViewById<Button>(R.id.btnAgentHubPermissionCenter).setOnClickListener {
             startActivity(Intent(this, PermissionManagerActivity::class.java))
         }

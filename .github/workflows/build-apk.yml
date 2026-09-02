@@ -52,7 +52,7 @@ jobs:
 
       - name: Verify embedded server identity
         run: |
-          grep -E '^1\.0\.87-codex-cli-0\.147\.0-gpt-5\.6-openminis-1\.12-browser-tools-reasoning-v328:[0-9a-f]{64}$' android/app/src/main/assets/server-bundle/bundle-id
+          grep -E '^1\.0\.88-codex-cli-0\.147\.0-gpt-5\.6-openminis-1\.12-phone-ui-agent-v329:[0-9a-f]{64}$' android/app/src/main/assets/server-bundle/bundle-id
           grep -F 'durable-agent-tools-v2' android/app/src/main/assets/server-bundle/dist-cli/index.js
           grep -F 'claudeCollaborationReady' android/app/src/main/assets/server-bundle/dist-cli/index.js
 
@@ -163,12 +163,12 @@ jobs:
             exit 1
           fi
           APK_PATH="android/app/build/outputs/apk/debug/$APK_NAME"
-          unzip -p "$APK_PATH" assets/server-bundle/bundle-id | grep -E '^1\.0\.87-codex-cli-0\.147\.0-gpt-5\.6-openminis-1\.12-browser-tools-reasoning-v328:[0-9a-f]{64}$'
+          unzip -p "$APK_PATH" assets/server-bundle/bundle-id | grep -E '^1\.0\.88-codex-cli-0\.147\.0-gpt-5\.6-openminis-1\.12-phone-ui-agent-v329:[0-9a-f]{64}$'
           BADGING="$("$AAPT_BIN" dump badging "$APK_PATH")"
           PACKAGE_LINE="$(echo "$BADGING" | head -n 1)"
           echo "$PACKAGE_LINE"
           echo "$PACKAGE_LINE" | grep -F "name='$EXPECTED_PACKAGE_ID'"
-          echo "$PACKAGE_LINE" | grep -F "versionCode='328'"
+          echo "$PACKAGE_LINE" | grep -F "versionCode='329'"
           test "$(echo "$BADGING" | grep -c '^launchable-activity:')" -eq 1
           echo "$BADGING" | grep -F "launchable-activity: name='com.codex.mobile.MainActivity'"
           if echo "$BADGING" | grep -E "^application-label[^:]*:'Minis'$"; then
@@ -176,7 +176,7 @@ jobs:
             exit 1
           fi
           if [ "$RELEASE_CHANNEL" = "beta" ]; then
-            echo "$PACKAGE_LINE" | grep -F "versionName='1.0.87-codex-cli-0.147.0-gpt-5.6-openminis-1.12-browser-tools-reasoning-v328-beta'"
+            echo "$PACKAGE_LINE" | grep -F "versionName='1.0.88-codex-cli-0.147.0-gpt-5.6-openminis-1.12-phone-ui-agent-v329-beta'"
             echo "$BADGING" | grep -F "application-label:'口袋大龙虾测试版'"
             test "$EXPECTED_PACKAGE_ID" = "com.codex.mobile.pocketlobster.beta"
           fi
@@ -200,12 +200,15 @@ jobs:
           grep -F 'ShizukuProvider.requestBinderForNonProviderProcess' android/app/src/main/java/com/codex/mobile/PocketLobsterApplication.kt
           grep -F 'PocketLobsterHostTools.localTerminalDefinition' android/openminis/build.gradle.kts
           grep -F 'PocketLobsterHostTools.ubuntuDefinition' android/openminis/build.gradle.kts
+          grep -F 'PocketLobsterHostTools.phoneAgentDefinitions' android/openminis/build.gradle.kts
           grep -F 'PocketLobsterCollaborationTools.definitions' android/openminis/build.gradle.kts
           grep -F 'PocketLobsterCollaborationTools.execute' android/openminis/build.gradle.kts
           test -f android/openminis/src/main/java/com/openminis/app/integration/PocketLobsterCollaborationTools.kt
           test -f android/app/src/main/assets/anyclaw/collaboration-mcp-server.js
           grep -F 'tool("anyclaw_alpine"' android/app/src/main/assets/anyclaw/claude-toolbox-server.js
           grep -F 'tool("minis_browser"' android/app/src/main/assets/anyclaw/claude-toolbox-server.js
+          grep -F 'tool("phone_ui_agent_start"' android/app/src/main/assets/anyclaw/claude-toolbox-server.js
+          grep -F 'PHONE_START_TOOL = "phone_ui_agent_start"' android/openminis/src/main/java/com/openminis/app/integration/PocketLobsterHostTools.kt
           test -f android/app/src/main/assets/shared-runtime/alpine-shell
           test -f android/app/src/main/assets/shared-runtime/minis-browser
           test -f android/app/src/main/assets/shared-runtime/shared-runtime-cli.js
@@ -225,6 +228,7 @@ jobs:
           unzip -l "$APK_PATH" > /tmp/apk-entries.txt
           grep -E 'assets/alpine-minirootfs\.tar(\.gz)?$' /tmp/apk-entries.txt
           grep -F "assets/proot-aarch64" /tmp/apk-entries.txt
+          grep -F "assets/shower-server.jar" /tmp/apk-entries.txt
           grep -F "lib/arm64-v8a/libproot.so" /tmp/apk-entries.txt
           grep -F "lib/arm64-v8a/libproot-loader.so" /tmp/apk-entries.txt
           grep -F "lib/arm64-v8a/libproot-loader32.so" /tmp/apk-entries.txt

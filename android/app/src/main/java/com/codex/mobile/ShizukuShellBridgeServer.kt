@@ -39,6 +39,16 @@ class ShizukuShellBridgeServer(
                     handleSharedStatus(session)
                 session.method == Method.POST && session.uri == "/shared/exec" ->
                     handleSharedExec(session)
+                session.method == Method.POST && session.uri == "/phone-agent/start" ->
+                    handlePhoneAgentStart(session)
+                session.method == Method.POST && session.uri == "/phone-agent/status" ->
+                    handlePhoneAgentControl(session, "status")
+                session.method == Method.POST && session.uri == "/phone-agent/pause" ->
+                    handlePhoneAgentControl(session, "pause")
+                session.method == Method.POST && session.uri == "/phone-agent/resume" ->
+                    handlePhoneAgentControl(session, "resume")
+                session.method == Method.POST && session.uri == "/phone-agent/cancel" ->
+                    handlePhoneAgentControl(session, "cancel")
                 else -> jsonResponse(
                     Response.Status.NOT_FOUND,
                     JSONObject().put("ok", false).put("error", "Not found"),
@@ -182,6 +192,36 @@ class ShizukuShellBridgeServer(
                 .put("output", result.output)
                 .put("timedOut", result.timedOut),
         )
+    }
+
+    private fun handlePhoneAgentStart(session: IHTTPSession): Response {
+        if (!isSharedRequestAuthorized(session)) return sharedUnauthorized()
+        val payload = requestJson(session)
+        val task = payload.optString("task").trim()
+        val mode = PhoneUiScreenMode.entries.firstOrNull { it.value == payload.optString("mode") }
+            ?: PhoneUiScreenMode.VIRTUAL
+        val maxSteps = payload.optInt("maxSteps", 25).coerceIn(1, 100)
+        val state = PhoneUiAgentRuntime.startTask(context, task, mode, maxSteps)
+        return jsonResponse(Response.Status.OK, JSONObject().put("ok", true).put("task", state))
+    }
+
+    private fun handlePhoneAgentControl(session: IHTTPSession, action: String): Response {
+        if (!isSharedRequestAuthorized(session)) return sharedUnauthorized()
+        requestJson(session)
+        val state = when (action) {
+            "pause" -> PhoneUiAgentRuntime.pause()
+            "resume" -> PhoneUiAgentRuntime.resume()
+            "cancel" -> PhoneUiAgentRuntime.cancel()
+            else -> PhoneUiAgentRuntime.snapshot()
+        }
+        return jsonResponse(Response.Status.OK, JSONObject().put("ok", true).put("task", state))
+    }
+
+    private fun requestJson(session: IHTTPSession): JSONObject {
+        val files = HashMap<String, String>()
+        session.parseBody(files)
+        val raw = files["postData"].orEmpty()
+        return if (raw.isBlank()) JSONObject() else JSONObject(raw)
     }
 
     private fun isSharedRequestAuthorized(session: IHTTPSession): Boolean =

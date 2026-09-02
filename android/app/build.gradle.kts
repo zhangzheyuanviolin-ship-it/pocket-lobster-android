@@ -45,8 +45,8 @@ android {
         // Android 10+ (targetSdk 29+) enforces W^X which blocks this via SELinux.
         // Termux (F-Droid) uses the same approach.
         targetSdk = 28
-        versionCode = 328
-        versionName = "1.0.87-codex-cli-0.147.0-gpt-5.6-openminis-1.12-browser-tools-reasoning-v328"
+        versionCode = 329
+        versionName = "1.0.88-codex-cli-0.147.0-gpt-5.6-openminis-1.12-phone-ui-agent-v329"
     }
 
     flavorDimensions += "channel"
@@ -134,12 +134,14 @@ android {
     sourceSets.getByName("main") {
         // Library assets were not propagated into the final APK on AGP 8.7.
         assets.srcDir(rootProject.file("../third_party/OpenMinis/src/android/app/src/main/assets"))
+        assets.srcDir(rootProject.file("showerclient/src/main/assets"))
     }
 
 }
 
 dependencies {
     implementation(project(":openminis"))
+    implementation(project(":showerclient"))
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.webkit:webkit:1.12.1")
@@ -151,5 +153,7 @@ dependencies {
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("org.tukaani:xz:1.10")
     implementation("io.coil-kt:coil:2.7.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     testImplementation("junit:junit:4.13.2")
 }

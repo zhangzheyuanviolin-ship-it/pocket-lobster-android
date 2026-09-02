@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#020617"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="手机操作智能体"
+        android:textColor="#E2E8F0"
+        android:textSize="22sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/tvPhoneUiStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:accessibilityLiveRegion="polite"
+        android:text="暂无手机操作任务"
+        android:textColor="#CBD5E1"
+        android:textSize="15sp" />
+
+    <ScrollView
+        android:id="@+id/scrollPhoneUiEvents"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="8dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:id="@+id/layoutPhoneUiEvents"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+    </ScrollView>
+
+    <RadioGroup
+        android:id="@+id/groupPhoneUiMode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <RadioButton
+            android:id="@+id/radioPhoneUiMain"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="主屏幕模式"
+            android:textColor="#E2E8F0" />
+
+        <RadioButton
+            android:id="@+id/radioPhoneUiVirtual"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:checked="true"
+            android:text="虚拟屏幕模式"
+            android:textColor="#E2E8F0" />
+    </RadioGroup>
+
+    <EditText
+        android:id="@+id/inputPhoneUiMaxSteps"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="最大操作步数，默认25"
+        android:inputType="number"
+        android:maxLines="1"
+        android:text="25"
+        android:textColor="#F8FAFC"
+        android:textColorHint="#94A3B8" />
+
+    <EditText
+        android:id="@+id/inputPhoneUiTask"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="输入需要在手机上完成的任务"
+        android:inputType="textCapSentences|textMultiLine"
+        android:maxLines="4"
+        android:minLines="2"
+        android:textColor="#F8FAFC"
+        android:textColorHint="#94A3B8" />
+
+    <Button
+        android:id="@+id/btnPhoneUiSend"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="发送手机操作任务"
+        android:textAllCaps="false" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnPhoneUiPauseResume"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="暂停任务"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/btnPhoneUiStop"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:text="终止任务"
+            android:textAllCaps="false" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnPhoneUiOpenDisplay"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="打开虚拟屏幕"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/btnPhoneUiModels"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:text="模型管理"
+            android:textAllCaps="false" />
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/btnPhoneUiHistory"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:contentDescription="查看手机操作智能体历史任务"
+        android:text="历史任务"
+        android:textAllCaps="false" />
+
+</LinearLayout>

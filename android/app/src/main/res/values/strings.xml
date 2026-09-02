@@ -27,7 +27,7 @@
     <string name="permission_center_button_text">权限管理</string>
     <string name="permission_center_button_desc">打开权限管理中心</string>
     <string name="agent_hub_title">口袋大龙虾</string>
-    <string name="agent_hub_subtitle">请选择要进入的智能体聊天入口，也可以先进入权限管理中心完成组件安装与授权。</string>
+    <string name="agent_hub_subtitle">请选择要进入的智能体聊天入口，也可以使用手机操作智能体在主屏幕或虚拟屏幕完成任务。</string>
     <string name="agent_hub_openclaw">Minis 聊天</string>
     <string name="model_manager_minis_button_text">Minis 模型提供商管理</string>
     <string name="agent_hub_codex">Codex 聊天</string>
@@ -82,7 +82,7 @@
     <string name="conversation_update_failed">更新失败。</string>
     <string name="conversation_delete_failed">删除失败。</string>
     <string name="model_manager_title">模型管理</string>
-    <string name="model_manager_subtitle">分别进入 Codex、Minis 与 Claude Code 的模型提供商管理页面。</string>
+    <string name="model_manager_subtitle">分别进入 Codex、Minis、Claude Code 与手机操作智能体的模型提供商管理页面。</string>
     <string name="model_manager_button_text">模型管理</string>
     <string name="model_manager_button_desc">打开模型管理页面</string>
     <string name="codex_skills_manager_button_text">Skills 管理</string>
