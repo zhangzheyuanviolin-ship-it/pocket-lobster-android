@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.IBinder
 import android.util.Base64
+import android.webkit.CookieManager
 import com.openminis.app.browser.BrowserAction
 import com.openminis.app.browser.BrowserActionInput
 import com.openminis.app.browser.BrowserActionResult
@@ -20,8 +21,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 object SharedMinisRuntime {
     private const val SHARED_SESSION_ID = "pocket-lobster-shared"
@@ -56,22 +62,23 @@ object SharedMinisRuntime {
     ): BrowserActionResult {
         val pool = browser(context)
         val normalizedAgentId = normalizeAgentId(agentId)
-        if (input.action == BrowserAction.LIST_TABS) {
-            return pool.execute(input, singleTab = false)
+        val normalizedInput = normalizeBrowserInput(input)
+        if (normalizedInput.action == BrowserAction.LIST_TABS) {
+            return pool.execute(normalizedInput, singleTab = false)
         }
-        if (input.action == BrowserAction.NEW_TAB) {
-            val result = pool.execute(input, singleTab = false)
+        if (normalizedInput.action == BrowserAction.NEW_TAB) {
+            val result = pool.execute(normalizedInput, singleTab = false)
             result.tabId?.let { browserTabsByAgent[normalizedAgentId] = it }
             return result
         }
-        if (input.tabId != null && pool.tabs.value.none { it.id == input.tabId }) {
-            return BrowserActionResult.error("Tab ${input.tabId} not found; call list_tabs and retry with an existing tab_id")
+        if (normalizedInput.tabId != null && pool.tabs.value.none { it.id == normalizedInput.tabId }) {
+            return BrowserActionResult.error("Tab ${normalizedInput.tabId} not found; call list_tabs and retry with an existing tab_id")
         }
 
         val targetTab = browserAllocationLock.withLock {
             // An explicit tab ID is a deliberate handoff. BrowserTabPool serializes
             // concurrent actions on that tab, so every agent may safely take it over.
-            val requestedTab = input.tabId
+            val requestedTab = normalizedInput.tabId
             val mappedTab = browserTabsByAgent[normalizedAgentId]
                 ?.takeIf { id -> pool.tabs.value.any { it.id == id } }
             requestedTab ?: mappedTab ?: allocateBrowserTab(pool, normalizedAgentId)
@@ -80,12 +87,110 @@ object SharedMinisRuntime {
             return BrowserActionResult.error("No browser tab is available for agent $normalizedAgentId")
         }
         browserTabsByAgent[normalizedAgentId] = targetTab
-        val routedInput = input.copy(tabId = targetTab)
-        val result = pool.execute(routedInput, singleTab = false)
-        if (input.action == BrowserAction.CLOSE_TAB && result.success) {
+        val routedInput = normalizedInput.copy(tabId = targetTab)
+        var result = pool.execute(routedInput, singleTab = false)
+        if (!result.success && routedInput.action == BrowserAction.FETCH && !routedInput.url.isNullOrBlank()) {
+            result = nativeFetch(routedInput.url, targetTab)
+        }
+        if (normalizedInput.action == BrowserAction.CLOSE_TAB && result.success) {
             browserTabsByAgent.remove(normalizedAgentId, targetTab)
         }
         return result
+    }
+
+    private fun normalizeBrowserInput(input: BrowserActionInput): BrowserActionInput {
+        if (input.action == BrowserAction.EXECUTE_JS) {
+            val script = input.script?.trim().orEmpty()
+            val expression = script.trimEnd(';').trim()
+            val isBareExpression = expression.isNotEmpty() &&
+                !expression.startsWith("return ") &&
+                !expression.contains(';') &&
+                !Regex("""(^|\s)(var|let|const|if|for|while|try|function|class)\b""").containsMatchIn(expression)
+            return if (isBareExpression) input.copy(script = "return ($expression)") else input
+        }
+
+        val selectorType = input.selectorType?.trim()?.lowercase().orEmpty()
+        val rawSelector = input.selector?.trim().orEmpty()
+        if (selectorType.isBlank() || selectorType == "css" || rawSelector.isBlank()) return input
+        if (input.action !in setOf(
+                BrowserAction.CLICK,
+                BrowserAction.TYPE,
+                BrowserAction.GET_TEXT,
+                BrowserAction.FIND_ELEMENTS,
+                BrowserAction.HOVER,
+            )
+        ) return input
+
+        val selectorValue = if (selectorType == "text" && rawSelector.startsWith("text=", ignoreCase = true)) {
+            rawSelector.substringAfter('=').trim()
+        } else {
+            rawSelector
+        }
+        val selector = JSONObject.quote(selectorValue)
+        val allLocator = when (selectorType) {
+            "xpath" -> "Array.from((function(){var s=document.evaluate($selector,document,null,XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,null),a=[];for(var i=0;i<s.snapshotLength;i++)a.push(s.snapshotItem(i));return a;})())"
+            "text" -> "Array.from(document.querySelectorAll('button,a,input,textarea,select,[role=button],[role=link],[contenteditable=true]')).filter(function(node){var wanted=$selector.toLowerCase();var actual=(node.innerText||node.value||node.getAttribute('aria-label')||node.getAttribute('placeholder')||'').trim().toLowerCase();return actual===wanted||actual.indexOf(wanted)>=0;})"
+            else -> return input
+        }
+        val script = when (input.action) {
+            BrowserAction.CLICK -> "var el=$allLocator[0]; if(!el) throw new Error('Element not found: '+$selector); el.scrollIntoView({block:'center'}); el.click(); return {clicked:true,selectorType:${JSONObject.quote(selectorType)}};"
+            BrowserAction.TYPE -> {
+                val value = JSONObject.quote(input.text ?: "")
+                "var el=$allLocator[0]; if(!el) throw new Error('Element not found: '+$selector); el.focus(); var value=$value; var proto=el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype; var setter=Object.getOwnPropertyDescriptor(proto,'value'); if(setter&&setter.set){setter.set.call(el,value);}else{el.value=value;} el.dispatchEvent(new InputEvent('input',{data:value,inputType:'insertText',bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return {typed:true,length:value.length,selectorType:${JSONObject.quote(selectorType)}};"
+            }
+            BrowserAction.GET_TEXT -> "var el=$allLocator[0]; if(!el) throw new Error('Element not found: '+$selector); return (el.innerText||el.textContent||el.value||'').trim();"
+            BrowserAction.HOVER -> "var el=$allLocator[0]; if(!el) throw new Error('Element not found: '+$selector); el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true})); return {hovered:true,selectorType:${JSONObject.quote(selectorType)}};"
+            BrowserAction.FIND_ELEMENTS -> "return $allLocator.slice(0,100).map(function(el,index){return {index:index,tag:(el.tagName||'').toLowerCase(),text:(el.innerText||el.textContent||el.value||'').trim().slice(0,240),id:el.id||'',className:typeof el.className==='string'?el.className:'',href:el.href||'',ariaLabel:el.getAttribute&&el.getAttribute('aria-label')||''};});"
+            else -> return input
+        }
+        return BrowserActionInput(
+            action = BrowserAction.EXECUTE_JS,
+            script = script,
+            tabId = input.tabId,
+        )
+    }
+
+    private suspend fun nativeFetch(url: String, tabId: Int): BrowserActionResult = withContext(Dispatchers.IO) {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        try {
+            connection.instanceFollowRedirects = true
+            connection.connectTimeout = 20_000
+            connection.readTimeout = 60_000
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/136 Mobile Safari/537.36")
+            CookieManager.getInstance().getCookie(url)?.takeIf(String::isNotBlank)?.let {
+                connection.setRequestProperty("Cookie", it)
+            }
+            val status = connection.responseCode
+            val contentType = connection.contentType.orEmpty()
+            val stream = if (status in 200..399) connection.inputStream else connection.errorStream
+            val data = stream?.use { input ->
+                val output = ByteArrayOutputStream()
+                val buffer = ByteArray(16 * 1024)
+                var remaining = 32 * 1024 * 1024
+                while (remaining > 0) {
+                    val read = input.read(buffer, 0, minOf(buffer.size, remaining))
+                    if (read < 0) break
+                    output.write(buffer, 0, read)
+                    remaining -= read
+                }
+                output.toByteArray()
+            } ?: ByteArray(0)
+            if (status !in 200..299) {
+                return@withContext BrowserActionResult.error("Fetch failed with HTTP $status").copy(tabId = tabId)
+            }
+            val extension = contentType.substringBefore(';').substringAfterLast('/').ifBlank { "bin" }
+            BrowserActionResult(
+                text = "Fetched ${connection.url}\n  Status: $status\n  Content-Type: $contentType\n  Size: ${data.size} bytes\n  Transport: native browser-session fallback",
+                fetchedFileData = data,
+                fetchedFileName = "fetch_${System.currentTimeMillis()}.$extension",
+                pageURL = connection.url.toString(),
+                tabId = tabId,
+            )
+        } catch (error: Throwable) {
+            BrowserActionResult.error("Fetch failed: ${error.message ?: error.javaClass.name}").copy(tabId = tabId)
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private suspend fun allocateBrowserTab(pool: BrowserTabPool, agentId: String): Int? {
@@ -197,7 +302,7 @@ private class MinisRuntimeBridgeServer(
     }
 
     private fun browser(session: IHTTPSession): Response {
-        val payload = body(session)
+        val payload = normalizeBrowserPayload(body(session))
         val agentId = payload.optString("agent_id", "codex")
         val input = BrowserActionInput.parse(payload.toString())
             ?: return json(
@@ -209,6 +314,7 @@ private class MinisRuntimeBridgeServer(
             )
         val result = runBlocking { executeBrowserAction(agentId, input, payload) }
         val image = prepareBridgeImage(result, payload)
+        val fetchedFilePath = prepareFetchedFile(result)
         return json(
             Response.Status.OK,
             JSONObject()
@@ -220,7 +326,8 @@ private class MinisRuntimeBridgeServer(
                 .put("imageMimeType", image.mimeType ?: JSONObject.NULL)
                 .put("imageBase64", image.base64 ?: JSONObject.NULL)
                 .put("imageExportError", image.error ?: JSONObject.NULL)
-                .put("fetchedFileName", result.fetchedFileName ?: JSONObject.NULL),
+                .put("fetchedFileName", result.fetchedFileName ?: JSONObject.NULL)
+                .put("fetchedFilePath", fetchedFilePath ?: JSONObject.NULL),
         )
     }
 
@@ -235,7 +342,7 @@ private class MinisRuntimeBridgeServer(
         parsedInput: BrowserActionInput,
         payload: JSONObject,
     ): BrowserActionResult {
-        val input = alternateSelectorInput(parsedInput, payload)
+        val input = parsedInput
         val selectorAction = parsedInput.action in setOf(
             BrowserAction.CLICK,
             BrowserAction.TYPE,
@@ -273,43 +380,21 @@ private class MinisRuntimeBridgeServer(
         return result
     }
 
-    private fun alternateSelectorInput(
-        input: BrowserActionInput,
-        payload: JSONObject,
-    ): BrowserActionInput {
-        val rawSelector = input.selector?.trim().orEmpty()
-        val requestedType = payload.optString("selector_type", "").trim().lowercase()
-        val selectorType = when {
-            requestedType.isNotBlank() -> requestedType
-            rawSelector.startsWith("text=", ignoreCase = true) -> "text"
-            rawSelector.startsWith("//") || rawSelector.startsWith("(") -> "xpath"
-            else -> "css"
+    private fun normalizeBrowserPayload(payload: JSONObject): JSONObject {
+        if (payload.optString("action") == "scroll_and_collect" &&
+            payload.optString("item_selector").isBlank() &&
+            payload.optString("selector").isNotBlank()
+        ) {
+            payload.put("item_selector", payload.optString("selector"))
         }
-        if (selectorType == "css" || rawSelector.isBlank()) return input
-        if (input.action !in setOf(BrowserAction.CLICK, BrowserAction.TYPE)) return input
-
-        val selectorValue = if (selectorType == "text" && rawSelector.startsWith("text=", ignoreCase = true)) {
-            rawSelector.substringAfter('=').trim()
-        } else {
-            rawSelector
+        if (payload.optString("selector_type").isBlank()) {
+            val selector = payload.optString("selector").trim()
+            when {
+                selector.startsWith("text=", ignoreCase = true) -> payload.put("selector_type", "text")
+                selector.startsWith("//") || selector.startsWith("(") -> payload.put("selector_type", "xpath")
+            }
         }
-        val selector = JSONObject.quote(selectorValue)
-        val locator = when (selectorType) {
-            "xpath" -> "document.evaluate($selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue"
-            "text" -> "Array.from(document.querySelectorAll('button,a,input,textarea,select,[role=button],[role=link],[contenteditable=true]')).find(function(node){var wanted=$selector.toLowerCase();var actual=(node.innerText||node.value||node.getAttribute('aria-label')||node.getAttribute('placeholder')||'').trim().toLowerCase();return actual===wanted||actual.indexOf(wanted)>=0;})"
-            else -> return input
-        }
-        val script = if (input.action == BrowserAction.CLICK) {
-            "var el=$locator; if(!el) throw new Error('Element not found: '+$selector); el.scrollIntoView({block:'center'}); el.click(); return {clicked:true, selectorType:${JSONObject.quote(selectorType)}};"
-        } else {
-            val value = JSONObject.quote(input.text ?: "")
-            "var el=$locator; if(!el) throw new Error('Element not found: '+$selector); el.focus(); var value=$value; var proto=el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype; var setter=Object.getOwnPropertyDescriptor(proto,'value'); if(setter&&setter.set){setter.set.call(el,value);}else{el.value=value;} el.dispatchEvent(new InputEvent('input',{data:value,inputType:'insertText',bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return {typed:true,length:value.length,selectorType:${JSONObject.quote(selectorType)}};"
-        }
-        return BrowserActionInput(
-            action = BrowserAction.EXECUTE_JS,
-            script = script,
-            tabId = input.tabId,
-        )
+        return payload
     }
 
     private data class BridgeImage(
@@ -323,12 +408,24 @@ private class MinisRuntimeBridgeServer(
         val sourcePath = result.imageFilePath?.takeIf(String::isNotBlank) ?: return BridgeImage()
         val bitmap = BitmapFactory.decodeFile(sourcePath)
             ?: return BridgeImage(path = sourcePath, error = "screenshot_decode_failed")
+        val maxDimension = 1_800
+        val preview = if (bitmap.width > maxDimension || bitmap.height > maxDimension) {
+            val scale = minOf(maxDimension.toFloat() / bitmap.width, maxDimension.toFloat() / bitmap.height)
+            Bitmap.createScaledBitmap(
+                bitmap,
+                (bitmap.width * scale).toInt().coerceAtLeast(1),
+                (bitmap.height * scale).toInt().coerceAtLeast(1),
+                true,
+            )
+        } else {
+            bitmap
+        }
         return try {
             val requested = payload.optString("output_path", payload.optString("output", "")).trim()
             val destination = resolvePngOutput(requested)
             destination.parentFile?.mkdirs()
             destination.outputStream().use { output ->
-                check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
+                check(preview.compress(Bitmap.CompressFormat.PNG, 100, output))
             }
             val encoded = if (payload.optBoolean("include_base64", false)) {
                 Base64.encodeToString(destination.readBytes(), Base64.NO_WRAP)
@@ -343,6 +440,7 @@ private class MinisRuntimeBridgeServer(
         } catch (error: Throwable) {
             BridgeImage(path = sourcePath, error = error.message ?: error.javaClass.name)
         } finally {
+            if (preview !== bitmap) preview.recycle()
             bitmap.recycle()
         }
     }
@@ -365,6 +463,20 @@ private class MinisRuntimeBridgeServer(
             "output_path_not_allowed"
         }
         return candidate
+    }
+
+    private fun prepareFetchedFile(result: BrowserActionResult): String? {
+        val data = result.fetchedFileData ?: return null
+        val safeName = result.fetchedFileName
+            ?.replace(Regex("[^A-Za-z0-9._-]"), "_")
+            ?.takeIf(String::isNotBlank)
+            ?: "fetch_${System.currentTimeMillis()}.bin"
+        return runCatching {
+            val output = File(context.cacheDir, "browser_bridge_fetches/$safeName")
+            output.parentFile?.mkdirs()
+            output.writeBytes(data)
+            output.absolutePath
+        }.getOrNull()
     }
 
     private fun browserSchema(): Response = json(Response.Status.OK, browserSchemaPayload())

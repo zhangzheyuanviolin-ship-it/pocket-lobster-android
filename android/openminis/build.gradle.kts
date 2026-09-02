@@ -154,6 +154,20 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
         }
         generatedSources.get().file("com/openminis/app/browser/BrowserActionInput.kt").asFile.apply {
             replaceRequired(
+                """    val selector: String? = null,
+    val text: String? = null,""",
+                """    val selector: String? = null,
+    val selectorType: String? = null,
+    val text: String? = null,""",
+            )
+            replaceRequired(
+                """                    selector = obj.optString("selector").ifEmpty { null },
+                    text = obj.optString("text").ifEmpty { null },""",
+                """                    selector = obj.optString("selector").ifEmpty { null },
+                    selectorType = obj.optString("selector_type").ifEmpty { null },
+                    text = obj.optString("text").ifEmpty { null },""",
+            )
+            replaceRequired(
                 """                    timeoutMs = if (obj.has("timeout")) obj.optInt("timeout") else null,""",
                 """                    timeoutMs = when {
                         obj.has("timeout_ms") -> obj.optInt("timeout_ms")
@@ -163,6 +177,33 @@ val stageOpenMinisSources by tasks.registering(Sync::class) {
             )
         }
         generatedSources.get().file("com/openminis/app/browser/BrowserUseManager.kt").asFile.apply {
+            replaceRequired(
+                """        val out = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, SCREENSHOT_QUALITY, out)
+        val jpegBytes = out.toByteArray()
+
+        val file = saveBitmapToFile(bitmap, "screenshot")
+        val base64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)""",
+                """        val maxVisionDimension = 1_800
+        val visionBitmap = if (bitmap.width > maxVisionDimension || bitmap.height > maxVisionDimension) {
+            val scale = minOf(maxVisionDimension.toFloat() / bitmap.width, maxVisionDimension.toFloat() / bitmap.height)
+            Bitmap.createScaledBitmap(
+                bitmap,
+                (bitmap.width * scale).toInt().coerceAtLeast(1),
+                (bitmap.height * scale).toInt().coerceAtLeast(1),
+                true,
+            )
+        } else {
+            bitmap
+        }
+        val out = ByteArrayOutputStream()
+        visionBitmap.compress(Bitmap.CompressFormat.JPEG, SCREENSHOT_QUALITY, out)
+        val jpegBytes = out.toByteArray()
+
+        val file = saveBitmapToFile(bitmap, "screenshot")
+        val base64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
+        if (visionBitmap !== bitmap) visionBitmap.recycle()""",
+            )
             replaceRequired(
                 """        var normalized = urlString
         if (!normalized.contains("://")) normalized = "https://${'$'}normalized"
@@ -333,6 +374,39 @@ import android.content.Intent""",
             "click/type to interact with elements, get_text/get_readable to extract content, " +""",
                 """Use navigate to open URLs; use back, forward, and reload for normal history navigation. Use list_tabs and an explicit tab_id to continue another agent's shared tab; same-tab actions are serialized safely. Use screenshot to see the page (returns a directly readable image), " +
             "click/type to interact with elements and automatically retry transient selector misses; after navigate, use wait_for_dom_stable before interaction on dynamic pages. Use get_text/get_readable to extract content, " +""",
+            )
+            replaceRequired(
+                """            "selector" to AgentToolParam("string", "CSS selector for targeting elements (click, type, get_text, scroll, hover, find_elements). For scroll: specify a scrollable container to scroll (e.g. 'div.timeline'); if omitted, auto-detects the best scrollable element."),
+            "text" to AgentToolParam("string", "Text to type (for type action)"),""",
+                """            "selector" to AgentToolParam("string", "Selector for click, type, get_text, scroll, hover, find_elements, or scroll_and_collect. CSS is the default."),
+            "selector_type" to AgentToolParam("string", "Selector interpretation for click, type, get_text, hover, or find_elements (default: css).", enumValues = listOf("css", "xpath", "text")),
+            "text" to AgentToolParam("string", "Text to type (for type action)"),""",
+            )
+            replaceRequired(
+                """            "script" to AgentToolParam("string", "JavaScript code to execute (for execute_js action). The script runs inside an async function wrapper — `await` and top-level `return` are both supported (e.g. `var r = await fetch(url); return await r.json()`)."),""",
+                """            "script" to AgentToolParam("string", "JavaScript code to execute (for execute_js action). Bare expressions such as document.title return their value; await and explicit top-level return are also supported."),""",
+            )
+            replaceRequired(
+                """propertyOrdering = listOf("tool_title", "action", "tab_id", "url", "selector", "text"""",
+                """propertyOrdering = listOf("tool_title", "action", "tab_id", "url", "selector", "selector_type", "text"""",
+            )
+        }
+        generatedSources.get().file("com/openminis/app/sandbox/ExecutionCoordinator.kt").asFile.apply {
+            replaceRequired(
+                """        val mounts = linkedMapOf<String, String>()
+
+        // [diag] previous attachments mount target""",
+                """        val mounts = linkedMapOf<String, String>()
+
+        // Pocket Lobster exposes Android shared storage at the same paths used
+        // by the local and system shells, so every agent reaches one file.
+        val androidSharedStorage = File("/storage/emulated/0")
+        if (androidSharedStorage.isDirectory) {
+            mounts["/sdcard"] = androidSharedStorage.absolutePath
+            PRootKernel.addBindMount("/sdcard", androidSharedStorage.absolutePath)
+        }
+
+        // [diag] previous attachments mount target""",
             )
         }
         generatedSources.get().file("com/openminis/app/ui/chat/ChatViewModel.kt").asFile.replaceRequired(
@@ -640,13 +714,18 @@ val verifyOpenMinisIntegrationSources by tasks.registering {
         check("FORWARD(\"forward\")" in browserAction)
         check("RELOAD(\"reload\")" in browserAction)
         check("obj.has(\"timeout_ms\")" in browserInput)
+        check("selectorType" in browserInput)
         check("evaluateSelectorWithRetry" in browserManager)
+        check("maxVisionDimension" in browserManager)
         check("Chrome cookies are isolated from this automated WebView" in browserManager)
         check(browserManager.indexOf("GoogleAuthRouter.shouldRouteExternally(normalized)") < browserManager.indexOf("webView.loadUrl(normalized)"))
         check("context !is Activity" in googleAuthRouter)
         check("Intent.FLAG_ACTIVITY_NEW_TASK" in googleAuthRouter)
         check("GoogleAuthRouter.shouldRouteExternally(currentUrl)" in webViewHolder)
         check("GoogleAuthRouter.openInCustomTab(webView.context, currentUrl)" in webViewHolder)
+        val executionCoordinator = generatedSources.get()
+            .file("com/openminis/app/sandbox/ExecutionCoordinator.kt").asFile.readText()
+        check("mounts[\"/sdcard\"]" in executionCoordinator)
         check(generatedSources.get().asFile.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
             .none { "R.string.app_name" in it.readText() })

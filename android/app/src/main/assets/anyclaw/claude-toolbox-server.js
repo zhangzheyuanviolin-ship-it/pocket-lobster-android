@@ -313,11 +313,11 @@ const TOOL_DEFS = [
     command: { type: "string", minLength: 1 },
     timeoutMs: { type: "integer", minimum: 1000, maximum: 900000 }
   }, ["command"]),
-  tool("minis_browser", "Control the real visible OpenMinis browser shared by Codex, Claude, and Minis. Navigate first, then use wait_for_dom_stable or selector actions; selector actions automatically wait and retry. Screenshots return a directly viewable PNG image plus imageFilePath. Use list_tabs for tab IDs. To continue another agent's page, pass its exact tab_id; explicit shared-tab actions are serialized safely.", {
+  tool("minis_browser", "Control the real visible OpenMinis browser shared by Codex, Claude, and Minis. Navigate first, then use wait_for_dom_stable or selector actions; selector actions automatically wait and retry. execute_js accepts bare expressions and explicit return. Screenshots return a directly viewable PNG image plus imageFilePath. Use list_tabs for tab IDs. To continue another agent's page, pass its exact tab_id; explicit shared-tab actions are serialized safely.", {
     action: { type: "string", enum: ["navigate", "back", "forward", "reload", "screenshot", "click", "type", "get_text", "scroll", "get_page_info", "execute_js", "find_elements", "hover", "get_readable", "set_user_agent", "set_viewport", "get_backbone", "fetch", "new_tab", "close_tab", "list_tabs", "get_cookies", "set_cookies", "scroll_and_collect", "wait_for_dom_stable"] },
     url: { type: "string" },
     selector: { type: "string" },
-    selector_type: { type: "string", enum: ["css", "xpath", "text"], description: "Selector interpretation for click/type; defaults to css." },
+    selector_type: { type: "string", enum: ["css", "xpath", "text"], description: "Selector interpretation for click, type, get_text, hover, or find_elements; defaults to css." },
     text: { type: "string" },
     script: { type: "string" },
     tab_id: { type: "integer", description: "Explicit shared tab handoff; any agent may continue work on this tab ID." },
@@ -326,7 +326,16 @@ const TOOL_DEFS = [
     coordinate_x: { type: "integer" },
     coordinate_y: { type: "integer" },
     user_agent: { type: "string", enum: ["mobile_chrome", "desktop_chrome"] },
+    max_depth: { type: "integer", minimum: 1, maximum: 20 },
+    item_selector: { type: "string", description: "CSS selector for scroll_and_collect. selector is accepted as a compatibility alias." },
+    scroll_count: { type: "integer", minimum: 1, maximum: 50 },
+    keywords: { type: "array", items: { type: "string" } },
+    fuzzy: { type: "boolean" },
+    cookies: { type: "array", items: { type: "object" } },
     timeout: { type: "integer", minimum: 1, maximum: 60, description: "Timeout in seconds." },
+    viewport_width: { type: "integer", minimum: 1 },
+    viewport_height: { type: "integer", minimum: 1 },
+    reset: { type: "boolean" },
     full_page: { type: "boolean" },
     output_path: { type: "string", description: "Optional absolute PNG export path in app or shared storage." },
     include_base64: { type: "boolean", description: "Include image data; screenshot defaults to true for direct visual inspection." }
@@ -846,13 +855,29 @@ async function searchByEngine(engine, query, limit) {
   const requestUrl = builder(query);
   const startedAt = Date.now();
 
-  const response = await fetchWithTimeout(requestUrl, {
-    method: "GET",
-    headers: {
-      "User-Agent": "AnyClawSearchSuite/1.4",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  let response;
+  try {
+    response = await fetchWithTimeout(requestUrl, {
+      method: "GET",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/136 Mobile Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+      }
+    }, 30000);
+  } catch (error) {
+    if (engine !== "duckduckgo") {
+      const fallback = await searchByEngine("duckduckgo", query, limit);
+      return {
+        ...fallback,
+        engine,
+        requestedEngine: engine,
+        fallbackEngine: "duckduckgo",
+        fallbackReason: `request_failed:${String(error?.message || error)}`,
+        tookMs: Date.now() - startedAt
+      };
     }
-  }, 30000);
+    return { ok: false, engine, query, requestUrl, count: 0, results: [], text: "", tookMs: Date.now() - startedAt, error: `request_failed:${String(error?.message || error)}` };
+  }
 
   if (!response.ok) {
     return {
@@ -870,6 +895,10 @@ async function searchByEngine(engine, query, limit) {
   }
 
   let hits = parseAnchors(response.text, requestUrl, engine, limit);
+  if (engine === "google_scholar" && hits.length > 0) {
+    const tokens = String(query).toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 3);
+    hits = hits.filter((hit) => tokens.length === 0 || tokens.some((token) => `${hit.title} ${hit.url}`.toLowerCase().includes(token)));
+  }
   if (hits.length === 0 && engine === "duckduckgo") {
     const ddg = await fetchJson(
       "https://api.duckduckgo.com/?q=" + encodeURIComponent(query) + "&format=json&no_html=1&no_redirect=1&skip_disambig=0",
@@ -893,6 +922,18 @@ async function searchByEngine(engine, query, limit) {
         confidence: 0.74
       })).filter((row) => row.title && row.url);
     }
+  }
+
+  if (hits.length === 0 && ["google", "bing", "quark"].includes(engine)) {
+    const fallback = await searchByEngine("duckduckgo", query, limit);
+    return {
+      ...fallback,
+      engine,
+      requestedEngine: engine,
+      fallbackEngine: "duckduckgo",
+      fallbackReason: "primary_parser_returned_no_results",
+      tookMs: Date.now() - startedAt
+    };
   }
 
   return {
@@ -2104,6 +2145,9 @@ async function callTool(name, args) {
     }
     case "minis_browser": {
       const browserArgs = { ...args };
+      if (String(browserArgs.action || "") === "scroll_and_collect" && !browserArgs.item_selector && browserArgs.selector) {
+        browserArgs.item_selector = browserArgs.selector;
+      }
       if (String(browserArgs.action || "") === "screenshot" && typeof browserArgs.include_base64 !== "boolean") {
         browserArgs.include_base64 = true;
       }

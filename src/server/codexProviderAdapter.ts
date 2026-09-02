@@ -140,17 +140,11 @@ function responseError(value: unknown): string {
 }
 
 export function sanitizeResponsesHistory(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sanitizeResponsesHistory)
-  const record = asRecord(value)
-  if (!record) return value
-  const sanitized: Record<string, unknown> = {}
-  for (const [key, child] of Object.entries(record)) {
-    sanitized[key] = sanitizeResponsesHistory(child)
-  }
-  if (text(record.type) === 'reasoning' && Array.isArray(record.content)) {
-    sanitized.content = []
-  }
-  return sanitized
+  // Provider changes are sanitized at the persisted-thread boundary, where
+  // complete foreign reasoning and compaction items can be removed safely.
+  // Within one Responses provider, reasoning_text is continuation state and
+  // must be returned unchanged after a tool call.
+  return value
 }
 
 function sanitizeResponseLine(line: string): string {

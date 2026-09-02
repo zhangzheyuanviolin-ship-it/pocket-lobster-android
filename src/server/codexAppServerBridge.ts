@@ -2595,7 +2595,8 @@ function buildRuntimeSummary(
     ubuntuBin ? `Current Ubuntu bridge: ${ubuntuBin}` : '',
     pathValue ? `Current PATH: ${pathValue}` : '',
     'Execution chains available in this app: local app shell, Ubuntu runtime shell via ubuntu-shell or ANYCLAW_UBUNTU_BIN, OpenMinis Alpine via alpine-shell, and system-level shell via system-shell.',
-    'The real visible OpenMinis browser is available through minis-browser and can be taken over by the user. Run minis-browser --help before first use; it documents every action and parameter. Start with list_tabs, use navigate, then wait_for_dom_stable before reading or interacting. To continue another agent\'s page, pass the exact tab_id returned by list_tabs; actions on the same shared tab are serialized safely. click and type support CSS, XPath, or text selectors through --selector-type and automatically retry transient lookup failures. Use screenshot --output-path <absolute-path.png> --json, then inspect the returned imageFilePath with the image-view tool; do not guess screenshot paths. Browser history actions are back, forward, and reload.',
+    'The real visible OpenMinis browser is available through minis-browser and can be taken over by the user. Run minis-browser --help before first use; it documents every action and parameter. Start with list_tabs, use navigate, then wait_for_dom_stable before reading or interacting. To continue another agent\'s page, pass the exact tab_id returned by list_tabs; actions on the same shared tab are serialized safely. click, type, get_text, hover, and find_elements support CSS, XPath, or text selectors through --selector-type and automatically retry transient lookup failures. execute_js accepts both bare expressions such as document.title and scripts with an explicit return. Use screenshot --output-path <absolute-path.png> --json, then inspect the returned imageFilePath with the view_image tool; do not guess screenshot paths or claim that screenshots cannot be read before trying view_image. Browser history actions are back, forward, and reload.',
+    'Android shared storage is the same physical tree at /sdcard in the local, Ubuntu, Alpine, and system-shell execution chains; host-side chains may also expose it as /storage/emulated/0. For collaboration files, use only the exact host-provided shared workspace path; never invent /workspace/shared.',
     'If the runtime snapshot above is installed and healthy, do not conclude Ubuntu is missing before verifying it with ubuntu-status, echo $ANYCLAW_UBUNTU_BIN, and ls "$HOME/.openclaw-android/linux-runtime/bin" in the local app shell.',
     'Ripgrep is exposed as rg in the local app shell and bundled Ubuntu runtime. Verify command -v rg and rg --version in the selected shell before reporting it unavailable.',
   ].filter((line) => line.length > 0)
@@ -4839,7 +4840,7 @@ function buildCollaborationWorkerPrompt(
   attempt: number,
 ): string {
   const workspaceInstruction = run.workspaceReady
-    ? `本轮已启用共享文件产物目录：${collaborationWorkspacePath(run)}。只在子任务确有文件产物时使用，并且只能写入以${assignment.agentId}开头的临时文件。`
+    ? `本轮已启用共享文件产物目录：${collaborationWorkspacePath(run)}。这是唯一有效路径，并覆盖子任务文字中任何模型猜测的/workspace/shared等路径；三个终端中的/sdcard均映射到同一安卓共享存储。只在子任务确有文件产物时使用，并且只能写入以${assignment.agentId}开头的临时文件。`
     : '本轮未启用共享文件产物目录，不要创建协作草稿或自行寻找共享目录。'
   return [
     '[口袋大龙虾三智能体协作：成员分工]',

@@ -88,6 +88,14 @@ const upstream = createServer(async (req, res) => {
   for await (const chunk of req) chunks.push(chunk)
   const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
   requests.push(body)
+  for (const content of reasoningContents(body.input)) {
+    if (content.length > 0 && !content.every((item) => item?.type === 'reasoning_text' && typeof item.text === 'string')) {
+      res.statusCode = 400
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'reasoning_text continuation state was not preserved' } }))
+      return
+    }
+  }
   const model = body.model
   const outputText = `${model}-turn-${requests.length}`
   const envelope = responseEnvelope(model, outputText)
@@ -311,16 +319,18 @@ try {
     'deepseek-v4-flash',
   ]
   assert.deepEqual(requests.map((request) => request.model), expectedModels)
-  for (const request of requests.slice(1)) {
-    for (const content of reasoningContents(request.input)) assert.deepEqual(content, [])
-  }
+  assert.ok(requests.slice(1).some((request) => reasoningContents(request.input).some((content) =>
+    content.some((item) => item?.type === 'reasoning_text' && typeof item.text === 'string'),
+  )))
   assert.equal(finalThread.modelProvider, 'pocket_provider_alpha')
   assert.ok(removedReasoningTotal >= 3)
   assert.deepEqual(finalRoute, { providerId: 'pocket_provider_alpha', model: 'deepseek-v4-flash' })
   const rolloutFiles = await listRolloutFiles(join(home, '.codex', 'sessions'))
   assert.equal(rolloutFiles.length, 1)
   const rollout = (await readFile(rolloutFiles[0], 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
-  for (const content of reasoningContents(rollout)) assert.deepEqual(content, [])
+  for (const content of reasoningContents(rollout)) {
+    assert.ok(content.every((item) => item?.type === 'reasoning_text' && typeof item.text === 'string'))
+  }
   assert.equal(encryptedResponseItems(rollout).length, 1)
   if (process.env.E2E_DIAGNOSTICS_BLOCKED !== '1') {
     await sleep(200)

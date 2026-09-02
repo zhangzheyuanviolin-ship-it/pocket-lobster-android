@@ -23,8 +23,8 @@ const BROWSER_ACTIONS = {
   get_readable: 'Extract the main readable page content.',
   get_page_info: 'Return URL, title, viewport, and page dimensions.',
   get_backbone: 'Return a compact DOM tree. Optional: --max-depth.',
-  find_elements: 'Find elements by CSS --selector.',
-  execute_js: 'Run JavaScript. Required: --script.',
+  find_elements: 'Find elements by --selector. Optional: --selector-type css|xpath|text.',
+  execute_js: 'Run JavaScript. Required: --script. Bare expressions and explicit return are both supported.',
   hover: 'Hover over a CSS --selector.',
   scroll: 'Scroll up or down. Optional: --direction, --amount, --selector.',
   scroll_and_collect: 'Collect repeated items. Required: --item-selector.',
@@ -45,14 +45,26 @@ const BROWSER_SCHEMA = {
   properties: {
     action: { type: 'string', enum: Object.keys(BROWSER_ACTIONS) },
     url: { type: 'string', usedBy: ['navigate', 'fetch', 'new_tab'] },
-    selector: { type: 'string', usedBy: ['click', 'type', 'get_text', 'scroll', 'hover', 'find_elements'] },
-    selector_type: { type: 'string', enum: ['css', 'xpath', 'text'], default: 'css', usedBy: ['click', 'type'] },
+    selector: { type: 'string', usedBy: ['click', 'type', 'get_text', 'scroll', 'hover', 'find_elements', 'scroll_and_collect'] },
+    selector_type: { type: 'string', enum: ['css', 'xpath', 'text'], default: 'css', usedBy: ['click', 'type', 'get_text', 'hover', 'find_elements'] },
     text: { type: 'string', usedBy: ['type'] },
     script: { type: 'string', usedBy: ['execute_js'] },
     tab_id: { type: 'integer', description: 'Explicit shared tab handoff; any agent may continue work on this tab ID.' },
     direction: { type: 'string', enum: ['up', 'down'], usedBy: ['scroll'] },
     amount: { type: 'integer', usedBy: ['scroll'] },
+    coordinate_x: { type: 'integer', usedBy: ['click'] },
+    coordinate_y: { type: 'integer', usedBy: ['click'] },
+    user_agent: { type: 'string', enum: ['mobile_chrome', 'desktop_chrome'], usedBy: ['set_user_agent'] },
+    max_depth: { type: 'integer', usedBy: ['get_backbone'] },
+    item_selector: { type: 'string', usedBy: ['scroll_and_collect'] },
+    scroll_count: { type: 'integer', minimum: 1, maximum: 50, usedBy: ['scroll_and_collect'] },
+    keywords: { type: 'array', items: { type: 'string' }, usedBy: ['get_cookies', 'scroll_and_collect'] },
+    fuzzy: { type: 'boolean', usedBy: ['get_cookies'] },
+    cookies: { type: 'array', items: { type: 'object' }, usedBy: ['set_cookies'] },
     timeout: { type: 'integer', unit: 'seconds', minimum: 1, maximum: 60 },
+    viewport_width: { type: 'integer', minimum: 1, usedBy: ['set_viewport'] },
+    viewport_height: { type: 'integer', minimum: 1, usedBy: ['set_viewport'] },
+    reset: { type: 'boolean', usedBy: ['set_viewport'] },
     full_page: { type: 'boolean', usedBy: ['screenshot'] },
     output_path: { type: 'string', format: 'absolute PNG path', usedBy: ['screenshot'] },
     include_base64: { type: 'boolean', usedBy: ['screenshot'] },
@@ -69,7 +81,8 @@ function browserHelp() {
     'To continue another agent\'s page, run list_tabs and pass that exact --tab-id; explicit tab actions are serialized safely.',
     'Selectors default to CSS. Use --selector-type xpath or text for alternate lookup.',
     'Selector actions wait for the DOM and retry transient element-not-found failures.',
-    'Screenshots are returned as PNG paths readable by image tools.',
+    'Screenshots are returned as PNG paths readable by the view_image tool.',
+    'execute_js accepts both bare expressions such as document.title and scripts with an explicit return.',
     '',
     'Actions:',
     ...actionLines,
@@ -174,6 +187,7 @@ function browserPayload(rawArgs) {
   if (result.output) process.stdout.write(String(result.output) + '\n');
   if (result.imageFilePath) process.stdout.write(`image_path: ${result.imageFilePath}\n`);
   if (result.imageMimeType) process.stdout.write(`image_mime_type: ${result.imageMimeType}\n`);
+  if (result.fetchedFilePath) process.stdout.write(`fetched_file_path: ${result.fetchedFilePath}\n`);
   if (result.pageURL) process.stdout.write(`page_url: ${result.pageURL}\n`);
   if (result.tabId !== undefined && result.tabId !== null) process.stdout.write(`tab_id: ${result.tabId}\n`);
   if (!result.output && !result.imageFilePath) process.stdout.write(JSON.stringify(result, null, 2) + '\n');
