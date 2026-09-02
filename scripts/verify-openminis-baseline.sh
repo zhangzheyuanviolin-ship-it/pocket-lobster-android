@@ -18,8 +18,14 @@ test -f "$MANIFEST"
 actual_commit="$(git -C "$OPENMINIS_DIR" rev-parse HEAD)"
 test "$actual_commit" = "$EXPECTED_COMMIT"
 
-actual_tag="$(git -C "$OPENMINIS_DIR" describe --tags --exact-match HEAD)"
-test "$actual_tag" = "$EXPECTED_TAG"
+actual_tag="$(git -C "$OPENMINIS_DIR" tag --points-at HEAD | head -n 1)"
+if test -n "$actual_tag"; then
+  test "$actual_tag" = "$EXPECTED_TAG"
+else
+  # actions/checkout may shallow-clone submodules without tag objects. The
+  # pinned commit, upstream version, and license hashes remain authoritative.
+  actual_tag="$EXPECTED_TAG (commit-verified)"
+fi
 
 actual_license_sha="$(sha256sum "$OPENMINIS_DIR/LICENSE" | awk '{print $1}')"
 test "$actual_license_sha" = "$EXPECTED_LICENSE_SHA"
