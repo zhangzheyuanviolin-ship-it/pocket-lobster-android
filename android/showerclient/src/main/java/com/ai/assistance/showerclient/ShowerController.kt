@@ -101,24 +101,26 @@ class ShowerController {
     private val binaryLock = Any()
     private val earlyBinaryFrames = ArrayDeque<ByteArray>()
 
-    @Volatile
-    private var binaryHandler: ((ByteArray) -> Unit)? = null
+    private val binaryHandlers = LinkedHashMap<Any, (ByteArray) -> Unit>()
+    private val legacyBinaryHandlerKey = Any()
 
     fun setBinaryHandler(handler: ((ByteArray) -> Unit)?) {
+        if (handler == null) {
+            removeBinaryHandler(legacyBinaryHandlerKey)
+        } else {
+            addBinaryHandler(legacyBinaryHandlerKey, handler)
+        }
+    }
+
+    fun addBinaryHandler(key: Any, handler: (ByteArray) -> Unit) {
         val framesToReplay: List<ByteArray>
         synchronized(binaryLock) {
-            binaryHandler = handler
-            ShowerLog.d(TAG, "setBinaryHandler: id=${virtualDisplayId} handlerSet=${handler != null}, bufferedFrames=${earlyBinaryFrames.size}")
-            framesToReplay = if (handler != null && earlyBinaryFrames.isNotEmpty()) {
-                val list = earlyBinaryFrames.toList()
-                earlyBinaryFrames.clear()
-                list
-            } else {
-                emptyList()
-            }
+            binaryHandlers[key] = handler
+            ShowerLog.d(TAG, "addBinaryHandler: id=${virtualDisplayId} handlers=${binaryHandlers.size}, bufferedFrames=${earlyBinaryFrames.size}")
+            framesToReplay = earlyBinaryFrames.toList()
         }
-        if (handler != null && framesToReplay.isNotEmpty()) {
-            ShowerLog.d(TAG, "setBinaryHandler: replaying ${framesToReplay.size} buffered frames")
+        if (framesToReplay.isNotEmpty()) {
+            ShowerLog.d(TAG, "addBinaryHandler: replaying ${framesToReplay.size} buffered frames")
             framesToReplay.forEach { frame ->
                 try {
                     handler(frame)
@@ -128,19 +130,31 @@ class ShowerController {
         }
     }
 
+    fun removeBinaryHandler(key: Any) {
+        synchronized(binaryLock) {
+            binaryHandlers.remove(key)
+            ShowerLog.d(TAG, "removeBinaryHandler: id=${virtualDisplayId} handlers=${binaryHandlers.size}")
+        }
+    }
+
     private val videoSink = object : IShowerVideoSink.Stub() {
         override fun onVideoFrame(data: ByteArray) {
-            val handler: ((ByteArray) -> Unit)?
+            val handlers: List<(ByteArray) -> Unit>
             synchronized(binaryLock) {
-                handler = binaryHandler
-                if (handler == null) {
+                handlers = binaryHandlers.values.toList()
+                if (handlers.isEmpty()) {
                     if (earlyBinaryFrames.size >= 120) {
                         earlyBinaryFrames.removeFirst()
                     }
                     earlyBinaryFrames.addLast(data)
                 }
             }
-            handler?.invoke(data)
+            handlers.forEach { handler ->
+                try {
+                    handler(data)
+                } catch (_: Exception) {
+                }
+            }
         }
     }
 
@@ -450,7 +464,7 @@ class ShowerController {
         videoWidth = 0
         videoHeight = 0
         synchronized(binaryLock) {
-            binaryHandler = null
+            binaryHandlers.clear()
             earlyBinaryFrames.clear()
         }
         if (id != null && id > 0 && service?.asBinder()?.isBinderAlive == true) {

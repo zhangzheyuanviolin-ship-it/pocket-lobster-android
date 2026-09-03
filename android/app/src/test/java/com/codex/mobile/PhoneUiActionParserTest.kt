@@ -53,4 +53,15 @@ class PhoneUiActionParserTest {
         assertEquals("任务完成", result.action.message)
     }
 
+    @Test
+    fun promptsDoNotBlockOrdinaryUserRequestedActions() {
+        val nativePrompt = PhoneUiAgentPrompt.system(PhoneUiModelProtocol.AUTOGLM_NATIVE)
+        val genericPrompt = PhoneUiAgentPrompt.system(PhoneUiModelProtocol.GENERIC_JSON)
+
+        assertTrue(nativePrompt.contains("不要把应用名称、页面类别"))
+        assertTrue(nativePrompt.contains("输入、发送、签到、确认、删除、安装、授权"))
+        assertTrue(genericPrompt.contains("do not pause merely because of its category"))
+        assertTrue(genericPrompt.contains("technically impossible"))
+    }
+
 }

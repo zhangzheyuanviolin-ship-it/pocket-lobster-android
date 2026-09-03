@@ -173,6 +173,7 @@ object PhoneUiAgentRuntime {
                 throw IllegalStateException("$target 未能启动：$detail")
             }
             val screenReady = if (mode == PhoneUiScreenMode.MAIN) {
+                PhoneUiVirtualDisplayCapture.detach()
                 PhoneUiShowerRuntime.controller.prepareMainDisplay(context)
             } else {
                 val metrics = context.resources.displayMetrics
@@ -187,6 +188,9 @@ object PhoneUiAgentRuntime {
             if (!screenReady) throw IllegalStateException(if (mode == PhoneUiScreenMode.MAIN) "主屏幕控制链初始化失败" else "虚拟屏幕创建失败")
             val displayId = PhoneUiShowerRuntime.controller.getDisplayId()
                 ?: throw IllegalStateException("屏幕服务没有返回displayId")
+            if (mode == PhoneUiScreenMode.VIRTUAL) {
+                PhoneUiVirtualDisplayCapture.attach(context)
+            }
             appendEvent("status", "屏幕环境已就绪", "displayId=$displayId；模型=${config.displayName}")
             if (mode == PhoneUiScreenMode.MAIN) startKeepAlive()
             updateStatus("running", "正在观察屏幕并规划第一步")
@@ -199,7 +203,7 @@ object PhoneUiAgentRuntime {
                 awaitRunnable()
                 if (cancelled) return@runBlocking
                 updateStep(step, "正在截取当前屏幕")
-                val screenshot = captureScreenshot()
+                val screenshot = captureScreenshot(context, mode)
                 val dimensions = imageDimensions(screenshot)
                 updateStep(step, "模型正在判断下一步操作")
                 val decision = PhoneUiAgentModelClient.decide(config, task, screenshot, history, actionResult)
@@ -217,14 +221,14 @@ object PhoneUiAgentRuntime {
                     updateStatus("completed", message)
                     return@runBlocking
                 }
-                if (isSensitive(decision.action, decision.raw)) {
-                    val message = decision.action.message.orEmpty().ifBlank { "检测到敏感操作，需要用户接管确认" }
+                if (requiresTakeover(decision.action)) {
+                    val message = decision.action.message.orEmpty().ifBlank { "当前步骤需要用户手动完成" }
                     paused = true
                     appendEvent("takeover", "等待用户接管", message)
                     updateStatus("paused", message)
                     awaitRunnable()
                     if (cancelled) return@runBlocking
-                    actionResult = "用户已经接管屏幕并选择继续，请重新观察当前页面后决定下一步，不要重复未经确认的敏感动作。"
+                    actionResult = "用户已经完成手动操作并选择继续，请重新观察当前页面后决定下一步。"
                     continue
                 }
                 actionResult = executeAction(context, decision.action, dimensions.first, dimensions.second)
@@ -243,13 +247,19 @@ object PhoneUiAgentRuntime {
         }
     }
 
-    private suspend fun captureScreenshot(): ByteArray {
-        repeat(5) { attempt ->
+    private suspend fun captureScreenshot(context: Context, mode: PhoneUiScreenMode): ByteArray {
+        if (mode == PhoneUiScreenMode.VIRTUAL) {
+            PhoneUiVirtualDisplayCapture.capturePng(5_000)?.let { return it }
+            appendEvent("status", "正在恢复屏幕截图", "视频帧暂时不可用，正在重新连接虚拟屏幕画面。")
+            PhoneUiVirtualDisplayCapture.attach(context)
+            PhoneUiVirtualDisplayCapture.capturePng(6_000)?.let { return it }
+        }
+        repeat(6) { attempt ->
             val bytes = PhoneUiShowerRuntime.controller.requestScreenshot(5_000)
             if (bytes != null && bytes.size > 1_024) return bytes
-            delay(300L * (attempt + 1))
+            delay(500L * (attempt + 1))
         }
-        throw IllegalStateException("连续五次未能获取有效屏幕截图")
+        throw IllegalStateException("屏幕截图链路持续无有效画面，请打开虚拟屏幕确认目标应用状态后重试")
     }
 
     private suspend fun executeAction(context: Context, action: PhoneUiAction, width: Int, height: Int): String {
@@ -341,12 +351,8 @@ object PhoneUiAgentRuntime {
         return options.outWidth to options.outHeight
     }
 
-    private fun isSensitive(action: PhoneUiAction, raw: String): Boolean {
-        if (action.name.equals("Take_over", true) || action.name.equals("Interact", true)) return true
-        val text = "${action.message.orEmpty()} $raw".lowercase()
-        val terms = listOf("支付", "付款", "转账", "发送", "删除", "安装", "授权", "验证码", "密码", "隐私", "pay", "purchase", "send", "delete", "install", "permission", "captcha", "password")
-        return action.name.equals("Tap", true) && terms.any(text::contains)
-    }
+    private fun requiresTakeover(action: PhoneUiAction): Boolean =
+        action.name.equals("Take_over", true) || action.name.equals("Interact", true)
 
     private fun updateStep(step: Int, text: String) = synchronized(lock) {
         state.put("step", step).put("status", if (paused) "paused" else "running").put("statusText", text).put("updatedAt", Instant.now().toString())

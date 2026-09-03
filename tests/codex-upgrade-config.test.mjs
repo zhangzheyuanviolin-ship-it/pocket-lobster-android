@@ -15,13 +15,13 @@ assert.doesNotMatch(serverManager, /private const val CODEX_VERSION = "0\.137\.0
 assert.match(setupScript, /CODEX_VERSION="0\.147\.0"/)
 assert.match(setupScript, /@openai\/codex@\$\{CODEX_VERSION\}/)
 
-assert.match(gradle, /versionCode = 330/)
-assert.match(gradle, /versionName = "1\.0\.89-codex-cli-0\.147\.0-gpt-5\.6-openminis-1\.12-phone-ui-agent-fix-v330"/)
+assert.match(gradle, /versionCode = 331/)
+assert.match(gradle, /versionName = "1\.0\.90-codex-cli-0\.147\.0-gpt-5\.6-openminis-1\.12-phone-ui-agent-runtime-v331"/)
 assert.match(gradle, /create\("operator"\)[\s\S]*applicationId = "com\.codex\.mobile\.pocketlobster\.test"/)
-assert.match(workflow, /versionCode='330'/)
-assert.match(workflow, /phone-ui-agent-fix-v330-beta/)
+assert.match(workflow, /versionCode='331'/)
+assert.match(workflow, /phone-ui-agent-runtime-v331-beta/)
 assert.match(workflow, /PACKAGE_ID="com\.codex\.mobile\.pocketlobster\.beta"/)
-assert.match(baselineScript, /versionCode = 330/)
+assert.match(baselineScript, /versionCode = 331/)
 
 assert.match(serverManager, /installedVersion\.isNotBlank\(\) && installedVersion != CODEX_VERSION/)
 assert.match(serverManager, /rm -rf \\"\$prefix\/lib\/node_modules\/@openai\/codex\\"/)

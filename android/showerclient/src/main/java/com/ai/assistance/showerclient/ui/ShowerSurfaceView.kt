@@ -73,7 +73,7 @@ open class ShowerSurfaceView @JvmOverloads constructor(
                 // Route binary video frames to the renderer only after the surface and size are ready,
                 // so that any buffered SPS/PPS frames can be consumed correctly by the decoder.
                 ShowerLog.d(TAG, "surfaceCreated: setting ShowerController binary handler")
-                ctrl.setBinaryHandler { data ->
+                ctrl.addBinaryHandler(this@ShowerSurfaceView) { data ->
                     renderer.onFrame(data)
                 }
             } else {
@@ -93,7 +93,7 @@ open class ShowerSurfaceView @JvmOverloads constructor(
         val ctrl = controller
         if (ctrl != null) {
             ShowerLog.d(TAG, "surfaceDestroyed: clearing binary handler")
-            ctrl.setBinaryHandler(null)
+            ctrl.removeBinaryHandler(this)
         }
         renderer.detach()
     }
