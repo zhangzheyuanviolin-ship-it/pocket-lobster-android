@@ -22,6 +22,15 @@ data class ShizukuExecResult(
     val error: String? = null,
 )
 
+data class ShizukuBinaryExecResult(
+    val success: Boolean,
+    val stdout: ByteArray,
+    val stderr: String,
+    val exitCode: Int,
+    val errorCode: String? = null,
+    val error: String? = null,
+)
+
 object ShizukuController {
     private const val TAG = "ShizukuController"
     private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
@@ -248,6 +257,71 @@ object ShizukuController {
         }
     }
 
+    fun executeShellCommandBinary(command: String): ShizukuBinaryExecResult {
+        if (!isServiceRunning()) {
+            return ShizukuBinaryExecResult(false, byteArrayOf(), "", -1, "service_stopped", "Shizuku service not running")
+        }
+        if (!hasPermission()) {
+            return ShizukuBinaryExecResult(false, byteArrayOf(), "", -1, "permission_revoked", "Shizuku permission not granted")
+        }
+
+        val service = getService()
+            ?: return ShizukuBinaryExecResult(false, byteArrayOf(), "", -1, "bridge_unreachable", "Shizuku service interface unavailable")
+
+        return try {
+            val process = service.newProcess(arrayOf("sh", "-c", command), null, null)
+                ?: return ShizukuBinaryExecResult(false, byteArrayOf(), "", -1, "executor_missing", "Failed to start Shizuku process")
+            val processClass = process.javaClass
+            val stdoutPfd = processClass.getMethod("getInputStream").invoke(process) as ParcelFileDescriptor?
+            val stderrPfd = processClass.getMethod("getErrorStream").invoke(process) as ParcelFileDescriptor?
+            val stdoutHolder = java.util.concurrent.atomic.AtomicReference(byteArrayOf())
+            val stderrHolder = StringBuilder()
+            val latch = CountDownLatch(2)
+
+            Thread {
+                try {
+                    stdoutHolder.set(readBytesFromPfd(stdoutPfd))
+                } catch (e: Exception) {
+                    Log.w(TAG, "binary stdout read failed: " + e.message)
+                } finally {
+                    latch.countDown()
+                }
+            }.start()
+            Thread {
+                try {
+                    stderrHolder.append(readAllFromPfd(stderrPfd))
+                } catch (e: Exception) {
+                    Log.w(TAG, "binary stderr read failed: " + e.message)
+                } finally {
+                    latch.countDown()
+                }
+            }.start()
+
+            val exitCode = processClass.getMethod("waitFor").invoke(process) as Int
+            val drained = latch.await(15, TimeUnit.SECONDS)
+            runCatching { stdoutPfd?.close() }
+            runCatching { stderrPfd?.close() }
+            val stderr = stderrHolder.toString()
+            val stdout = stdoutHolder.get()
+            if (!drained) {
+                ShizukuBinaryExecResult(false, stdout, stderr, -1, "timeout", "Timed out while reading Shizuku process output")
+            } else {
+                val errorCode = when (exitCode) {
+                    126, 127 -> "command_unavailable"
+                    0 -> null
+                    else -> "command_failed"
+                }
+                val error = if (exitCode == 0) null else {
+                    stderr.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
+                        ?: "Command exited with code " + exitCode
+                }
+                ShizukuBinaryExecResult(exitCode == 0, stdout, stderr, exitCode, errorCode, error)
+            }
+        } catch (e: Exception) {
+            ShizukuBinaryExecResult(false, byteArrayOf(), "", -1, "bridge_unreachable", e.message ?: "Unknown error")
+        }
+    }
+
     private fun getService(): IShizukuService? {
         return try {
             val binder = Shizuku.getBinder() ?: return null
@@ -265,6 +339,13 @@ object ShizukuController {
             BufferedReader(InputStreamReader(input)).use { reader ->
                 return reader.readText()
             }
+        }
+    }
+
+    private fun readBytesFromPfd(pfd: ParcelFileDescriptor?): ByteArray {
+        if (pfd == null) return byteArrayOf()
+        FileInputStream(pfd.fileDescriptor).use { input ->
+            return input.readBytes()
         }
     }
 }

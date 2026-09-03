@@ -5,7 +5,9 @@ import android.graphics.PixelFormat
 import android.os.Build
 import android.provider.Settings
 import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
+import android.widget.FrameLayout
 import com.ai.assistance.showerclient.ShowerLog
 import com.ai.assistance.showerclient.ui.ShowerSurfaceView
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +18,7 @@ import kotlinx.coroutines.withContext
 object PhoneUiVirtualDisplayCapture {
     private const val TAG = "PhoneUiVirtualCapture"
     @Volatile private var windowManager: WindowManager? = null
+    @Volatile private var windowView: View? = null
     @Volatile private var surfaceView: ShowerSurfaceView? = null
 
     suspend fun attach(context: Context): Boolean = withContext(Dispatchers.Main) {
@@ -24,26 +27,25 @@ object PhoneUiVirtualDisplayCapture {
             ShowerLog.w(TAG, "Overlay permission is unavailable; Shower screenshot RPC remains the fallback")
             return@withContext false
         }
-        val videoSize = PhoneUiShowerRuntime.controller.getVideoSize()
-        if (videoSize != null) {
-            // Re-registering the sink makes the encoder resend codec setup frames after recovery.
-            PhoneUiShowerRuntime.controller.ensureDisplay(
-                context.applicationContext,
-                videoSize.first,
-                videoSize.second,
-                context.resources.displayMetrics.densityDpi,
-                3_000,
-            )
-        }
         return@withContext runCatching {
             val manager = context.applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val view = ShowerSurfaceView(context.applicationContext).apply {
                 bindController(PhoneUiShowerRuntime.controller)
                 importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
             }
+            val density = context.resources.displayMetrics.density
+            val surfaceSize = density.toInt().coerceAtLeast(1)
+            val hostSize = (48 * density).toInt().coerceAtLeast(surfaceSize)
+            val host = FrameLayout(context.applicationContext).apply {
+                importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                addView(
+                    view,
+                    FrameLayout.LayoutParams(surfaceSize, surfaceSize, Gravity.TOP or Gravity.END),
+                )
+            }
             val params = WindowManager.LayoutParams().apply {
-                width = 1
-                height = 1
+                width = hostSize
+                height = hostSize
                 type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                 } else {
@@ -59,8 +61,9 @@ object PhoneUiVirtualDisplayCapture {
                 y = 0
                 title = "Pocket Lobster phone agent frame capture"
             }
-            manager.addView(view, params)
+            manager.addView(host, params)
             windowManager = manager
+            windowView = host
             surfaceView = view
             true
         }.getOrElse { error ->
@@ -83,8 +86,9 @@ object PhoneUiVirtualDisplayCapture {
     suspend fun detach() = withContext(Dispatchers.Main) { detachLocked() }
 
     private fun detachLocked() {
-        val view = surfaceView
+        val view = windowView
         val manager = windowManager
+        windowView = null
         surfaceView = null
         windowManager = null
         if (view != null && manager != null) {

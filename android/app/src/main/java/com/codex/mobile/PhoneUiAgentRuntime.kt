@@ -4,13 +4,17 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build
 import android.util.Log
 import android.view.KeyEvent
 import com.ai.assistance.showerclient.ShellCommandResult
 import com.ai.assistance.showerclient.ShowerController
 import com.ai.assistance.showerclient.ShowerEnvironment
 import com.ai.assistance.showerclient.ShowerServerManager
+import com.openminis.app.accessibility.MinisAccessibilityService
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.time.Instant
 import java.util.UUID
@@ -249,17 +253,79 @@ object PhoneUiAgentRuntime {
 
     private suspend fun captureScreenshot(context: Context, mode: PhoneUiScreenMode): ByteArray {
         if (mode == PhoneUiScreenMode.VIRTUAL) {
-            PhoneUiVirtualDisplayCapture.capturePng(5_000)?.let { return it }
+            validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(6_000), "virtual-video")?.let { return it }
             appendEvent("status", "正在恢复屏幕截图", "视频帧暂时不可用，正在重新连接虚拟屏幕画面。")
             PhoneUiVirtualDisplayCapture.attach(context)
-            PhoneUiVirtualDisplayCapture.capturePng(6_000)?.let { return it }
+            validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(6_000), "virtual-video-reconnected")?.let { return it }
+            captureViaAccessibility(PhoneUiShowerRuntime.controller.getDisplayId() ?: 0)
+                ?.let { validScreenshot(it, "virtual-accessibility") }
+                ?.let { return it }
+            repeat(3) { attempt ->
+                validScreenshot(
+                    PhoneUiShowerRuntime.controller.requestScreenshot(4_000),
+                    "virtual-shower-" + (attempt + 1),
+                )?.let { return it }
+                delay(350L * (attempt + 1))
+            }
+            throw IllegalStateException("虚拟屏幕截图链路持续无有效画面，请打开虚拟屏幕查看目标应用状态后重试")
         }
-        repeat(6) { attempt ->
-            val bytes = PhoneUiShowerRuntime.controller.requestScreenshot(5_000)
-            if (bytes != null && bytes.size > 1_024) return bytes
-            delay(500L * (attempt + 1))
+
+        repeat(3) { attempt ->
+            captureViaShizuku()
+                ?.let { validScreenshot(it, "main-shizuku-" + (attempt + 1)) }
+                ?.let { return it }
+            validScreenshot(
+                PhoneUiShowerRuntime.controller.requestScreenshot(4_000),
+                "main-shower-" + (attempt + 1),
+            )?.let { return it }
+            delay(350L * (attempt + 1))
         }
-        throw IllegalStateException("屏幕截图链路持续无有效画面，请打开虚拟屏幕确认目标应用状态后重试")
+        captureViaAccessibility(0)
+            ?.let { validScreenshot(it, "main-accessibility") }
+            ?.let { return it }
+        throw IllegalStateException("主屏幕截图链路持续无有效画面，请确认Shizuku服务运行并保持目标应用在前台后重试")
+    }
+
+    private fun captureViaShizuku(): ByteArray? {
+        val result = ShizukuController.executeShellCommandBinary("screencap -p")
+        if (!result.success) {
+            Log.w(TAG, "Shizuku screencap failed: code=" + result.errorCode + " detail=" + result.error)
+            return null
+        }
+        return result.stdout
+    }
+
+    private fun captureViaAccessibility(displayId: Int): ByteArray? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val service = MinisAccessibilityService.getInstance() ?: return null
+        val shot = service.captureScreenshot(displayId)
+        val bitmap = shot.bitmap
+        if (bitmap == null) {
+            Log.w(TAG, "Accessibility screenshot failed: code=" + shot.errorCode + " detail=" + shot.errorMessage)
+            return null
+        }
+        return try {
+            ByteArrayOutputStream().use { output ->
+                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) null else output.toByteArray()
+            }
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    private fun validScreenshot(bytes: ByteArray?, source: String): ByteArray? {
+        if (bytes == null || bytes.size <= 1_024) {
+            Log.w(TAG, "Screenshot source returned no usable data: source=" + source + " bytes=" + (bytes?.size ?: 0))
+            return null
+        }
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        if (options.outWidth < 100 || options.outHeight < 100) {
+            Log.w(TAG, "Screenshot source returned invalid dimensions: source=" + source + " width=" + options.outWidth + " height=" + options.outHeight)
+            return null
+        }
+        Log.i(TAG, "Screenshot ready: source=" + source + " bytes=" + bytes.size + " width=" + options.outWidth + " height=" + options.outHeight)
+        return bytes
     }
 
     private suspend fun executeAction(context: Context, action: PhoneUiAction, width: Int, height: Int): String {
