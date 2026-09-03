@@ -5,8 +5,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.graphics.BitmapFactory
-import android.os.KeyEvent
 import android.util.Log
+import android.view.KeyEvent
 import com.ai.assistance.showerclient.ShellCommandResult
 import com.ai.assistance.showerclient.ShowerController
 import com.ai.assistance.showerclient.ShowerEnvironment
