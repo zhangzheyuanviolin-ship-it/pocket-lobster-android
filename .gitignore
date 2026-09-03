@@ -4,7 +4,6 @@ dist-cli/
 *.tsbuildinfo
 PROJECT_SPEC.md
 codex_tools_from_notices.txt
-package-lock.json
 /output/
 android/signing/*.p12
 android/signing/*.pfx
