@@ -52,7 +52,7 @@ jobs:
 
       - name: Verify embedded server identity
         run: |
-          grep -E '^1\.0\.91-codex-cli-0\.147\.0-gpt-5\.6-openminis-1\.12-phone-ui-agent-runtime-v332:[0-9a-f]{64}$' android/app/src/main/assets/server-bundle/bundle-id
+          grep -E '^1\.0\.92-codex-cli-0\.147\.0-gpt-5\.6-openminis-1\.12-phone-ui-agent-runtime-v333:[0-9a-f]{64}$' android/app/src/main/assets/server-bundle/bundle-id
           grep -F 'durable-agent-tools-v2' android/app/src/main/assets/server-bundle/dist-cli/index.js
           grep -F 'claudeCollaborationReady' android/app/src/main/assets/server-bundle/dist-cli/index.js
 
@@ -70,6 +70,13 @@ jobs:
 
       - name: Prepare OpenMinis Android toolchain
         run: sdkmanager "platforms;android-36" "ndk;28.0.12433566" "cmake;3.22.1"
+
+      - name: Build patched Shower server
+        run: |
+          bash android/scripts/build-shower-server.sh
+          unzip -l android/showerclient/src/main/assets/shower-server.jar | grep -F 'classes.dex'
+          grep -F 'codecConfig0' android/showerserver/src/main/java/com/ai/assistance/shower/Main.java
+          grep -F 'PARAMETER_KEY_REQUEST_SYNC_FRAME' android/showerserver/src/main/java/com/ai/assistance/shower/Main.java
 
       - name: Build OpenMinis Alpine runtime
         run: |
@@ -163,12 +170,12 @@ jobs:
             exit 1
           fi
           APK_PATH="android/app/build/outputs/apk/debug/$APK_NAME"
-          unzip -p "$APK_PATH" assets/server-bundle/bundle-id | grep -E '^1\.0\.91-codex-cli-0\.147\.0-gpt-5\.6-openminis-1\.12-phone-ui-agent-runtime-v332:[0-9a-f]{64}$'
+          unzip -p "$APK_PATH" assets/server-bundle/bundle-id | grep -E '^1\.0\.92-codex-cli-0\.147\.0-gpt-5\.6-openminis-1\.12-phone-ui-agent-runtime-v333:[0-9a-f]{64}$'
           BADGING="$("$AAPT_BIN" dump badging "$APK_PATH")"
           PACKAGE_LINE="$(echo "$BADGING" | head -n 1)"
           echo "$PACKAGE_LINE"
           echo "$PACKAGE_LINE" | grep -F "name='$EXPECTED_PACKAGE_ID'"
-            echo "$PACKAGE_LINE" | grep -F "versionCode='332'"
+            echo "$PACKAGE_LINE" | grep -F "versionCode='333'"
           test "$(echo "$BADGING" | grep -c '^launchable-activity:')" -eq 1
           echo "$BADGING" | grep -F "launchable-activity: name='com.codex.mobile.MainActivity'"
           if echo "$BADGING" | grep -E "^application-label[^:]*:'Minis'$"; then
@@ -176,7 +183,7 @@ jobs:
             exit 1
           fi
           if [ "$RELEASE_CHANNEL" = "beta" ]; then
-            echo "$PACKAGE_LINE" | grep -F "versionName='1.0.91-codex-cli-0.147.0-gpt-5.6-openminis-1.12-phone-ui-agent-runtime-v332-beta'"
+            echo "$PACKAGE_LINE" | grep -F "versionName='1.0.92-codex-cli-0.147.0-gpt-5.6-openminis-1.12-phone-ui-agent-runtime-v333-beta'"
             echo "$BADGING" | grep -F "application-label:'口袋大龙虾测试版'"
             test "$EXPECTED_PACKAGE_ID" = "com.codex.mobile.pocketlobster.beta"
           fi

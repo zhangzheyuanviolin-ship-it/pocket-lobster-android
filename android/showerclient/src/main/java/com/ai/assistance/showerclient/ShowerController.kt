@@ -100,6 +100,7 @@ class ShowerController {
 
     private val binaryLock = Any()
     private val earlyBinaryFrames = ArrayDeque<ByteArray>()
+    private val videoConfigFrames = LinkedHashMap<Int, ByteArray>()
 
     private val binaryHandlers = LinkedHashMap<Any, (ByteArray) -> Unit>()
     private val legacyBinaryHandlerKey = Any()
@@ -117,7 +118,7 @@ class ShowerController {
         synchronized(binaryLock) {
             binaryHandlers[key] = handler
             ShowerLog.d(TAG, "addBinaryHandler: id=${virtualDisplayId} handlers=${binaryHandlers.size}, bufferedFrames=${earlyBinaryFrames.size}")
-            framesToReplay = earlyBinaryFrames.toList()
+            framesToReplay = videoConfigFrames.values.map(ByteArray::copyOf) + earlyBinaryFrames.map(ByteArray::copyOf)
         }
         if (framesToReplay.isNotEmpty()) {
             ShowerLog.d(TAG, "addBinaryHandler: replaying ${framesToReplay.size} buffered frames")
@@ -141,6 +142,9 @@ class ShowerController {
         override fun onVideoFrame(data: ByteArray) {
             val handlers: List<(ByteArray) -> Unit>
             synchronized(binaryLock) {
+                h264NalTypes(data).forEach { type ->
+                    if (type == 7 || type == 8) videoConfigFrames[type] = data.copyOf()
+                }
                 handlers = binaryHandlers.values.toList()
                 if (handlers.isEmpty()) {
                     if (earlyBinaryFrames.size >= 120) {
@@ -156,6 +160,43 @@ class ShowerController {
                 }
             }
         }
+    }
+
+    private fun h264NalTypes(packet: ByteArray): Set<Int> {
+        val types = linkedSetOf<Int>()
+        var index = 0
+        while (index + 3 < packet.size) {
+            val startLength = when {
+                packet[index] == 0.toByte() && packet[index + 1] == 0.toByte() && packet[index + 2] == 1.toByte() -> 3
+                index + 4 <= packet.size && packet[index] == 0.toByte() && packet[index + 1] == 0.toByte() && packet[index + 2] == 0.toByte() && packet[index + 3] == 1.toByte() -> 4
+                else -> 0
+            }
+            if (startLength > 0 && index + startLength < packet.size) {
+                types += packet[index + startLength].toInt() and 0x1F
+                index += startLength
+            } else {
+                index++
+            }
+        }
+        if (types.isNotEmpty()) return types
+
+        index = 0
+        while (index + 4 <= packet.size) {
+            val length = ((packet[index].toInt() and 0xFF) shl 24) or
+                ((packet[index + 1].toInt() and 0xFF) shl 16) or
+                ((packet[index + 2].toInt() and 0xFF) shl 8) or
+                (packet[index + 3].toInt() and 0xFF)
+            index += 4
+            if (length <= 0 || index + length > packet.size) break
+            types += packet[index].toInt() and 0x1F
+            index += length
+        }
+        return types
+    }
+
+    private fun resetVideoReplayState() = synchronized(binaryLock) {
+        videoConfigFrames.clear()
+        earlyBinaryFrames.clear()
     }
 
     suspend fun requestScreenshot(timeoutMs: Long = 3000L): ByteArray? =
@@ -186,6 +227,7 @@ class ShowerController {
             virtualDisplayId = null
             videoWidth = 0
             videoHeight = 0
+            resetVideoReplayState()
         }
 
         fun isBinderDied(e: Throwable): Boolean {
@@ -209,6 +251,7 @@ class ShowerController {
             virtualDisplayId = 0
             videoWidth = 0
             videoHeight = 0
+            resetVideoReplayState()
             // Probe the input path once. keyCode=0 (KEYCODE_UNKNOWN) should be harmless.
             service.injectKey(0, 0)
             ShowerLog.d(TAG, "prepareMainDisplay complete, displayId=0")
@@ -261,6 +304,7 @@ class ShowerController {
             virtualDisplayId = null
             videoWidth = 0
             videoHeight = 0
+            resetVideoReplayState()
         }
 
         fun isBinderDied(e: Throwable): Boolean {
@@ -300,6 +344,7 @@ class ShowerController {
             virtualDisplayId = id
             videoWidth = targetWidth
             videoHeight = targetHeight
+            resetVideoReplayState()
 
             // Link local sink to this display on the server
             service.setVideoSink(id, videoSink.asBinder())
@@ -466,6 +511,7 @@ class ShowerController {
         synchronized(binaryLock) {
             binaryHandlers.clear()
             earlyBinaryFrames.clear()
+            videoConfigFrames.clear()
         }
         if (id != null && id > 0 && service?.asBinder()?.isBinderAlive == true) {
             try {

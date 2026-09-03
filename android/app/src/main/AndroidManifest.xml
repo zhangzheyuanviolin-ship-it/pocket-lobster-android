@@ -52,6 +52,14 @@
             android:screenOrientation="portrait" />
 
         <activity
+            android:name=".PhoneUiAgentBootstrapActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="虚拟屏幕工作区"
+            android:noHistory="true"
+            android:screenOrientation="portrait" />
+
+        <activity
             android:name=".CollaborationActivity"
             android:exported="false"
             android:label="三智能体协作"

@@ -1,9 +1,11 @@
 package com.codex.mobile
 
+import android.app.ActivityOptions
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.pm.ApplicationInfo
+import android.content.Intent
+import android.content.pm.ResolveInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
@@ -93,7 +95,6 @@ object PhoneUiAgentRuntime {
         synchronized(lock) {
             if (activeFuture?.isDone == false) throw IllegalStateException("已有手机操作任务正在运行")
             archiveCurrentLocked()
-            runCatching { PhoneUiShowerRuntime.controller.shutdown() }
             cancelled = false
             paused = false
             state = JSONObject()
@@ -193,7 +194,20 @@ object PhoneUiAgentRuntime {
             val displayId = PhoneUiShowerRuntime.controller.getDisplayId()
                 ?: throw IllegalStateException("屏幕服务没有返回displayId")
             if (mode == PhoneUiScreenMode.VIRTUAL) {
-                PhoneUiVirtualDisplayCapture.attach(context)
+                if (!PhoneUiVirtualDisplayCapture.attach(context)) {
+                    throw IllegalStateException("虚拟屏幕原生视频渲染器初始化失败")
+                }
+                val task = synchronized(lock) { state.optString("task") }
+                val target = resolveTaskTargetApp(context, task)
+                if (target != null) {
+                    appendEvent("status", "正在预热目标应用", "${target.label}将启动到虚拟屏幕displayId=$displayId。")
+                    if (!PhoneUiShowerRuntime.controller.launchApp(target.packageName)) {
+                        throw IllegalStateException("无法在虚拟屏幕启动目标应用：${target.label}")
+                    }
+                } else if (!launchBootstrapScreen(context, displayId)) {
+                    throw IllegalStateException("虚拟屏幕首个可见窗口初始化失败")
+                }
+                delay(1_200)
             }
             appendEvent("status", "屏幕环境已就绪", "displayId=$displayId；模型=${config.displayName}")
             if (mode == PhoneUiScreenMode.MAIN) startKeepAlive()
@@ -253,21 +267,11 @@ object PhoneUiAgentRuntime {
 
     private suspend fun captureScreenshot(context: Context, mode: PhoneUiScreenMode): ByteArray {
         if (mode == PhoneUiScreenMode.VIRTUAL) {
-            validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(6_000), "virtual-video")?.let { return it }
-            appendEvent("status", "正在恢复屏幕截图", "视频帧暂时不可用，正在重新连接虚拟屏幕画面。")
+            validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(10_000), "virtual-video")?.let { return it }
+            appendEvent("status", "正在恢复原生视频流", "首帧暂时不可用，正在重新绑定虚拟屏幕解码器。")
             PhoneUiVirtualDisplayCapture.attach(context)
-            validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(6_000), "virtual-video-reconnected")?.let { return it }
-            captureViaAccessibility(PhoneUiShowerRuntime.controller.getDisplayId() ?: 0)
-                ?.let { validScreenshot(it, "virtual-accessibility") }
-                ?.let { return it }
-            repeat(3) { attempt ->
-                validScreenshot(
-                    PhoneUiShowerRuntime.controller.requestScreenshot(4_000),
-                    "virtual-shower-" + (attempt + 1),
-                )?.let { return it }
-                delay(350L * (attempt + 1))
-            }
-            throw IllegalStateException("虚拟屏幕截图链路持续无有效画面，请打开虚拟屏幕查看目标应用状态后重试")
+            validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(10_000), "virtual-video-reconnected")?.let { return it }
+            throw IllegalStateException("虚拟屏幕原生H.264视频流未产生可解码画面；任务已停止，未向模型发送黑屏或替代截图")
         }
 
         repeat(3) { attempt ->
@@ -395,19 +399,74 @@ object PhoneUiAgentRuntime {
     }
 
     private fun resolvePackage(context: Context, raw: String): String {
-        val target = raw.trim()
+        val rawTarget = raw.trim()
+        if (rawTarget.contains('.')) {
+            val exists = runCatching { context.packageManager.getApplicationInfo(rawTarget, 0) }.isSuccess
+            if (exists) return rawTarget
+        }
+        val target = cleanAppName(rawTarget)
         require(target.isNotEmpty()) { "Launch动作缺少应用名称" }
-        if (target.contains('.')) {
-            val exists = runCatching { context.packageManager.getApplicationInfo(target, 0) }.isSuccess
-            if (exists) return target
+        val normalized = normalizeAppName(target)
+        val matches = launchableApps(context).filter { app ->
+            app.names.any { name ->
+                val candidate = normalizeAppName(name)
+                candidate == normalized || candidate.contains(normalized) || normalized.contains(candidate)
+            }
         }
-        val normalized = target.lowercase()
+        return matches.maxByOrNull { app -> app.names.maxOf { normalizeAppName(it).length } }?.packageName
+            ?: throw IllegalArgumentException("未找到可启动应用：$target，请让模型返回准确包名")
+    }
+
+    private data class LaunchableApp(val packageName: String, val label: String, val names: Set<String>)
+
+    private fun resolveTaskTargetApp(context: Context, task: String): LaunchableApp? {
+        val compactTask = normalizeAppName(task)
+        return launchableApps(context)
+            .mapNotNull { app ->
+                val score = app.names.maxOfOrNull { rawName ->
+                    val name = normalizeAppName(rawName)
+                    if (name.length < 2) return@maxOfOrNull 0
+                    val explicit = listOf("打开$name", "启动$name", "进入$name", "使用$name", "用$name")
+                        .any(compactTask::contains)
+                    val namedAsApp = compactTask.contains(name + "app") || compactTask.contains(name + "应用")
+                    if (explicit || namedAsApp || compactTask.contains(normalizeAppName(app.packageName))) name.length else 0
+                } ?: 0
+                app.takeIf { score > 0 }?.let { it to score }
+            }
+            .maxWithOrNull(compareBy<Pair<LaunchableApp, Int>> { it.second }.thenBy { it.first.label.length })
+            ?.first
+    }
+
+    private fun launchableApps(context: Context): List<LaunchableApp> {
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         @Suppress("DEPRECATION")
-        val matches = context.packageManager.getInstalledApplications(0).mapNotNull { info: ApplicationInfo ->
-            val label = context.packageManager.getApplicationLabel(info).toString()
-            if (label.equals(target, true) || label.lowercase().contains(normalized)) info.packageName else null
-        }
-        return matches.firstOrNull() ?: throw IllegalArgumentException("未找到应用：$target，请让模型返回准确包名")
+        val activities: List<ResolveInfo> = context.packageManager.queryIntentActivities(intent, 0)
+        return activities.mapNotNull { info ->
+            val packageName = info.activityInfo?.packageName ?: return@mapNotNull null
+            val label = info.loadLabel(context.packageManager)?.toString()?.trim().orEmpty()
+            if (label.isBlank()) return@mapNotNull null
+            val aliases = linkedSetOf(label, cleanAppName(label))
+            cleanAppName(label).removePrefix("手机").takeIf { it.length >= 2 }?.let(aliases::add)
+            LaunchableApp(packageName, label, aliases)
+        }.distinctBy(LaunchableApp::packageName)
+    }
+
+    private fun cleanAppName(value: String): String = value.trim()
+        .replace(Regex("(?i)(?:\\s*(?:app|应用|安卓版))+$"), "")
+        .trim()
+
+    private fun normalizeAppName(value: String): String = value.lowercase()
+        .replace(Regex("[\\s\\p{Punct}，。！？、（）【】《》“”‘’]+"), "")
+
+    private fun launchBootstrapScreen(context: Context, displayId: Int): Boolean = runCatching {
+        val intent = Intent(context, PhoneUiAgentBootstrapActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val options = ActivityOptions.makeBasic().apply { setLaunchDisplayId(displayId) }
+        context.startActivity(intent, options.toBundle())
+        true
+    }.getOrElse { error ->
+        Log.e(TAG, "Failed to launch virtual display bootstrap screen", error)
+        false
     }
 
     private fun imageDimensions(bytes: ByteArray): Pair<Int, Int> {
