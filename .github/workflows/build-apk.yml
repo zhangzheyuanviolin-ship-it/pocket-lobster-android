@@ -236,7 +236,14 @@ jobs:
           grep -E 'assets/alpine-minirootfs\.tar(\.gz)?$' /tmp/apk-entries.txt
           grep -F "assets/proot-aarch64" /tmp/apk-entries.txt
           grep -F "assets/shower-server.jar" /tmp/apk-entries.txt
-          unzip -p "$APK_PATH" assets/shower-server.jar | sha256sum | grep -F '4fc349a6ea9722d2ba2431811de1b44276a5a13901cad751463df021be0fb5e8'
+          unzip -p "$APK_PATH" assets/shower-server.jar > /tmp/patched-shower-server.jar
+          unzip -p /tmp/patched-shower-server.jar classes.dex > /tmp/patched-shower-classes.dex
+          grep -aF 'codecConfig0' /tmp/patched-shower-classes.dex
+          grep -aF 'Failed to request sync frame for display' /tmp/patched-shower-classes.dex
+          if sha256sum /tmp/patched-shower-server.jar | grep -F '4fc349a6ea9722d2ba2431811de1b44276a5a13901cad751463df021be0fb5e8'; then
+            echo "Unpatched upstream Shower server must not ship in this build"
+            exit 1
+          fi
           grep -F "lib/arm64-v8a/libproot.so" /tmp/apk-entries.txt
           grep -F "lib/arm64-v8a/libproot-loader.so" /tmp/apk-entries.txt
           grep -F "lib/arm64-v8a/libproot-loader32.so" /tmp/apk-entries.txt
