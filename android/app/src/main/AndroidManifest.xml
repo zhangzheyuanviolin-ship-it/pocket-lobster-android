@@ -155,10 +155,9 @@
 
         <receiver
             android:name=".PhoneUiShowerBinderReceiver"
-            android:exported="true"
-            android:permission="android.permission.DUMP">
+            android:exported="true">
             <intent-filter>
-                <action android:name="com.codex.mobile.pocketlobster.action.SHOWER_READY_" />
+                <action android:name="com.ai.assistance.operit.action.SHOWER_BINDER_READY" />
             </intent-filter>
         </receiver>
 

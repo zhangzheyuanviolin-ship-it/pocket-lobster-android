@@ -5,14 +5,12 @@ import android.text.InputType
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.ArrayAdapter
 import android.widget.BaseAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
-import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -93,20 +91,22 @@ class PhoneUiAgentModelManagerActivity : AppCompatActivity() {
 
     private fun showEditDialog(existing: PhoneUiModelConfig?) {
         val presets = PhoneUiAgentModelStore.presets()
-        val presetSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@PhoneUiAgentModelManagerActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                listOf("智谱AutoGLM Phone", "自定义视觉语言模型"),
-            )
+        val presetLabels = listOf("智谱 AutoGLM Phone", "自定义视觉语言模型")
+        val protocolLabels = PhoneUiModelProtocol.entries.map {
+            when (it) {
+                PhoneUiModelProtocol.AUTOGLM_NATIVE -> "AutoGLM 原生协议"
+                PhoneUiModelProtocol.GENERIC_JSON -> "通用 JSON 动作协议"
+            }
         }
-        val protocolSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@PhoneUiAgentModelManagerActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                PhoneUiModelProtocol.entries.map { it.value },
-            )
-            setSelection(existing?.protocol?.ordinal ?: 0)
+        var selectedPreset = if (existing?.protocol == PhoneUiModelProtocol.GENERIC_JSON) 1 else 0
+        var selectedProtocol = existing?.protocol ?: PhoneUiModelProtocol.AUTOGLM_NATIVE
+        val presetButton = Button(this)
+        val protocolButton = Button(this)
+        fun updateChoiceLabels() {
+            presetButton.text = "提供商预设：${presetLabels[selectedPreset]}"
+            presetButton.contentDescription = "提供商预设，当前为${presetLabels[selectedPreset]}，点击更改"
+            protocolButton.text = "动作协议：${protocolLabels[selectedProtocol.ordinal]}"
+            protocolButton.contentDescription = "动作协议，当前为${protocolLabels[selectedProtocol.ordinal]}，点击更改"
         }
         val nameInput = textInput("显示名称", existing?.displayName.orEmpty())
         val baseUrlInput = textInput("Base URL", existing?.baseUrl.orEmpty())
@@ -118,29 +118,46 @@ class PhoneUiAgentModelManagerActivity : AppCompatActivity() {
             text = "设为当前模型"
             isChecked = existing?.isDefault ?: true
         }
-        if (existing != null) {
-            presetSpinner.setSelection(if (existing.protocol == PhoneUiModelProtocol.AUTOGLM_NATIVE) 0 else 1)
+        if (existing == null) {
+            val preset = presets[selectedPreset]
+            nameInput.setText(preset.displayName)
+            baseUrlInput.setText(preset.baseUrl)
+            modelIdInput.setText(preset.modelId)
         }
-        presetSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (existing == null || baseUrlInput.text.isBlank()) {
-                    val preset = presets[position]
+        presetButton.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("选择提供商预设")
+                .setSingleChoiceItems(presetLabels.toTypedArray(), selectedPreset) { choiceDialog, which ->
+                    selectedPreset = which
+                    selectedProtocol = presets[which].protocol
+                    val preset = presets[which]
                     nameInput.setText(preset.displayName)
                     baseUrlInput.setText(preset.baseUrl)
                     modelIdInput.setText(preset.modelId)
-                    protocolSpinner.setSelection(preset.protocol.ordinal)
+                    updateChoiceLabels()
+                    choiceDialog.dismiss()
                 }
-            }
-            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+                .setNegativeButton("取消", null)
+                .show()
         }
+        protocolButton.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("选择动作协议")
+                .setSingleChoiceItems(protocolLabels.toTypedArray(), selectedProtocol.ordinal) { choiceDialog, which ->
+                    selectedProtocol = PhoneUiModelProtocol.entries[which]
+                    updateChoiceLabels()
+                    choiceDialog.dismiss()
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+        updateChoiceLabels()
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val padding = (18 * resources.displayMetrics.density).toInt()
             setPadding(padding, padding / 2, padding, 0)
-            addView(TextView(this@PhoneUiAgentModelManagerActivity).apply { text = "提供商预设" })
-            addView(presetSpinner)
-            addView(TextView(this@PhoneUiAgentModelManagerActivity).apply { text = "动作协议" })
-            addView(protocolSpinner)
+            addView(presetButton)
+            addView(protocolButton)
             addView(nameInput)
             addView(baseUrlInput)
             addView(modelIdInput)
@@ -168,7 +185,7 @@ class PhoneUiAgentModelManagerActivity : AppCompatActivity() {
                     baseUrl = baseUrl,
                     apiKey = apiKey,
                     modelId = modelId,
-                    protocol = PhoneUiModelProtocol.entries[protocolSpinner.selectedItemPosition],
+                    protocol = selectedProtocol,
                     isDefault = defaultCheck.isChecked,
                 )
             }

@@ -33,34 +33,41 @@ data class PhoneUiModelDecision(
 
 object PhoneUiActionParser {
     fun parse(raw: String, protocol: PhoneUiModelProtocol): PhoneUiModelDecision {
-        return when (protocol) {
+        val decision = when (protocol) {
             PhoneUiModelProtocol.AUTOGLM_NATIVE -> parseAutoGlm(raw)
             PhoneUiModelProtocol.GENERIC_JSON -> parseGenericJson(raw)
         }
+        validate(decision.action)
+        return decision
     }
 
     private fun parseAutoGlm(raw: String): PhoneUiModelDecision {
-        val thinking = tag(raw, "think")
-        val answer = tag(raw, "answer").ifBlank { raw.trim() }
-        val finish = Regex("""finish\s*\(\s*message\s*=\s*\"((?:\\.|[^\"])*)\"\s*\)""", RegexOption.IGNORE_CASE)
-            .find(answer)
-        if (finish != null) {
+        val normalized = raw.replace('\u201c', '"').replace('\u201d', '"')
+            .replace('\u2018', '\'').replace('\u2019', '\'')
+        val answer = tag(normalized, "answer").ifBlank { normalized.trim() }
+        val finishBody = callBody(answer, "finish")
+        if (finishBody != null) {
             return PhoneUiModelDecision(
                 raw,
-                thinking,
-                PhoneUiAction("finish", message = unescape(finish.groupValues[1]), finished = true),
+                extractThinking(normalized, answer, "finish"),
+                PhoneUiAction(
+                    "finish",
+                    message = quoted(finishBody, "message") ?: finishBody.trim().ifBlank { "任务已完成" },
+                    finished = true,
+                ),
             )
         }
-        val doBody = Regex("""do\s*\((.*)\)""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
-            .find(answer)?.groupValues?.getOrNull(1)
+        val doBody = callBody(answer, "do")
             ?: throw IllegalArgumentException("模型没有返回可解析的do或finish动作")
-        val actionName = quoted(doBody, "action") ?: throw IllegalArgumentException("动作缺少action字段")
+        val actionName = quoted(doBody, "action")
+            ?: bare(doBody, "action")
+            ?: throw IllegalArgumentException("动作缺少action字段")
         val point = point(doBody, "element")
         val start = point(doBody, "start")
         val end = point(doBody, "end")
         return PhoneUiModelDecision(
             raw,
-            thinking,
+            extractThinking(normalized, answer, "do"),
             PhoneUiAction(
                 name = actionName,
                 x = point?.first ?: start?.first,
@@ -69,7 +76,8 @@ object PhoneUiActionParser {
                 endY = end?.second,
                 text = quoted(doBody, "text"),
                 app = quoted(doBody, "app"),
-                seconds = quoted(doBody, "duration")?.replace(Regex("[^0-9.]"), "")?.toDoubleOrNull(),
+                seconds = (quoted(doBody, "duration") ?: bare(doBody, "duration"))
+                    ?.replace(Regex("[^0-9.]"), "")?.toDoubleOrNull(),
                 message = quoted(doBody, "message") ?: quoted(doBody, "instruction"),
             ),
         )
@@ -115,9 +123,66 @@ object PhoneUiActionParser {
             .find(text)?.groupValues?.getOrNull(1)?.trim().orEmpty()
 
     private fun quoted(body: String, key: String): String? {
-        val match = Regex("""\b${Regex.escape(key)}\s*=\s*\"((?:\\.|[^\"])*)\"""", RegexOption.IGNORE_CASE)
-            .find(body) ?: return null
-        return unescape(match.groupValues[1])
+        val match = Regex(
+            """\b${Regex.escape(key)}\s*=\s*(?:\"((?:\\.|[^\"])*)\"|'((?:\\.|[^'])*)')""",
+            RegexOption.IGNORE_CASE,
+        ).find(body) ?: return null
+        return unescape(match.groupValues[1].ifEmpty { match.groupValues[2] })
+    }
+
+    private fun bare(body: String, key: String): String? = Regex(
+        """\b${Regex.escape(key)}\s*=\s*([^,\s)]+)""",
+        RegexOption.IGNORE_CASE,
+    ).find(body)?.groupValues?.getOrNull(1)?.trim()
+
+    private fun callBody(text: String, name: String): String? {
+        val match = Regex("""\b${Regex.escape(name)}\s*\(""", RegexOption.IGNORE_CASE).find(text)
+            ?: return null
+        val start = match.range.last + 1
+        var depth = 1
+        var quote: Char? = null
+        var escaped = false
+        for (index in start until text.length) {
+            val char = text[index]
+            if (escaped) {
+                escaped = false
+                continue
+            }
+            if (char == '\\' && quote != null) {
+                escaped = true
+                continue
+            }
+            if (char == '"' || char == '\'') {
+                if (quote == null) quote = char else if (quote == char) quote = null
+                continue
+            }
+            if (quote != null) continue
+            if (char == '(') depth++
+            if (char == ')' && --depth == 0) return text.substring(start, index)
+        }
+        return null
+    }
+
+    private fun extractThinking(raw: String, answer: String, callName: String): String {
+        tag(raw, "think").takeIf(String::isNotBlank)?.let { return it }
+        val marker = Regex("""\b${Regex.escape(callName)}\s*\(""", RegexOption.IGNORE_CASE)
+            .find(answer)?.range?.first ?: return ""
+        return answer.substring(0, marker)
+            .replace(Regex("</?answer>", RegexOption.IGNORE_CASE), "")
+            .trim()
+    }
+
+    private fun validate(action: PhoneUiAction) {
+        when (action.name.trim().lowercase()) {
+            "tap", "double tap", "long press" -> require(action.x != null && action.y != null) {
+                "${action.name}动作缺少element坐标"
+            }
+            "swipe" -> require(
+                action.x != null && action.y != null && action.endX != null && action.endY != null,
+            ) { "Swipe动作缺少start或end坐标" }
+            "type", "type_name" -> require(!action.text.isNullOrBlank()) { "${action.name}动作缺少text字段" }
+            "launch" -> require(!action.app.isNullOrBlank()) { "Launch动作缺少app字段" }
+        }
     }
 
     private fun point(body: String, key: String): Pair<Int, Int>? {
@@ -128,7 +193,7 @@ object PhoneUiActionParser {
 
     private fun unescape(value: String): String = runCatching {
         JSONArray("[\"$value\"]").getString(0)
-    }.getOrDefault(value.replace("\\\"", "\"").replace("\\n", "\n"))
+    }.getOrDefault(value.replace("\\\"", "\"").replace("\\'", "'").replace("\\n", "\n"))
 }
 
 object PhoneUiAgentPrompt {
@@ -214,10 +279,14 @@ object PhoneUiAgentModelClient {
             emptyList(),
             "",
         )
-        require(!decision.action.finished && decision.action.name.equals("Tap", true)) {
-            "视觉模型已响应，但没有按测试要求返回Tap动作：${decision.action.name}"
+        val supported = setOf(
+            "launch", "tap", "type", "type_name", "swipe", "back", "home", "wait",
+            "double tap", "long press", "take_over", "interact", "note", "call_api", "finish",
+        )
+        require(decision.action.name.trim().lowercase() in supported) {
+            "视觉模型已响应，但返回了不支持的动作：${decision.action.name}"
         }
-        return "真实视觉生成成功：${decision.action.name}，协议${config.protocol.value}"
+        return "连接与真实视觉生成均成功：${decision.action.name}，协议${config.protocol.value}"
     }
 
     private fun post(config: PhoneUiModelConfig, body: JSONObject): JSONObject {

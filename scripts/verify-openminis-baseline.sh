@@ -43,7 +43,7 @@ grep -q '"officialChatRuntime": true' "$MANIFEST"
 grep -q '"legacyOpenClawRuntimeBundled": false' "$MANIFEST"
 grep -q 'golden-beta-v299-20260820' "$MANIFEST"
 grep -q 'implementation(project(":openminis"))' "$ROOT_DIR/android/app/build.gradle.kts"
-grep -q 'versionCode = 329' "$ROOT_DIR/android/app/build.gradle.kts"
+grep -q 'versionCode = 330' "$ROOT_DIR/android/app/build.gradle.kts"
 grep -q 'third_party/OpenMinis/src/android/app/src/main/assets' "$ROOT_DIR/android/app/build.gradle.kts"
 grep -q 'MinisLauncher.openHome' "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/AgentHubActivity.kt"
 grep -q 'minis://settings/providers' "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/MinisLauncher.kt"
@@ -83,6 +83,14 @@ grep -q 'tool("anyclaw_alpine"' "$ROOT_DIR/android/app/src/main/assets/anyclaw/c
 grep -q 'tool("minis_browser"' "$ROOT_DIR/android/app/src/main/assets/anyclaw/claude-toolbox-server.js"
 grep -q 'tool("phone_ui_agent_start"' "$ROOT_DIR/android/app/src/main/assets/anyclaw/claude-toolbox-server.js"
 test -f "$ROOT_DIR/android/showerclient/src/main/assets/shower-server.jar"
+test "$(sha256sum "$ROOT_DIR/android/showerclient/src/main/assets/shower-server.jar" | awk '{print $1}')" = \
+  "4fc349a6ea9722d2ba2431811de1b44276a5a13901cad751463df021be0fb5e8"
+grep -q 'com.ai.assistance.operit.action.SHOWER_BINDER_READY' \
+  "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/PhoneUiShowerBinderReceiver.kt"
+if grep -q 'android:permission="android.permission.DUMP"' "$ROOT_DIR/android/app/src/main/AndroidManifest.xml"; then
+  echo "Phone UI Shower receiver must not require the DUMP permission"
+  exit 1
+fi
 test -f "$ROOT_DIR/android/app/src/main/assets/shared-runtime/alpine-shell"
 test -f "$ROOT_DIR/android/app/src/main/assets/shared-runtime/minis-browser"
 test -f "$ROOT_DIR/android/app/src/main/assets/shared-runtime/shared-runtime-cli.js"

@@ -27,12 +27,17 @@ object ShowerServerManager {
     @Volatile
     private var lastTargetPackage: String? = null
 
+    @Volatile
+    var lastError: String = ""
+        private set
+
     /**
      * Ensure the Shower server is started in the background.
      * Returns true if the start command was issued successfully and a Binder
      * was received within the timeout window.
      */
     suspend fun ensureServerStarted(context: Context): Boolean {
+        lastError = ""
         // 0) If we already have an alive Binder from the handoff broadcast, just reuse it.
         if (ShowerBinderRegistry.hasAliveService()) {
             ShowerLog.d(TAG, "Shower Binder already cached and alive, skipping start")
@@ -42,6 +47,7 @@ object ShowerServerManager {
         val runner = ShowerEnvironment.shellRunner
         if (runner == null) {
             ShowerLog.e(TAG, "No ShellRunner configured in ShowerEnvironment; cannot start server")
+            lastError = "Shizuku命令执行器尚未初始化"
             return false
         }
 
@@ -51,6 +57,7 @@ object ShowerServerManager {
             copyJarToExternalDir(appContext)
         } catch (e: Exception) {
             ShowerLog.e(TAG, "Failed to copy shower-server.jar from assets", e)
+            lastError = "服务文件复制失败：${e.message ?: e.javaClass.simpleName}"
             return false
         }
 
@@ -63,7 +70,7 @@ object ShowerServerManager {
         // 2) With highest available identity, remove any stale jar and log under /data/local/tmp.
         val packageSuffix = appContext.packageName.replace(Regex("[^A-Za-z0-9_.-]"), "_")
         val remoteJarPath = "/data/local/tmp/pocketlobster-shower-$packageSuffix.jar"
-        val remoteLogPath = "/data/local/tmp/plobst.log"
+        val remoteLogPath = "/data/local/tmp/shower.log"
         val processLogPath = "/data/local/tmp/pocketlobster-shower-$packageSuffix.log"
         val cleanupCmd = "rm -f $remoteJarPath $remoteLogPath $processLogPath || true"
         ShowerLog.d(TAG, "Cleaning up previous Shower jar and log with command: $cleanupCmd")
@@ -85,6 +92,7 @@ object ShowerServerManager {
                 TAG,
                 "Failed to copy Shower jar to $remoteJarPath (exitCode=${copyResult.exitCode}). stdout='${copyResult.stdout}', stderr='${copyResult.stderr}'"
             )
+            lastError = "服务文件部署失败：${copyResult.stderr.ifBlank { copyResult.stdout }.take(300)}"
             return false
         }
 
@@ -100,6 +108,7 @@ object ShowerServerManager {
                 TAG,
                 "Failed to start Shower server (exitCode=${startResult.exitCode}). stdout='${startResult.stdout}', stderr='${startResult.stderr}'"
             )
+            lastError = "服务进程启动失败：${startResult.stderr.ifBlank { startResult.stdout }.take(300)}"
             return false
         }
 
@@ -115,7 +124,21 @@ object ShowerServerManager {
             }
         }
 
-        ShowerLog.e(TAG, "Shower Binder was not received within the expected time")
+        val diagnosticResult = runner.run(
+            "cat $processLogPath 2>/dev/null; cat $remoteLogPath 2>/dev/null",
+            ShellIdentity.SHELL,
+        )
+        val diagnostic = sequenceOf(diagnosticResult.stderr, diagnosticResult.stdout)
+            .map(String::trim)
+            .firstOrNull(String::isNotEmpty)
+            ?.takeLast(600)
+            .orEmpty()
+        lastError = if (diagnostic.isBlank()) {
+            "服务已启动但10秒内没有收到Binder握手"
+        } else {
+            "Binder握手失败：$diagnostic"
+        }
+        ShowerLog.e(TAG, "Shower Binder was not received within the expected time: $lastError")
         return false
     }
 

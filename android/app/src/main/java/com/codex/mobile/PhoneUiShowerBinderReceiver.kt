@@ -12,12 +12,15 @@ class PhoneUiShowerBinderReceiver : BroadcastReceiver() {
         if (intent.action != ACTION_SHOWER_BINDER_READY) return
         @Suppress("DEPRECATION")
         val container = intent.getParcelableExtra<ShowerBinderContainer>(EXTRA_BINDER_CONTAINER)
-        val service = container?.binder?.let { IShowerService.Stub.asInterface(it) }
+        val binder = container?.binder
+        val validDescriptor = runCatching { binder?.interfaceDescriptor }.getOrNull() == SHOWER_DESCRIPTOR
+        val service = binder?.takeIf { validDescriptor }?.let { IShowerService.Stub.asInterface(it) }
         ShowerBinderRegistry.setService(service?.takeIf { it.asBinder().isBinderAlive })
     }
 
     companion object {
-        const val ACTION_SHOWER_BINDER_READY = "com.codex.mobile.pocketlobster.action.SHOWER_READY_"
+        const val ACTION_SHOWER_BINDER_READY = "com.ai.assistance.operit.action.SHOWER_BINDER_READY"
         private const val EXTRA_BINDER_CONTAINER = "binder_container"
+        private const val SHOWER_DESCRIPTOR = "com.ai.assistance.shower.IShowerService"
     }
 }

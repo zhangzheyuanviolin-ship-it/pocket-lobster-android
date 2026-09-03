@@ -165,9 +165,13 @@ object PhoneUiAgentRuntime {
                 ?: throw IllegalStateException("当前没有手机操作智能体模型")
             val mode = PhoneUiScreenMode.entries.firstOrNull { it.value == synchronized(lock) { state.optString("mode") } }
                 ?: PhoneUiScreenMode.MAIN
-            updateStatus("starting", "正在启动隔离的Shizuku屏幕服务")
+            updateStatus("starting", "正在启动Shizuku屏幕控制服务")
             val serverReady = ShowerServerManager.ensureServerStarted(context)
-            if (!serverReady) throw IllegalStateException("虚拟屏幕服务未能启动，请确认Shizuku服务运行并已授权")
+            if (!serverReady) {
+                val target = if (mode == PhoneUiScreenMode.MAIN) "主屏幕控制服务" else "虚拟屏幕服务"
+                val detail = ShowerServerManager.lastError.ifBlank { "未收到服务握手" }
+                throw IllegalStateException("$target 未能启动：$detail")
+            }
             val screenReady = if (mode == PhoneUiScreenMode.MAIN) {
                 PhoneUiShowerRuntime.controller.prepareMainDisplay(context)
             } else {
