@@ -146,4 +146,12 @@
         android:text="历史任务"
         android:textAllCaps="false" />
 
+    <Button
+        android:id="@+id/btnPhoneUiOverlayPermission"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:contentDescription="管理主屏幕任务进度悬浮窗权限"
+        android:text="主屏幕进度悬浮窗权限"
+        android:textAllCaps="false" />
+
 </LinearLayout>

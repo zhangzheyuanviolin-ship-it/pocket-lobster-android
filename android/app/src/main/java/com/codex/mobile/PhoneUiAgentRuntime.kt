@@ -165,11 +165,13 @@ object PhoneUiAgentRuntime {
     fun hasVirtualDisplay(): Boolean = PhoneUiShowerRuntime.controller.getDisplayId()?.let { it > 0 } == true
 
     private fun runTask(context: Context) = runBlocking {
+        var taskMode: PhoneUiScreenMode? = null
         try {
             val config = PhoneUiAgentModelStore.loadCurrent(context)
                 ?: throw IllegalStateException("当前没有手机操作智能体模型")
             val mode = PhoneUiScreenMode.entries.firstOrNull { it.value == synchronized(lock) { state.optString("mode") } }
                 ?: PhoneUiScreenMode.MAIN
+            taskMode = mode
             updateStatus("starting", "正在启动Shizuku屏幕控制服务")
             val serverReady = ShowerServerManager.ensureServerStarted(context)
             if (!serverReady) {
@@ -208,6 +210,8 @@ object PhoneUiAgentRuntime {
                     throw IllegalStateException("虚拟屏幕首个可见窗口初始化失败")
                 }
                 delay(1_200)
+            } else if (!PhoneUiAgentProgressOverlay.show(context)) {
+                appendEvent("status", "主屏幕进度悬浮窗未显示", "请在手机操作智能体页面授权悬浮窗；任务仍将继续执行。")
             }
             appendEvent("status", "屏幕环境已就绪", "displayId=$displayId；模型=${config.displayName}")
             if (mode == PhoneUiScreenMode.MAIN) startKeepAlive()
@@ -217,6 +221,8 @@ object PhoneUiAgentRuntime {
             val maxSteps = synchronized(lock) { state.optInt("maxSteps", 25) }
             val history = mutableListOf<Pair<String, String>>()
             var actionResult = ""
+            var previousActionSignature = ""
+            var repeatedActionCount = 0
             for (step in 1..maxSteps) {
                 awaitRunnable()
                 if (cancelled) return@runBlocking
@@ -234,7 +240,7 @@ object PhoneUiAgentRuntime {
                 history += "user" to currentPrompt
                 history += "assistant" to decision.raw
                 if (decision.action.finished) {
-                    val message = decision.action.message.orEmpty().ifBlank { "任务已完成" }
+                    val message = buildFinalMessage(task, decision.action.message, decision.thinking)
                     appendEvent("result", "任务完成", message)
                     updateStatus("completed", message)
                     return@runBlocking
@@ -247,6 +253,15 @@ object PhoneUiAgentRuntime {
                     awaitRunnable()
                     if (cancelled) return@runBlocking
                     actionResult = "用户已经完成手动操作并选择继续，请重新观察当前页面后决定下一步。"
+                    continue
+                }
+                val signature = actionSignature(decision.action)
+                repeatedActionCount = if (signature == previousActionSignature) repeatedActionCount + 1 else 1
+                previousActionSignature = signature
+                if (repeatedActionCount >= 3 && decision.action.name.trim().lowercase() in setOf("tap", "double tap", "long press")) {
+                    actionResult = "同一点击动作已连续出现${repeatedActionCount}次，宿主已阻止本次重复点击。不要继续使用旧坐标；请重新观察页面，确认输入法是否已收起，并改用当前截图中的可见发送按钮或其他有效策略。"
+                    appendEvent("status", "已阻止重复点击", actionResult)
+                    delay(400)
                     continue
                 }
                 actionResult = executeAction(context, decision.action, dimensions.first, dimensions.second)
@@ -262,6 +277,8 @@ object PhoneUiAgentRuntime {
                 appendEvent("error", "任务异常", error.message ?: error.javaClass.simpleName)
                 updateStatus("failed", error.message ?: "任务执行失败")
             }
+        } finally {
+            if (taskMode == PhoneUiScreenMode.MAIN) PhoneUiAgentProgressOverlay.dismissAfter(4_000)
         }
     }
 
@@ -274,20 +291,25 @@ object PhoneUiAgentRuntime {
             throw IllegalStateException("虚拟屏幕原生H.264视频流未产生可解码画面；任务已停止，未向模型发送黑屏或替代截图")
         }
 
-        repeat(3) { attempt ->
-            captureViaShizuku()
-                ?.let { validScreenshot(it, "main-shizuku-" + (attempt + 1)) }
+        PhoneUiAgentProgressOverlay.hideForCapture()
+        try {
+            repeat(3) { attempt ->
+                captureViaShizuku()
+                    ?.let { validScreenshot(it, "main-shizuku-" + (attempt + 1)) }
+                    ?.let { return it }
+                validScreenshot(
+                    PhoneUiShowerRuntime.controller.requestScreenshot(4_000),
+                    "main-shower-" + (attempt + 1),
+                )?.let { return it }
+                delay(350L * (attempt + 1))
+            }
+            captureViaAccessibility(0)
+                ?.let { validScreenshot(it, "main-accessibility") }
                 ?.let { return it }
-            validScreenshot(
-                PhoneUiShowerRuntime.controller.requestScreenshot(4_000),
-                "main-shower-" + (attempt + 1),
-            )?.let { return it }
-            delay(350L * (attempt + 1))
+            throw IllegalStateException("主屏幕截图链路持续无有效画面，请确认Shizuku服务运行并保持目标应用在前台后重试")
+        } finally {
+            PhoneUiAgentProgressOverlay.restoreAfterCapture()
         }
-        captureViaAccessibility(0)
-            ?.let { validScreenshot(it, "main-accessibility") }
-            ?.let { return it }
-        throw IllegalStateException("主屏幕截图链路持续无有效画面，请确认Shizuku服务运行并保持目标应用在前台后重试")
     }
 
     private fun captureViaShizuku(): ByteArray? {
@@ -367,7 +389,18 @@ object PhoneUiAgentRuntime {
                 controller.keyWithMeta(KeyEvent.KEYCODE_A, KeyEvent.META_CTRL_ON)
                 controller.key(KeyEvent.KEYCODE_DEL)
                 if (!controller.key(KeyEvent.KEYCODE_PASTE)) throw IllegalStateException("剪贴板粘贴失败")
-                "已向当前输入框粘贴${value.length}个字符"
+                delay(250)
+                val keyboardVisible = isSoftwareKeyboardVisible()
+                val keyboardDismissed = keyboardVisible && controller.key(KeyEvent.KEYCODE_BACK)
+                if (keyboardDismissed) delay(300)
+                buildString {
+                    append("已向当前输入框粘贴${value.length}个字符")
+                    if (keyboardDismissed) {
+                        append("；已自动收起输入法，下一步必须根据新截图重新定位发送按钮")
+                    } else {
+                        append("；未检测到展开的输入法，下一步仍须根据新截图重新定位发送按钮")
+                    }
+                }
             }
             "swipe" -> {
                 if (!controller.swipe(x(action.x), y(action.y), x(action.endX), y(action.endY), 420)) {
@@ -396,6 +429,44 @@ object PhoneUiAgentRuntime {
 
     private suspend fun awaitRunnable() {
         while (paused && !cancelled) delay(200)
+    }
+
+    private fun isSoftwareKeyboardVisible(): Boolean {
+        val result = ShizukuController.executeShellCommand("dumpsys input_method")
+        if (!result.success) {
+            Log.w(TAG, "Unable to inspect input method state: code=" + result.errorCode + " detail=" + result.error)
+            return false
+        }
+        val state = result.stdout
+        if (Regex("mInputShown\\s*=\\s*true", RegexOption.IGNORE_CASE).containsMatchIn(state)) return true
+        return Regex("mImeWindowVis\\s*=\\s*(\\d+)", RegexOption.IGNORE_CASE)
+            .findAll(state)
+            .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
+            .any { it != 0 }
+    }
+
+    private fun actionSignature(action: PhoneUiAction): String = listOf(
+        action.name.trim().lowercase(),
+        action.x,
+        action.y,
+        action.endX,
+        action.endY,
+        action.text,
+        action.app,
+    ).joinToString("|")
+
+    private fun buildFinalMessage(task: String, rawMessage: String?, thinking: String): String {
+        val message = rawMessage.orEmpty().trim().ifBlank { "任务已完成" }
+        if (message.length >= 48) return message
+        val verification = thinking.trim().replace(Regex("\\s+"), " ").take(800)
+        return buildString {
+            append("任务已完成。执行结果：").append(message.trimEnd('。', '.', '！', '!')).append('。')
+            if (verification.isNotBlank() && !verification.contains(message)) {
+                append("完成前核对：").append(verification.trimEnd('。', '.', '！', '!')).append('。')
+            } else {
+                append("已按要求执行任务：").append(task.trim().take(240).trimEnd('。', '.', '！', '!')).append('。')
+            }
+        }
     }
 
     private fun resolvePackage(context: Context, raw: String): String {
@@ -481,11 +552,13 @@ object PhoneUiAgentRuntime {
 
     private fun updateStep(step: Int, text: String) = synchronized(lock) {
         state.put("step", step).put("status", if (paused) "paused" else "running").put("statusText", text).put("updatedAt", Instant.now().toString())
+        if (state.optString("mode") == PhoneUiScreenMode.MAIN.value) PhoneUiAgentProgressOverlay.update("第${step}步", text)
         persistLocked()
     }
 
     private fun updateStatus(status: String, text: String) = synchronized(lock) {
         state.put("status", status).put("statusText", text).put("updatedAt", Instant.now().toString())
+        if (state.optString("mode") == PhoneUiScreenMode.MAIN.value) PhoneUiAgentProgressOverlay.update("手机操作智能体", text)
         if (status !in setOf("starting", "running", "paused")) stopKeepAliveLocked()
         persistLocked()
     }
@@ -524,6 +597,7 @@ object PhoneUiAgentRuntime {
         )
         while (events.length() > MAX_EVENTS) events.remove(0)
         state.put("updatedAt", Instant.now().toString())
+        if (state.optString("mode") == PhoneUiScreenMode.MAIN.value) PhoneUiAgentProgressOverlay.update(title, detail)
     }
 
     private fun snapshotLocked(): JSONObject = JSONObject(state.toString())

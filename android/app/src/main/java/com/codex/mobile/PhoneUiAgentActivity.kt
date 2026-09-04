@@ -1,9 +1,11 @@
 package com.codex.mobile
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -28,6 +30,7 @@ class PhoneUiAgentActivity : AppCompatActivity() {
     private lateinit var pauseButton: Button
     private lateinit var stopButton: Button
     private lateinit var displayButton: Button
+    private lateinit var overlayPermissionButton: Button
     private var lastRenderKey = ""
 
     private val poller = object : Runnable {
@@ -51,6 +54,7 @@ class PhoneUiAgentActivity : AppCompatActivity() {
         pauseButton = findViewById(R.id.btnPhoneUiPauseResume)
         stopButton = findViewById(R.id.btnPhoneUiStop)
         displayButton = findViewById(R.id.btnPhoneUiOpenDisplay)
+        overlayPermissionButton = findViewById(R.id.btnPhoneUiOverlayPermission)
 
         sendButton.setOnClickListener { requestStart() }
         pauseButton.setOnClickListener {
@@ -81,6 +85,18 @@ class PhoneUiAgentActivity : AppCompatActivity() {
             startActivity(Intent(this, PhoneUiAgentModelManagerActivity::class.java))
         }
         findViewById<Button>(R.id.btnPhoneUiHistory).setOnClickListener { showHistory() }
+        overlayPermissionButton.setOnClickListener {
+            if (PhoneUiAgentProgressOverlay.canShow(this)) {
+                Toast.makeText(this, "主屏幕进度悬浮窗权限已授权", Toast.LENGTH_SHORT).show()
+            } else {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName"),
+                    ),
+                )
+            }
+        }
         render(PhoneUiAgentRuntime.snapshot(), force = true)
     }
 
@@ -88,6 +104,11 @@ class PhoneUiAgentActivity : AppCompatActivity() {
         super.onResume()
         handler.removeCallbacks(poller)
         handler.post(poller)
+        overlayPermissionButton.text = if (PhoneUiAgentProgressOverlay.canShow(this)) {
+            "主屏幕进度悬浮窗权限已授权"
+        } else {
+            "授权主屏幕进度悬浮窗"
+        }
     }
 
     override fun onPause() {
