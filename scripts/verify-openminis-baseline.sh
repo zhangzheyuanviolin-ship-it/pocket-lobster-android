@@ -43,7 +43,7 @@ grep -q '"officialChatRuntime": true' "$MANIFEST"
 grep -q '"legacyOpenClawRuntimeBundled": false' "$MANIFEST"
 grep -q 'golden-beta-v299-20260820' "$MANIFEST"
 grep -q 'implementation(project(":openminis"))' "$ROOT_DIR/android/app/build.gradle.kts"
-grep -q 'versionCode = 335' "$ROOT_DIR/android/app/build.gradle.kts"
+grep -q 'versionCode = 337' "$ROOT_DIR/android/app/build.gradle.kts"
 grep -q 'third_party/OpenMinis/src/android/app/src/main/assets' "$ROOT_DIR/android/app/build.gradle.kts"
 grep -q 'MinisLauncher.openHome' "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/AgentHubActivity.kt"
 grep -q 'minis://settings/providers' "$ROOT_DIR/android/app/src/main/java/com/codex/mobile/MinisLauncher.kt"
@@ -73,7 +73,6 @@ grep -q 'native-offload-.*Process.myUid' "$ROOT_DIR/android/openminis/build.grad
 grep -q 'minis_app_name' "$ROOT_DIR/android/openminis/build.gradle.kts"
 grep -q 'PocketLobsterHostTools.localTerminalDefinition' "$ROOT_DIR/android/openminis/build.gradle.kts"
 grep -q 'PocketLobsterHostTools.ubuntuDefinition' "$ROOT_DIR/android/openminis/build.gradle.kts"
-grep -q 'PocketLobsterHostTools.phoneAgentDefinitions' "$ROOT_DIR/android/openminis/build.gradle.kts"
 grep -q 'PocketLobsterCollaborationTools.definitions' "$ROOT_DIR/android/openminis/build.gradle.kts"
 grep -q 'PocketLobsterCollaborationTools.execute' "$ROOT_DIR/android/openminis/build.gradle.kts"
 test -f "$ROOT_DIR/android/openminis/src/main/java/com/openminis/app/integration/PocketLobsterCollaborationTools.kt"
@@ -81,7 +80,12 @@ grep -q 'com.openminis.app.integration.SharedBrowserActivity' "$ROOT_DIR/android
 grep -q 'com.openminis.app.integration.MinisRuntimeBridgeService' "$ROOT_DIR/android/app/src/main/AndroidManifest.xml"
 grep -q 'tool("anyclaw_alpine"' "$ROOT_DIR/android/app/src/main/assets/anyclaw/claude-toolbox-server.js"
 grep -q 'tool("minis_browser"' "$ROOT_DIR/android/app/src/main/assets/anyclaw/claude-toolbox-server.js"
-grep -q 'tool("phone_ui_agent_start"' "$ROOT_DIR/android/app/src/main/assets/anyclaw/claude-toolbox-server.js"
+if grep -R -q 'phone_ui_agent_' \
+  "$ROOT_DIR/android/app/src/main/assets/anyclaw/claude-toolbox-server.js" \
+  "$ROOT_DIR/android/openminis/src/main/java/com/openminis/app/integration/PocketLobsterHostTools.kt"; then
+  echo "Phone UI agent must remain manual-only"
+  exit 1
+fi
 test -f "$ROOT_DIR/android/showerclient/src/main/assets/shower-server.jar"
 test "$(sha256sum "$ROOT_DIR/android/showerclient/src/main/assets/shower-server.jar" | awk '{print $1}')" = \
   "4fc349a6ea9722d2ba2431811de1b44276a5a13901cad751463df021be0fb5e8"
