@@ -205,7 +205,13 @@ class ShizukuShellBridgeServer(
         val mode = PhoneUiScreenMode.entries.firstOrNull { it.value == payload.optString("mode") }
             ?: PhoneUiScreenMode.VIRTUAL
         val maxSteps = payload.optInt("maxSteps", 25).coerceIn(1, 100)
-        val state = PhoneUiAgentRuntime.startTask(context, task, mode, maxSteps)
+        val state = PhoneUiAgentRuntime.startTask(
+            context,
+            task,
+            mode,
+            maxSteps,
+            PhoneUiTaskOrigin.DELEGATED,
+        )
         return jsonResponse(Response.Status.OK, PhoneUiAgentBridgeProtocol.envelope(state))
     }
 

@@ -218,12 +218,15 @@ object PhoneUiAgentModelClient {
         screenshotPng: ByteArray,
         history: List<Pair<String, String>>,
         actionResult: String,
+        executionGuidance: String = "",
     ): PhoneUiModelDecision {
         require(config.baseUrl.isNotBlank()) { "模型Base URL未配置" }
         require(config.apiKey.isNotBlank()) { "模型API密钥未配置" }
         require(config.modelId.isNotBlank()) { "模型ID未配置" }
+        val baseSystemPrompt = PhoneUiAgentPrompt.system(config.protocol)
+        val systemPrompt = if (executionGuidance.isBlank()) baseSystemPrompt else "$baseSystemPrompt\n$executionGuidance"
         val messages = JSONArray().put(
-            JSONObject().put("role", "system").put("content", PhoneUiAgentPrompt.system(config.protocol)),
+            JSONObject().put("role", "system").put("content", systemPrompt),
         )
         history.takeLast(12).forEach { (role, content) ->
             messages.put(JSONObject().put("role", role).put("content", content.take(12_000)))

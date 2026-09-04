@@ -64,4 +64,19 @@ class PhoneUiActionParserTest {
         assertTrue(genericPrompt.contains("technically impossible"))
     }
 
+    @Test
+    fun delegatedRecoveryNeverChangesManualTasks() {
+        val malformed = IllegalArgumentException("模型没有返回可解析的do或finish动作")
+
+        assertEquals("", PhoneUiDelegatedPolicy.guidance(PhoneUiTaskOrigin.MANUAL))
+        assertTrue(PhoneUiDelegatedPolicy.guidance(PhoneUiTaskOrigin.DELEGATED).contains("不得只输出说明文字"))
+        assertTrue(!PhoneUiDelegatedPolicy.shouldRetryMalformedDecision(PhoneUiTaskOrigin.MANUAL, malformed, 0))
+        assertTrue(PhoneUiDelegatedPolicy.shouldRetryMalformedDecision(PhoneUiTaskOrigin.DELEGATED, malformed, 0))
+        assertTrue(PhoneUiDelegatedPolicy.shouldRetryMalformedDecision(PhoneUiTaskOrigin.DELEGATED, malformed, 1))
+        assertTrue(!PhoneUiDelegatedPolicy.shouldRetryMalformedDecision(PhoneUiTaskOrigin.DELEGATED, malformed, 2))
+        assertTrue(!PhoneUiDelegatedPolicy.shouldBlockRepeatedType(PhoneUiTaskOrigin.MANUAL, 99))
+        assertTrue(!PhoneUiDelegatedPolicy.shouldBlockRepeatedType(PhoneUiTaskOrigin.DELEGATED, 2))
+        assertTrue(PhoneUiDelegatedPolicy.shouldBlockRepeatedType(PhoneUiTaskOrigin.DELEGATED, 3))
+    }
+
 }

@@ -50,7 +50,7 @@ object PhoneUiAgentProgressOverlay {
                     setStroke((1 * density).toInt().coerceAtLeast(1), Color.rgb(71, 85, 105))
                 }
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-                accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+                accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_NONE
                 isFocusable = true
             }
             val manager = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
