@@ -78,6 +78,7 @@ object PhoneUiAgentRuntime {
             if (state.optString("status") in setOf("starting", "running", "paused")) {
                 state.put("status", "interrupted")
                     .put("statusText", "应用进程曾中断，请重新发送任务")
+                    .put("error", "应用进程曾中断，请重新发送任务")
                     .put("updatedAt", Instant.now().toString())
                 appendEventLocked("error", "任务已中断", "宿主进程重启，原任务没有继续执行。")
                 persistLocked()
@@ -93,7 +94,9 @@ object PhoneUiAgentRuntime {
         require(ShizukuController.isServiceRunning()) { "Shizuku服务未运行" }
         require(ShizukuController.hasPermission()) { "口袋大龙虾尚未获得Shizuku授权" }
         synchronized(lock) {
-            if (activeFuture?.isDone == false) throw IllegalStateException("已有手机操作任务正在运行")
+            if (activeFuture?.isDone == false) {
+                throw IllegalStateException("已有手机操作任务正在运行，taskId=${state.optString("id")}")
+            }
             archiveCurrentLocked()
             cancelled = false
             paused = false
@@ -117,7 +120,17 @@ object PhoneUiAgentRuntime {
         }
     }
 
-    fun snapshot(): JSONObject = synchronized(lock) { snapshotLocked() }
+    fun snapshot(taskId: String? = null): JSONObject = synchronized(lock) {
+        val expected = taskId.orEmpty().trim()
+        if (expected.isEmpty() || state.optString("id") == expected) return@synchronized snapshotLocked()
+        val context = applicationContext ?: throw IllegalStateException("手机操作运行时尚未初始化")
+        val history = readHistory(context)
+        for (index in history.length() - 1 downTo 0) {
+            val item = history.optJSONObject(index) ?: continue
+            if (item.optString("id") == expected) return@synchronized JSONObject(item.toString())
+        }
+        throw IllegalArgumentException("未找到手机操作任务：$expected")
+    }
 
     fun history(): JSONArray = synchronized(lock) {
         val context = applicationContext ?: return@synchronized JSONArray()
@@ -129,7 +142,8 @@ object PhoneUiAgentRuntime {
         historyFile(context).writeText("[]")
     }
 
-    fun pause(): JSONObject = synchronized(lock) {
+    fun pause(taskId: String? = null): JSONObject = synchronized(lock) {
+        requireCurrentTaskLocked(taskId)
         if (state.optString("status") == "running") {
             paused = true
             state.put("status", "paused").put("statusText", "任务已暂停，用户可以接管屏幕")
@@ -139,7 +153,8 @@ object PhoneUiAgentRuntime {
         snapshotLocked()
     }
 
-    fun resume(): JSONObject = synchronized(lock) {
+    fun resume(taskId: String? = null): JSONObject = synchronized(lock) {
+        requireCurrentTaskLocked(taskId)
         if (state.optString("status") == "paused") {
             paused = false
             state.put("status", "running").put("statusText", "任务继续执行")
@@ -149,13 +164,15 @@ object PhoneUiAgentRuntime {
         snapshotLocked()
     }
 
-    fun cancel(): JSONObject = synchronized(lock) {
+    fun cancel(taskId: String? = null): JSONObject = synchronized(lock) {
+        requireCurrentTaskLocked(taskId)
         cancelled = true
         paused = false
         activeFuture?.cancel(true)
         stopKeepAliveLocked()
         if (state.optString("status") in setOf("starting", "running", "paused")) {
             state.put("status", "cancelled").put("statusText", "任务已由用户终止")
+                .put("error", "任务已由用户终止")
             appendEventLocked("status", "任务已终止", "后续模型请求和屏幕动作均已停止。")
             persistLocked()
         }
@@ -558,6 +575,11 @@ object PhoneUiAgentRuntime {
 
     private fun updateStatus(status: String, text: String) = synchronized(lock) {
         state.put("status", status).put("statusText", text).put("updatedAt", Instant.now().toString())
+        when (status) {
+            "completed" -> state.put("result", text).remove("error")
+            "failed", "cancelled", "step_limit", "interrupted" -> state.put("error", text).remove("result")
+            "starting", "running" -> state.remove("result").also { state.remove("error") }
+        }
         if (state.optString("mode") == PhoneUiScreenMode.MAIN.value) PhoneUiAgentProgressOverlay.update("手机操作智能体", text)
         if (status !in setOf("starting", "running", "paused")) stopKeepAliveLocked()
         persistLocked()
@@ -601,6 +623,14 @@ object PhoneUiAgentRuntime {
     }
 
     private fun snapshotLocked(): JSONObject = JSONObject(state.toString())
+
+    private fun requireCurrentTaskLocked(taskId: String?) {
+        val expected = taskId.orEmpty().trim()
+        if (expected.isEmpty()) return
+        require(state.optString("id") == expected) {
+            "手机操作任务已切换，拒绝控制其他任务：expected=$expected actual=${state.optString("id")}"
+        }
+    }
 
     private fun persistLocked() {
         val context = applicationContext ?: return

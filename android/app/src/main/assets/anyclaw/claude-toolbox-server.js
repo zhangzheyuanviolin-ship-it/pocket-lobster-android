@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 
 const SERVER_INFO = { name: "anyclaw-toolbox", version: "2.3.0" };
@@ -341,15 +342,23 @@ const TOOL_DEFS = [
     output_path: { type: "string", description: "Optional absolute PNG export path in app or shared storage." },
     include_base64: { type: "boolean", description: "Include image data; screenshot defaults to true for direct visual inspection." }
   }, ["action"]),
-  tool("phone_ui_agent_start", "Start the host-owned visual phone UI subagent. It can operate the physical main screen or an isolated virtual screen and continues in the background. Use virtual mode unless the user explicitly requests the main screen. Sensitive actions stop for user takeover.", {
+  tool("phone_ui_agent_start", "Start the host-owned visual phone UI subagent with the exact user task. It can operate the physical main screen or an isolated virtual screen and continues in the background. Use virtual mode unless the user explicitly requests the main screen. Returns taskId and an integrity-checked task SHA-256; retain taskId for every later status or control call.", {
     task: { type: "string", minLength: 1 },
     mode: { type: "string", enum: ["virtual", "main"] },
     maxSteps: { type: "integer", minimum: 1, maximum: 100 }
   }, ["task"]),
-  tool("phone_ui_agent_status", "Read the authoritative status, step events, result or error for the current phone UI subagent task."),
-  tool("phone_ui_agent_pause", "Pause the current phone UI subagent before user takeover."),
-  tool("phone_ui_agent_resume", "Resume a paused phone UI subagent after user takeover."),
-  tool("phone_ui_agent_cancel", "Cancel the current phone UI subagent and prevent further screen actions."),
+  tool("phone_ui_agent_status", "Read authoritative status, progress events and terminal result or error for one phone UI task. Pass the taskId returned by start so another task can never be mistaken for this one. While terminal is false, poll again after nextPollAfterMs; do not wait tens of seconds between checks.", {
+    taskId: { type: "string", minLength: 1 }
+  }, ["taskId"]),
+  tool("phone_ui_agent_pause", "Pause one phone UI subagent task before user takeover.", {
+    taskId: { type: "string", minLength: 1 }
+  }, ["taskId"]),
+  tool("phone_ui_agent_resume", "Resume one paused phone UI subagent task after user takeover.", {
+    taskId: { type: "string", minLength: 1 }
+  }, ["taskId"]),
+  tool("phone_ui_agent_cancel", "Cancel one phone UI subagent task and prevent further screen actions.", {
+    taskId: { type: "string", minLength: 1 }
+  }, ["taskId"]),
   tool("anyclaw_github_repo_info", "Get repository metadata.", {
     repo: { type: "string", minLength: 3 },
     token: { type: "string" }
@@ -1013,7 +1022,7 @@ async function callWebBridge(method, params) {
   const response = await fetchJson(WEB_BRIDGE_URL, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
+      "Content-Type": "application/json; charset=utf-8",
       "User-Agent": "AnyClawSearchSuite/1.4"
     },
     body: JSON.stringify({ method, params: params || {} })
@@ -1050,7 +1059,7 @@ async function callMinisBridge(route, payload, timeoutMs = 120000) {
   const response = await fetchJson(MINIS_BRIDGE_URL + route, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
+      "Content-Type": "application/json; charset=utf-8",
       "X-Pocket-Lobster-Token": token,
       "User-Agent": "AnyClawMinisBridge/1.0"
     },
@@ -1076,7 +1085,7 @@ async function callHostBridge(route, payload, timeoutMs = 120000) {
   const response = await fetchJson(HOST_BRIDGE_URL + route, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
+      "Content-Type": "application/json; charset=utf-8",
       "X-Pocket-Lobster-Token": token,
       "User-Agent": "PocketLobsterPhoneUiAgent/1.0"
     },
@@ -1090,6 +1099,23 @@ async function callHostBridge(route, payload, timeoutMs = 120000) {
     };
   }
   return response.data;
+}
+
+function phoneTaskPayload(task, mode, maxSteps) {
+  const normalizedTask = String(task || "").trim();
+  const taskBytes = Buffer.from(normalizedTask, "utf8");
+  return {
+    task: normalizedTask,
+    taskBase64: taskBytes.toString("base64"),
+    taskSha256: crypto.createHash("sha256").update(taskBytes).digest("hex"),
+    mode,
+    maxSteps
+  };
+}
+
+function phoneTaskControlPayload(args) {
+  const taskId = toStringSafe(args.taskId, "").trim();
+  return taskId ? { taskId } : {};
 }
 
 function resolveWorkspacePath(target) {
@@ -2189,20 +2215,31 @@ async function callTool(name, args) {
       }
       return await callMinisBridge("/browser/call", browserArgs, 120000);
     }
-    case "phone_ui_agent_start":
-      return await callHostBridge("/phone-agent/start", {
-        task: toStringSafe(args.task, "").trim(),
-        mode: toStringSafe(args.mode, "virtual").trim() || "virtual",
-        maxSteps: clampInt(toInt(args.maxSteps, 25), 1, 100)
-      }, 30000);
+    case "phone_ui_agent_start": {
+      const payload = phoneTaskPayload(
+        toStringSafe(args.task, ""),
+        toStringSafe(args.mode, "virtual").trim() || "virtual",
+        clampInt(toInt(args.maxSteps, 25), 1, 100)
+      );
+      const response = await callHostBridge("/phone-agent/start", payload, 30000);
+      if (response.ok && response.taskSha256 !== payload.taskSha256) {
+        return {
+          ok: false,
+          error: "phone_ui_agent_task_integrity_failed",
+          expectedTaskSha256: payload.taskSha256,
+          actualTaskSha256: String(response.taskSha256 || "")
+        };
+      }
+      return response;
+    }
     case "phone_ui_agent_status":
-      return await callHostBridge("/phone-agent/status", {}, 30000);
+      return await callHostBridge("/phone-agent/status", phoneTaskControlPayload(args), 30000);
     case "phone_ui_agent_pause":
-      return await callHostBridge("/phone-agent/pause", {}, 30000);
+      return await callHostBridge("/phone-agent/pause", phoneTaskControlPayload(args), 30000);
     case "phone_ui_agent_resume":
-      return await callHostBridge("/phone-agent/resume", {}, 30000);
+      return await callHostBridge("/phone-agent/resume", phoneTaskControlPayload(args), 30000);
     case "phone_ui_agent_cancel":
-      return await callHostBridge("/phone-agent/cancel", {}, 30000);
+      return await callHostBridge("/phone-agent/cancel", phoneTaskControlPayload(args), 30000);
     case "anyclaw_github_repo_info": {
       const token = resolveGithubToken(args);
       if (!token) return { ok: false, error: "missing_github_token" };

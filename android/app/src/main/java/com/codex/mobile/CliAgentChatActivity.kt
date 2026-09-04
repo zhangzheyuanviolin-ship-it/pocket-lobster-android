@@ -1401,8 +1401,8 @@ class CliAgentChatActivity : AppCompatActivity() {
         out.appendLine("20) Minis浏览器标准流程为list_tabs、navigate、wait_for_dom_stable，再执行get_text、get_readable、click或type；需要接手其他智能体的页面时必须传入list_tabs返回的明确tab_id，同一标签上的动作会自动串行，禁止猜测动作名或标签编号。")
         out.appendLine("21) click和type的selector_type支持css、xpath、text；元素暂时不存在时工具会自动等待重试并返回页面上下文。")
         out.appendLine("22) screenshot会直接返回PNG图像内容和imageFilePath；需要视觉判断时必须读取该图像，不得仅凭截图成功文案推断页面状态。")
-        out.appendLine("23) 需要操作安卓应用界面时，使用phone_ui_agent_start启动专用视觉子智能体，默认选择virtual隔离屏幕；只有用户明确要求操作当前主屏幕时才选择main，并用status查询进度、pause/resume交接、cancel终止。")
-        out.appendLine("24) phone_ui_agent_start返回任务已启动不代表任务已完成；必须轮询phone_ui_agent_status直到completed、failed、cancelled或step_limit，并依据真实result向用户汇报。")
+        out.appendLine("23) 需要操作安卓应用界面时，使用phone_ui_agent_start启动专用视觉子智能体；task必须准确保留用户指定的应用、文本和完成条件，不得改写成其他应用或任务。默认选择virtual隔离屏幕，只有用户明确要求操作当前主屏幕时才选择main。")
+        out.appendLine("24) phone_ui_agent_start返回任务已启动不代表任务已完成；必须保存其taskId，并在后续status、pause、resume、cancel中传回同一taskId；terminal=false时按nextPollAfterMs提示每二到五秒查询一次，直到terminal=true，再严格依据result或error向用户汇报，不得长时间静默或把中间状态当作完成。")
     }
 
     private fun runClaudePrint(

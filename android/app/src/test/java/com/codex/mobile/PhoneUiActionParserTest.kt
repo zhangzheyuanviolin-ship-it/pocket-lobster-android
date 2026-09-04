@@ -1,8 +1,12 @@
 package com.codex.mobile
 
+import java.security.MessageDigest
+import java.util.Base64
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.json.JSONObject
 
 class PhoneUiActionParserTest {
     @Test
@@ -63,5 +67,49 @@ class PhoneUiActionParserTest {
         assertTrue(genericPrompt.contains("do not pause merely because of its category"))
         assertTrue(genericPrompt.contains("technically impossible"))
     }
+
+    @Test
+    fun bridgePreservesExactUtf8TaskAndReportsTerminalResult() {
+        val task = "打开豆包APP，发送：帮我生成一张海边沙滩的图片。"
+        val bytes = task.toByteArray(Charsets.UTF_8)
+        val payload = JSONObject()
+            .put("taskBase64", Base64.getEncoder().encodeToString(bytes))
+            .put("taskSha256", sha256(bytes))
+
+        assertEquals(task, PhoneUiAgentBridgeProtocol.decodeTask(payload))
+
+        val state = JSONObject()
+            .put("id", "phone-task-1")
+            .put("task", task)
+            .put("status", "completed")
+            .put("statusText", "豆包已收到图片生成请求")
+            .put("result", "豆包已收到图片生成请求")
+        val envelope = PhoneUiAgentBridgeProtocol.envelope(state)
+        assertTrue(envelope.getBoolean("terminal"))
+        assertEquals("phone-task-1", envelope.getString("taskId"))
+        assertEquals("豆包已收到图片生成请求", envelope.getString("result"))
+        assertEquals(sha256(bytes), envelope.getString("taskSha256"))
+    }
+
+    @Test
+    fun bridgeRejectsCorruptedTaskPayload() {
+        val bytes = "打开豆包".toByteArray(Charsets.UTF_8)
+        val payload = JSONObject()
+            .put("taskBase64", Base64.getEncoder().encodeToString(bytes))
+            .put("taskSha256", "0".repeat(64))
+
+        val rejected = runCatching { PhoneUiAgentBridgeProtocol.decodeTask(payload) }.isFailure
+        assertTrue(rejected)
+
+        val running = PhoneUiAgentBridgeProtocol.envelope(
+            JSONObject().put("id", "phone-task-2").put("task", "等待").put("status", "running"),
+        )
+        assertFalse(running.getBoolean("terminal"))
+        assertFalse(running.has("result"))
+    }
+
+    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
+        .digest(bytes)
+        .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
 }

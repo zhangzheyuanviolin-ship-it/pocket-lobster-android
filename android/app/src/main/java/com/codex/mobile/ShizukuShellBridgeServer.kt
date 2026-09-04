@@ -4,7 +4,11 @@ import android.content.Context
 import android.util.Log
 import fi.iki.elonen.NanoHTTPD
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
+import java.security.MessageDigest
 import java.time.Instant
+import java.util.Base64
 import org.json.JSONObject
 
 class ShizukuShellBridgeServer(
@@ -197,24 +201,25 @@ class ShizukuShellBridgeServer(
     private fun handlePhoneAgentStart(session: IHTTPSession): Response {
         if (!isSharedRequestAuthorized(session)) return sharedUnauthorized()
         val payload = requestJson(session)
-        val task = payload.optString("task").trim()
+        val task = PhoneUiAgentBridgeProtocol.decodeTask(payload)
         val mode = PhoneUiScreenMode.entries.firstOrNull { it.value == payload.optString("mode") }
             ?: PhoneUiScreenMode.VIRTUAL
         val maxSteps = payload.optInt("maxSteps", 25).coerceIn(1, 100)
         val state = PhoneUiAgentRuntime.startTask(context, task, mode, maxSteps)
-        return jsonResponse(Response.Status.OK, JSONObject().put("ok", true).put("task", state))
+        return jsonResponse(Response.Status.OK, PhoneUiAgentBridgeProtocol.envelope(state))
     }
 
     private fun handlePhoneAgentControl(session: IHTTPSession, action: String): Response {
         if (!isSharedRequestAuthorized(session)) return sharedUnauthorized()
-        requestJson(session)
+        val payload = requestJson(session)
+        val taskId = payload.optString("taskId").trim().takeIf(String::isNotEmpty)
         val state = when (action) {
-            "pause" -> PhoneUiAgentRuntime.pause()
-            "resume" -> PhoneUiAgentRuntime.resume()
-            "cancel" -> PhoneUiAgentRuntime.cancel()
-            else -> PhoneUiAgentRuntime.snapshot()
+            "pause" -> PhoneUiAgentRuntime.pause(taskId)
+            "resume" -> PhoneUiAgentRuntime.resume(taskId)
+            "cancel" -> PhoneUiAgentRuntime.cancel(taskId)
+            else -> PhoneUiAgentRuntime.snapshot(taskId)
         }
-        return jsonResponse(Response.Status.OK, JSONObject().put("ok", true).put("task", state))
+        return jsonResponse(Response.Status.OK, PhoneUiAgentBridgeProtocol.envelope(state))
     }
 
     private fun requestJson(session: IHTTPSession): JSONObject {
@@ -274,4 +279,54 @@ class ShizukuShellBridgeServer(
         lastErrorCode = null
         lastErrorMessage = null
     }
+}
+
+internal object PhoneUiAgentBridgeProtocol {
+    private val terminalStatuses = setOf("completed", "failed", "cancelled", "step_limit", "interrupted")
+
+    fun decodeTask(payload: JSONObject): String {
+        val encoded = payload.optString("taskBase64").trim()
+        val bytes = if (encoded.isNotEmpty()) {
+            runCatching { Base64.getDecoder().decode(encoded) }
+                .getOrElse { throw IllegalArgumentException("手机操作任务Base64无效") }
+        } else {
+            payload.optString("task").toByteArray(Charsets.UTF_8)
+        }
+        val expectedHash = payload.optString("taskSha256").trim().lowercase()
+        val actualHash = sha256(bytes)
+        if (encoded.isNotEmpty()) require(expectedHash.isNotEmpty()) { "手机操作任务缺少完整性校验值" }
+        if (expectedHash.isNotEmpty()) require(expectedHash == actualHash) { "手机操作任务传输完整性校验失败" }
+        val task = runCatching {
+            Charsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes))
+                .toString()
+                .trim()
+        }.getOrElse { throw IllegalArgumentException("手机操作任务不是有效UTF-8文本") }
+        require(task.isNotEmpty()) { "任务内容不能为空" }
+        require(task.length <= 64_000) { "手机操作任务文本过长" }
+        return task
+    }
+
+    fun envelope(state: JSONObject): JSONObject {
+        val status = state.optString("status", "idle")
+        val terminal = status in terminalStatuses
+        val response = JSONObject()
+            .put("ok", true)
+            .put("taskId", state.optString("id"))
+            .put("taskSha256", sha256(state.optString("task").toByteArray(Charsets.UTF_8)))
+            .put("status", status)
+            .put("terminal", terminal)
+            .put("nextPollAfterMs", if (terminal) 0 else 2_000)
+            .put("eventCount", state.optJSONArray("events")?.length() ?: 0)
+            .put("task", state)
+        if (status == "completed") response.put("result", state.optString("result", state.optString("statusText")))
+        if (terminal && status != "completed") response.put("error", state.optString("error", state.optString("statusText")))
+        return response
+    }
+
+    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
+        .digest(bytes)
+        .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 }

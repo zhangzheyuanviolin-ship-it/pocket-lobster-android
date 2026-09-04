@@ -297,14 +297,14 @@ object PhoneUiAgentModelClient {
             connectTimeout = 30_000
             readTimeout = 120_000
             doOutput = true
-            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Authorization", "Bearer ${config.apiKey}")
         }
         connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
         val code = connection.responseCode
         val text = (if (code in 200..299) connection.inputStream else connection.errorStream)
-            ?.bufferedReader()?.use { it.readText() }.orEmpty()
+            ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
         if (code !in 200..299) throw IllegalStateException("模型HTTP $code：${text.take(800)}")
         return runCatching { JSONObject(text) }.getOrElse {
             throw IllegalStateException("模型返回的不是JSON：${text.take(400)}")
