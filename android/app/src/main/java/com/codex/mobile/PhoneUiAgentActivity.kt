@@ -152,6 +152,7 @@ class PhoneUiAgentActivity : AppCompatActivity() {
         val step = snapshot.optInt("step")
         val maxSteps = snapshot.optInt("maxSteps", 25)
         statusView.text = "状态：${statusLabel(status)}；步骤：$step/$maxSteps；${snapshot.optString("statusText")}"
+        statusView.announceForAccessibility(statusView.text)
         val active = status in setOf("starting", "running", "paused")
         sendButton.isEnabled = !active
         pauseButton.isEnabled = status in setOf("running", "paused")

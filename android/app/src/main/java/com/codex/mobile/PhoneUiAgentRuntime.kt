@@ -34,32 +34,6 @@ enum class PhoneUiScreenMode(val value: String) {
     VIRTUAL("virtual"),
 }
 
-enum class PhoneUiTaskOrigin(val value: String) {
-    MANUAL("manual"),
-    DELEGATED("delegated"),
-}
-
-internal object PhoneUiDelegatedPolicy {
-    fun guidance(origin: PhoneUiTaskOrigin): String =
-        if (origin == PhoneUiTaskOrigin.DELEGATED) {
-            "当前任务由主智能体通过宿主工具委派，但您仍直接负责完整执行手机操作。宿主报告Type粘贴成功后，最多只允许对同一文本重试一次；截图中文字不清晰不等于输入失败，应优先重新定位并点击发送或确认按钮。任何一步都必须返回一个合法do或finish动作，不得只输出说明文字。"
-        } else {
-            ""
-        }
-
-    fun shouldRetryMalformedDecision(origin: PhoneUiTaskOrigin, error: IllegalArgumentException, retries: Int): Boolean {
-        if (origin != PhoneUiTaskOrigin.DELEGATED || retries >= 2) return false
-        val message = error.message.orEmpty()
-        return message.startsWith("模型没有返回") ||
-            message.startsWith("动作缺少") ||
-            message.startsWith("JSON动作缺少") ||
-            message.contains("动作缺少")
-    }
-
-    fun shouldBlockRepeatedType(origin: PhoneUiTaskOrigin, executions: Int): Boolean =
-        origin == PhoneUiTaskOrigin.DELEGATED && executions > 2
-}
-
 object PhoneUiShowerRuntime {
     val controller = ShowerController()
 
@@ -112,13 +86,7 @@ object PhoneUiAgentRuntime {
         }
     }
 
-    fun startTask(
-        context: Context,
-        task: String,
-        mode: PhoneUiScreenMode,
-        maxSteps: Int,
-        origin: PhoneUiTaskOrigin = PhoneUiTaskOrigin.MANUAL,
-    ): JSONObject {
+    fun startTask(context: Context, task: String, mode: PhoneUiScreenMode, maxSteps: Int): JSONObject {
         val cleanTask = task.trim()
         require(cleanTask.isNotEmpty()) { "任务内容不能为空" }
         require(PhoneUiAgentModelStore.loadCurrent(context) != null) { "请先配置手机操作智能体模型" }
@@ -136,7 +104,6 @@ object PhoneUiAgentRuntime {
                 .put("id", UUID.randomUUID().toString())
                 .put("task", cleanTask)
                 .put("mode", mode.value)
-                .put("origin", origin.value)
                 .put("maxSteps", maxSteps.coerceIn(1, 100))
                 .put("step", 0)
                 .put("status", "starting")
@@ -269,16 +236,10 @@ object PhoneUiAgentRuntime {
 
             val task = synchronized(lock) { state.optString("task") }
             val maxSteps = synchronized(lock) { state.optInt("maxSteps", 25) }
-            val origin = PhoneUiTaskOrigin.entries.firstOrNull {
-                it.value == synchronized(lock) { state.optString("origin") }
-            } ?: PhoneUiTaskOrigin.MANUAL
             val history = mutableListOf<Pair<String, String>>()
             var actionResult = ""
             var previousActionSignature = ""
             var repeatedActionCount = 0
-            var malformedDecisionCount = 0
-            var delegatedTypedText = ""
-            var delegatedTypeExecutions = 0
             for (step in 1..maxSteps) {
                 awaitRunnable()
                 if (cancelled) return@runBlocking
@@ -286,30 +247,7 @@ object PhoneUiAgentRuntime {
                 val screenshot = captureScreenshot(context, mode)
                 val dimensions = imageDimensions(screenshot)
                 updateStep(step, "模型正在判断下一步操作")
-                val decision = if (origin == PhoneUiTaskOrigin.MANUAL) {
-                    PhoneUiAgentModelClient.decide(config, task, screenshot, history, actionResult)
-                } else {
-                    try {
-                        PhoneUiAgentModelClient.decide(
-                            config,
-                            task,
-                            screenshot,
-                            history,
-                            actionResult,
-                            PhoneUiDelegatedPolicy.guidance(origin),
-                        )
-                    } catch (error: IllegalArgumentException) {
-                        if (!PhoneUiDelegatedPolicy.shouldRetryMalformedDecision(origin, error, malformedDecisionCount)) {
-                            throw error
-                        }
-                        malformedDecisionCount += 1
-                        actionResult = "模型上一轮没有返回合法动作。请不要解释或复述任务，必须严格返回一个do或finish动作；这是第${malformedDecisionCount}次格式纠正。"
-                        appendEvent("status", "正在纠正模型动作格式", actionResult)
-                        delay(400)
-                        continue
-                    }
-                }
-                malformedDecisionCount = 0
+                val decision = PhoneUiAgentModelClient.decide(config, task, screenshot, history, actionResult)
                 awaitRunnable()
                 if (cancelled) return@runBlocking
                 if (decision.thinking.isNotBlank()) {
@@ -343,26 +281,7 @@ object PhoneUiAgentRuntime {
                     delay(400)
                     continue
                 }
-                val actionName = decision.action.name.trim().lowercase()
-                if (origin == PhoneUiTaskOrigin.DELEGATED && actionName in setOf("type", "type_name")) {
-                    val requestedText = decision.action.text.orEmpty()
-                    if (requestedText == delegatedTypedText) {
-                        delegatedTypeExecutions += 1
-                    } else {
-                        delegatedTypedText = requestedText
-                        delegatedTypeExecutions = 1
-                    }
-                    if (PhoneUiDelegatedPolicy.shouldBlockRepeatedType(origin, delegatedTypeExecutions)) {
-                        actionResult = "文本“${requestedText.take(80)}”已经由宿主成功粘贴两次，已阻止继续重复输入。不要再返回Type；请根据当前截图点击发送或确认按钮，必要时先Wait一次或更换非Type策略。"
-                        appendEvent("status", "已阻止委派任务重复输入", actionResult)
-                        delay(400)
-                        continue
-                    }
-                }
                 actionResult = executeAction(context, decision.action, dimensions.first, dimensions.second)
-                if (origin == PhoneUiTaskOrigin.DELEGATED && actionName in setOf("type", "type_name")) {
-                    actionResult += "；这是宿主确认成功的文本输入。即使下一张截图中文字不明显，也不得把视觉不确定当成输入失败；请优先定位并点击发送或确认按钮。"
-                }
                 appendEvent("action", "第${step}步：${decision.action.name}", actionResult)
                 updateStep(step, "动作已执行，正在等待页面稳定")
                 delay(650)
@@ -749,7 +668,6 @@ object PhoneUiAgentRuntime {
         .put("id", "")
         .put("task", "")
         .put("mode", PhoneUiScreenMode.MAIN.value)
-        .put("origin", PhoneUiTaskOrigin.MANUAL.value)
         .put("maxSteps", 25)
         .put("step", 0)
         .put("status", "idle")
