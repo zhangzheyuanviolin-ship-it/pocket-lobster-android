@@ -238,8 +238,6 @@ object PhoneUiAgentRuntime {
             val maxSteps = synchronized(lock) { state.optInt("maxSteps", 25) }
             val history = mutableListOf<Pair<String, String>>()
             var actionResult = ""
-            var previousActionSignature = ""
-            var repeatedActionCount = 0
             for (step in 1..maxSteps) {
                 awaitRunnable()
                 if (cancelled) return@runBlocking
@@ -270,15 +268,6 @@ object PhoneUiAgentRuntime {
                     awaitRunnable()
                     if (cancelled) return@runBlocking
                     actionResult = "用户已经完成手动操作并选择继续，请重新观察当前页面后决定下一步。"
-                    continue
-                }
-                val signature = actionSignature(decision.action)
-                repeatedActionCount = if (signature == previousActionSignature) repeatedActionCount + 1 else 1
-                previousActionSignature = signature
-                if (repeatedActionCount >= 3 && decision.action.name.trim().lowercase() in setOf("tap", "double tap", "long press")) {
-                    actionResult = "同一点击动作已连续出现${repeatedActionCount}次，宿主已阻止本次重复点击。不要继续使用旧坐标；请重新观察页面，确认输入法是否已收起，并改用当前截图中的可见发送按钮或其他有效策略。"
-                    appendEvent("status", "已阻止重复点击", actionResult)
-                    delay(400)
                     continue
                 }
                 actionResult = executeAction(context, decision.action, dimensions.first, dimensions.second)
@@ -461,16 +450,6 @@ object PhoneUiAgentRuntime {
             .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
             .any { it != 0 }
     }
-
-    private fun actionSignature(action: PhoneUiAction): String = listOf(
-        action.name.trim().lowercase(),
-        action.x,
-        action.y,
-        action.endX,
-        action.endY,
-        action.text,
-        action.app,
-    ).joinToString("|")
 
     private fun buildFinalMessage(task: String, rawMessage: String?, thinking: String): String {
         val message = rawMessage.orEmpty().trim().ifBlank { "任务已完成" }
