@@ -56,6 +56,19 @@ object PhoneUiAgentRuntime {
     private const val STATE_FILE = "phone-ui-agent/task-state.json"
     private const val HISTORY_FILE = "phone-ui-agent/task-history.json"
     private const val MAX_EVENTS = 240
+    private val KNOWN_APP_ALIASES = mapOf(
+        "tv.danmaku.bili" to setOf("哔哩哔哩", "哔哩哔哩动画", "bilibili", "b站"),
+        "com.taobao.taobao" to setOf("淘宝", "手机淘宝"),
+        "com.jingdong.app.mall" to setOf("京东", "京东商城", "jd"),
+        "com.larus.nova" to setOf("豆包"),
+        "com.ss.android.ugc.aweme" to setOf("抖音", "douyin"),
+        "com.xingin.xhs" to setOf("小红书"),
+        "com.tencent.mm" to setOf("微信", "wechat"),
+        "com.tencent.mobileqq" to setOf("qq", "腾讯qq"),
+        "com.sankuai.meituan" to setOf("美团"),
+        "com.autonavi.minimap" to setOf("高德地图", "高德"),
+        "com.baidu.baidumap" to setOf("百度地图"),
+    )
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "pocketlobster-phone-ui-agent").apply { isDaemon = true }
     }
@@ -286,9 +299,16 @@ object PhoneUiAgentRuntime {
                     actionResult = "用户已经完成手动操作并选择继续，请重新观察当前页面后决定下一步。"
                     continue
                 }
-                val executionResult = executeAction(context, decision.action, dimensions.first, dimensions.second)
-                appendEvent("action", "第${step}步：${decision.action.name}", executionResult)
                 val signature = actionSignature(decision.action)
+                val normalizedAction = decision.action.name.trim().lowercase()
+                val duplicateType = normalizedAction in setOf("type", "type_name") &&
+                    signature == previousActionSignature
+                val executionResult = if (duplicateType) {
+                    "检测到连续相同文本输入，已保留输入框现有内容且未再次执行全选删除；请根据新截图定位发送按钮"
+                } else {
+                    executeAction(context, decision.action, dimensions.first, dimensions.second)
+                }
+                appendEvent("action", "第${step}步：${decision.action.name}", executionResult)
                 identicalActionStreak = if (signature == previousActionSignature) identicalActionStreak + 1 else 1
                 previousActionSignature = signature
                 actionResult = modelActionResult(decision.action, executionResult, identicalActionStreak)
@@ -623,6 +643,7 @@ object PhoneUiAgentRuntime {
             if (label.isBlank()) return@mapNotNull null
             val aliases = linkedSetOf(label, cleanAppName(label))
             cleanAppName(label).removePrefix("手机").takeIf { it.length >= 2 }?.let(aliases::add)
+            KNOWN_APP_ALIASES[packageName.lowercase()]?.let(aliases::addAll)
             LaunchableApp(packageName, label, aliases)
         }.distinctBy(LaunchableApp::packageName)
     }

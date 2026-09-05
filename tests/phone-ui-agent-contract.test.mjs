@@ -9,6 +9,7 @@ const activity = read('android/app/src/main/java/com/codex/mobile/PhoneUiAgentAc
 const overlay = read('android/app/src/main/java/com/codex/mobile/PhoneUiAgentProgressOverlay.kt')
 const layout = read('android/app/src/main/res/layout/activity_phone_ui_agent.xml')
 const protocol = read('android/app/src/main/java/com/codex/mobile/PhoneUiAgentProtocol.kt')
+const modelStore = read('android/app/src/main/java/com/codex/mobile/PhoneUiAgentModelStore.kt')
 const modelManager = read('android/app/src/main/java/com/codex/mobile/PhoneUiAgentModelManagerActivity.kt')
 const receiver = read('android/app/src/main/java/com/codex/mobile/PhoneUiShowerBinderReceiver.kt')
 const bridge = read('android/app/src/main/java/com/codex/mobile/ShizukuShellBridgeServer.kt')
@@ -25,8 +26,8 @@ const openMinisBuild = read('android/openminis/build.gradle.kts')
 const cliActivity = read('android/app/src/main/java/com/codex/mobile/CliAgentChatActivity.kt')
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex')
-assert.equal(sha256(runtime), '24ab561118cd988f7798518d4c2da9808a552a86c6be02b614b4358336e64938')
-assert.equal(sha256(protocol), '5c711e856695a51e8280034ae0cccc26e3a0794efcb8f22e1404618ed82b68f7')
+assert.equal(sha256(runtime), 'e8ff5df1896550cd81cd6d09397f1b2931a82faacd1a1ebb9122405287f3d142')
+assert.equal(sha256(protocol), '9abbeb9d1f104a57d677a7d89c3e4062af275513fbe1397b63a06d90969daf1d')
 assert.equal(sha256(activity), '01963c83d5ffd769ae4cc424668304f529554922ba0c3f0671ba5d1406b3408a')
 assert.equal(sha256(overlay), 'ef4b136384bd49ddbc49a0421429da079de5bed186c867b072a3ebec6db344dc')
 assert.equal(sha256(layout), '9c078ca714bfba563cce26eccb496eb89fde510b8d72b5440f69cc9a9fba16d3')
@@ -86,15 +87,42 @@ assert.match(showerServer, /KEY_PREPEND_HEADER_TO_SYNC_FRAMES/)
 assert.match(workflow, /patched-shower-classes\.dex/)
 assert.match(workflow, /Unpatched upstream Shower server must not ship/)
 assert.match(protocol, /AUTOGLM_NATIVE/)
+assert.match(protocol, /GUI_PLUS_NATIVE/)
 assert.match(protocol, /GENERIC_JSON/)
 assert.match(protocol, /"image_url"/)
 assert.match(protocol, /callBody\(answer, "do"\)/)
 assert.match(protocol, /连接与真实视觉生成均成功/)
 assert.match(protocol, /Type完成后宿主会尝试自动收起输入法/)
 assert.match(protocol, /finish的message必须用二到五句/)
+assert.match(protocol, /parseGuiPlus/)
+assert.match(protocol, /firstJsonObject/)
+assert.match(protocol, /"mobile_use"/)
+assert.match(protocol, /"enable_thinking", false/)
+assert.match(protocol, /"vl_high_resolution_images", true/)
+assert.match(protocol, /for \(attempt in 1\.\.2\)/)
+assert.match(protocol, /模型连续两次返回了不可执行动作/)
+assert.match(protocol, /原始输出摘要=/)
+assert.match(protocol, /模型提供商响应超时/)
+assert.match(runtime, /duplicateType/)
+assert.match(runtime, /已保留输入框现有内容且未再次执行全选删除/)
+assert.match(runtime, /"tv\.danmaku\.bili"/)
+assert.match(modelStore, /GUI_PLUS_NATIVE\("gui-plus-native"\)/)
+for (const modelId of [
+  'gui-plus-2026-02-26',
+  'gui-plus',
+  'qwen3.8-max',
+  'qwen3.8-flash',
+  'qwen3.7-plus',
+  'qwen3.6-flash',
+  'qwen3.5-plus',
+  'qwen3.5-flash',
+]) {
+  assert.ok(modelStore.includes(`modelId = "${modelId}"`))
+}
 assert.doesNotMatch(protocol, /登录、验证码、支付、发送、删除、安装、授权和隐私操作必须Take_over/)
 assert.doesNotMatch(modelManager, /Spinner/)
 assert.match(modelManager, /提供商预设，当前为/)
+assert.match(modelManager, /阿里云 GUI Plus 原生协议/)
 assert.match(receiver, /com\.ai\.assistance\.operit\.action\.SHOWER_BINDER_READY/)
 assert.doesNotMatch(manifest, /PhoneUiShowerBinderReceiver"[\s\S]{0,120}android:permission="android\.permission\.DUMP"/)
 assert.match(bridge, /isSharedRequestAuthorized/)

@@ -91,14 +91,19 @@ class PhoneUiAgentModelManagerActivity : AppCompatActivity() {
 
     private fun showEditDialog(existing: PhoneUiModelConfig?) {
         val presets = PhoneUiAgentModelStore.presets()
-        val presetLabels = listOf("智谱 AutoGLM Phone", "自定义视觉语言模型")
+        val presetLabels = presets.map(PhoneUiModelConfig::displayName)
         val protocolLabels = PhoneUiModelProtocol.entries.map {
             when (it) {
                 PhoneUiModelProtocol.AUTOGLM_NATIVE -> "AutoGLM 原生协议"
+                PhoneUiModelProtocol.GUI_PLUS_NATIVE -> "阿里云 GUI Plus 原生协议"
                 PhoneUiModelProtocol.GENERIC_JSON -> "通用 JSON 动作协议"
             }
         }
-        var selectedPreset = if (existing?.protocol == PhoneUiModelProtocol.GENERIC_JSON) 1 else 0
+        var selectedPreset = existing?.let { current ->
+            presets.indexOfFirst { preset ->
+                preset.modelId == current.modelId && preset.baseUrl == current.baseUrl
+            }.takeIf { it >= 0 }
+        } ?: if (existing == null) 0 else presets.lastIndex
         var selectedProtocol = existing?.protocol ?: PhoneUiModelProtocol.AUTOGLM_NATIVE
         val presetButton = Button(this)
         val protocolButton = Button(this)
