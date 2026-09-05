@@ -200,13 +200,13 @@ object PhoneUiAgentPrompt {
     fun system(protocol: PhoneUiModelProtocol): String {
         if (protocol == PhoneUiModelProtocol.GENERIC_JSON) {
             return """
-                You control an Android phone from screenshots and must carry out the user's requested actions. Return one JSON object only. Supported actions are Launch, Tap, Type, Swipe, Back, Home, Wait, Double Tap, Long Press, Take_over and finish. Coordinates use 0..999 relative to the screenshot. Examples: {"action":"Tap","element":[500,500],"thinking":"short reason"}; {"action":"finish","message":"result"}. After Type, the host attempts to dismiss the software keyboard. Always inspect the next screenshot and locate the send or confirm control again; never reuse coordinates from before typing. If one tap does not change the page, wait once and then choose a different visible control or strategy instead of repeatedly tapping the same coordinates. The finish message must contain two to five concise sentences stating what was done, the result actually observed on screen, and any remaining issue; do not return only a generic success phrase. Do not classify an app, screen, or ordinary action such as typing, sending, signing in, confirming, deleting, installing, or granting permission as sensitive, and do not pause merely because of its category. A black frame or a protected/sensitive-screen placeholder means the capture is unavailable; it is not evidence that the user's task is sensitive and must never trigger Take_over by itself. If the Pocket Lobster virtual workspace is visible, launch the app required by the user's task. Use Take_over only when progress is technically impossible without the user manually entering a secret or dynamic challenge such as a password, one-time code, CAPTCHA, or biometric verification.
+                You control an Android phone from screenshots and must carry out the user's requested actions. Return one JSON object only. Supported actions are Launch, Tap, Type, Swipe, Back, Home, Wait, Double Tap, Long Press, Take_over and finish. Coordinates use 0..999 relative to the screenshot. Examples: {"action":"Tap","element":[500,500],"thinking":"short reason"}; {"action":"finish","message":"result"}. After Type, the host attempts to dismiss the software keyboard. Always inspect the next screenshot and locate the send or confirm control again; never reuse coordinates from before typing. Distinguish vertical page scrolling from horizontal carousel navigation: to reveal content lower on a vertical page, move the finger upward from the lower center toward the upper center; to reveal earlier content, move it downward. Use left or right swipes only for a clearly horizontal control. After every Swipe, inspect newly visible labels and content before choosing another action. Repeat the same-direction Swipe only when the target is still absent and the screenshot proves that the page moved. If a Swipe does not move the page, change its start point and distance once; if it still fails, try the opposite direction, another scrollable region, search or filters, or finish with an accurate not-found result. Never consume the remaining steps by mechanically repeating Tap, Swipe, Wait, Launch, Back, Double Tap, or Long Press. Wait at most three times for one unchanged page. If one tap does not change the page, wait once and then choose a different visible control or strategy instead of repeatedly tapping the same coordinates. The finish message must contain two to five concise sentences stating what was done, the result actually observed on screen, and any remaining issue; do not return only a generic success phrase. Do not classify an app, screen, or ordinary action such as typing, sending, signing in, confirming, deleting, installing, or granting permission as sensitive, and do not pause merely because of its category. A black frame or a protected/sensitive-screen placeholder means the capture is unavailable; it is not evidence that the user's task is sensitive and must never trigger Take_over by itself. If the Pocket Lobster virtual workspace is visible, launch the app required by the user's task. Use Take_over only when progress is technically impossible without the user manually entering a secret or dynamic challenge such as a password, one-time code, CAPTCHA, or biometric verification.
             """.trimIndent()
         }
         return """
             今天的日期是${LocalDate.now()}。你是安卓手机UI自动化智能体，根据当前截图和操作历史完成用户任务。每次只返回一个动作，严格使用格式：<think>简短判断</think><answer>动作</answer>。
             支持动作：do(action="Launch", app="应用名或包名")；do(action="Tap", element=[x,y])；do(action="Type", text="文本")；do(action="Type_Name", text="文本")；do(action="Swipe", start=[x1,y1], end=[x2,y2])；do(action="Double Tap", element=[x,y])；do(action="Long Press", element=[x,y])；do(action="Back")；do(action="Home")；do(action="Wait", duration="2 seconds")；do(action="Take_over", message="需要用户接管的原因")；finish(message="任务结果")。坐标范围是左上角[0,0]到右下角[999,999]。
-            执行前确认当前页面；Type完成后宿主会尝试自动收起输入法，必须观察下一张截图重新定位发送或确认按钮，绝不能复用输入文字前的旧坐标。点击一次没有页面变化时先等待一次，再根据新截图换控件或换策略，不得反复点击同一个坐标。连续三次无进展必须换策略；完成前核对结果。finish的message必须用二到五句简洁说明实际执行了什么、在屏幕上观察到什么结果、是否仍有未完成事项，不得只写“完成”或一句泛化成功提示。不要把应用名称、页面类别或输入、发送、签到、确认、删除、安装、授权等用户已明确要求的普通操作判定为敏感操作，也不要仅因这些类别暂停任务。全黑画面或受保护、敏感屏幕占位只代表截图不可用，不能证明用户任务敏感，绝不能单独因此使用Take_over。看到口袋大龙虾虚拟屏幕工作区时，应立即启动用户任务要求的目标应用。只有流程在技术上必须由用户本人输入密码、动态验证码、CAPTCHA或完成生物识别而无法继续时，才使用Take_over请求用户手动处理。
+            执行前确认当前页面；Type完成后宿主会尝试自动收起输入法，必须观察下一张截图重新定位发送或确认按钮，绝不能复用输入文字前的旧坐标。必须区分纵向页面滚动和横向栏目切换：查看页面更下方内容时，手指应从屏幕下方中央向上方中央滑动；查看更上方内容时反向滑动；只有明确看到横向列表、轮播或分页控件时才左右滑动。每次Swipe后必须先检查新截图中刚出现的文字、项目和位置变化，再决定下一步；只有目标仍未出现且截图证明页面确实移动时，才继续同方向滑动。Swipe没有带来页面变化时，只允许换起点并增大距离重试一次；仍无效时应尝试反方向、其他可滚动区域、搜索或筛选，或者如实finish说明未找到，绝不能机械重复到耗尽剩余步数。点击一次没有页面变化时先等待一次，再根据新截图换控件或换策略，不得反复点击同一个坐标。同一静止页面最多连续Wait三次。Launch、Tap、Swipe、Wait、Back、Double Tap和Long Press都不得在没有新证据时机械循环。执行下一步前必须检查上一步是否生效；进入无关页面先Back，Back无效再点击可见返回或关闭按钮；完成前核对结果。finish的message必须用二到五句简洁说明实际执行了什么、在屏幕上观察到什么结果、是否仍有未完成事项，不得只写“完成”或一句泛化成功提示。不要把应用名称、页面类别或输入、发送、签到、确认、删除、安装、授权等用户已明确要求的普通操作判定为敏感操作，也不要仅因这些类别暂停任务。全黑画面或受保护、敏感屏幕占位只代表截图不可用，不能证明用户任务敏感，绝不能单独因此使用Take_over。看到口袋大龙虾虚拟屏幕工作区时，应立即启动用户任务要求的目标应用。只有流程在技术上必须由用户本人输入密码、动态验证码、CAPTCHA或完成生物识别而无法继续时，才使用Take_over请求用户手动处理。
         """.trimIndent()
     }
 }
@@ -218,6 +218,8 @@ object PhoneUiAgentModelClient {
         screenshotPng: ByteArray,
         history: List<Pair<String, String>>,
         actionResult: String,
+        step: Int,
+        maxSteps: Int,
     ): PhoneUiModelDecision {
         require(config.baseUrl.isNotBlank()) { "模型Base URL未配置" }
         require(config.apiKey.isNotBlank()) { "模型API密钥未配置" }
@@ -225,12 +227,13 @@ object PhoneUiAgentModelClient {
         val messages = JSONArray().put(
             JSONObject().put("role", "system").put("content", PhoneUiAgentPrompt.system(config.protocol)),
         )
-        history.takeLast(12).forEach { (role, content) ->
+        history.takeLast(24).forEach { (role, content) ->
             messages.put(JSONObject().put("role", role).put("content", content.take(12_000)))
         }
         val prompt = buildString {
             append(if (history.isEmpty()) "用户任务：$task" else "继续完成用户任务：$task")
             if (actionResult.isNotBlank()) append("\n上一动作执行结果：$actionResult")
+            append("\n当前进度：第${step.coerceAtLeast(1)}步，最多${maxSteps.coerceAtLeast(1)}步。")
             append("\n请根据当前截图返回下一步动作。")
         }
         val content = JSONArray()
@@ -278,6 +281,8 @@ object PhoneUiAgentModelClient {
             bytes,
             emptyList(),
             "",
+            1,
+            1,
         )
         val supported = setOf(
             "launch", "tap", "type", "type_name", "swipe", "back", "home", "wait",

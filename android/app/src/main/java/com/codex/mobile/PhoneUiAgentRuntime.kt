@@ -238,14 +238,30 @@ object PhoneUiAgentRuntime {
             val maxSteps = synchronized(lock) { state.optInt("maxSteps", 25) }
             val history = mutableListOf<Pair<String, String>>()
             var actionResult = ""
+            var previousScreenshot: ByteArray? = null
+            var previousActionSignature = ""
+            var identicalActionStreak = 0
             for (step in 1..maxSteps) {
                 awaitRunnable()
                 if (cancelled) return@runBlocking
                 updateStep(step, "正在截取当前屏幕")
                 val screenshot = captureScreenshot(context, mode)
+                val priorScreenshot = previousScreenshot
+                if (actionResult.isNotBlank() && priorScreenshot != null) {
+                    actionResult += "；${screenChangeHint(priorScreenshot, screenshot)}"
+                }
+                previousScreenshot = screenshot
                 val dimensions = imageDimensions(screenshot)
                 updateStep(step, "模型正在判断下一步操作")
-                val decision = PhoneUiAgentModelClient.decide(config, task, screenshot, history, actionResult)
+                val decision = PhoneUiAgentModelClient.decide(
+                    config,
+                    task,
+                    screenshot,
+                    history,
+                    actionResult,
+                    step,
+                    maxSteps,
+                )
                 awaitRunnable()
                 if (cancelled) return@runBlocking
                 if (decision.thinking.isNotBlank()) {
@@ -270,8 +286,12 @@ object PhoneUiAgentRuntime {
                     actionResult = "用户已经完成手动操作并选择继续，请重新观察当前页面后决定下一步。"
                     continue
                 }
-                actionResult = executeAction(context, decision.action, dimensions.first, dimensions.second)
-                appendEvent("action", "第${step}步：${decision.action.name}", actionResult)
+                val executionResult = executeAction(context, decision.action, dimensions.first, dimensions.second)
+                appendEvent("action", "第${step}步：${decision.action.name}", executionResult)
+                val signature = actionSignature(decision.action)
+                identicalActionStreak = if (signature == previousActionSignature) identicalActionStreak + 1 else 1
+                previousActionSignature = signature
+                actionResult = modelActionResult(decision.action, executionResult, identicalActionStreak)
                 updateStep(step, "动作已执行，正在等待页面稳定")
                 delay(650)
             }
@@ -449,6 +469,95 @@ object PhoneUiAgentRuntime {
             .findAll(state)
             .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
             .any { it != 0 }
+    }
+
+    private fun modelActionResult(action: PhoneUiAction, executionResult: String, identicalActionStreak: Int): String {
+        val startX = action.x ?: 500
+        val startY = action.y ?: 500
+        val endX = action.endX ?: startX
+        val endY = action.endY ?: startY
+        val normalizedResult = when (action.name.trim().lowercase()) {
+            "tap" -> "Tap已执行，模型坐标=[$startX,$startY]。请根据当前新截图判断点击是否生效。"
+            "double tap" -> "Double Tap已执行，模型坐标=[$startX,$startY]。请根据当前新截图判断页面变化。"
+            "long press" -> "Long Press已执行，模型坐标=[$startX,$startY]。请根据当前新截图判断长按结果。"
+            "swipe" -> {
+                val deltaX = endX - startX
+                val deltaY = endY - startY
+                val direction = if (kotlin.math.abs(deltaY) >= kotlin.math.abs(deltaX)) {
+                    if (deltaY < 0) {
+                        "手指向上滑，通常显示页面更下方的内容"
+                    } else {
+                        "手指向下滑，通常显示页面更上方的内容"
+                    }
+                } else if (deltaX < 0) {
+                    "手指向左滑，通常显示横向区域右侧的内容"
+                } else {
+                    "手指向右滑，通常显示横向区域左侧的内容"
+                }
+                "Swipe已执行，模型坐标start=[$startX,$startY]、end=[$endX,$endY]；方向语义：$direction。请先检查当前新截图中的可见内容和位置变化，再决定下一步。"
+            }
+            else -> executionResult
+        }
+        return if (identicalActionStreak <= 1) {
+            normalizedResult
+        } else {
+            "$normalizedResult 这是同一动作连续第${identicalActionStreak}次执行；动作未被宿主拦截，但必须结合当前新截图判断是否应改换策略。"
+        }
+    }
+
+    private fun actionSignature(action: PhoneUiAction): String = listOf(
+        action.name.trim().lowercase(),
+        action.x,
+        action.y,
+        action.endX,
+        action.endY,
+        action.text,
+        action.app,
+    ).joinToString("|")
+
+    private fun screenChangeHint(beforePng: ByteArray, afterPng: ByteArray): String {
+        val options = BitmapFactory.Options().apply { inSampleSize = 8 }
+        val before = BitmapFactory.decodeByteArray(beforePng, 0, beforePng.size, options)
+            ?: return "当前新截图已到达，请直接核对可见内容"
+        val after = BitmapFactory.decodeByteArray(afterPng, 0, afterPng.size, options)
+            ?: run {
+                before.recycle()
+                return "当前新截图已到达，请直接核对可见内容"
+            }
+        return try {
+            if (before.width != after.width || before.height != after.height) {
+                "当前新截图尺寸已经变化，页面状态发生了明显改变"
+            } else {
+                var changed = 0
+                var sampled = 0
+                val strideX = (before.width / 18).coerceAtLeast(1)
+                val strideY = (before.height / 32).coerceAtLeast(1)
+                var y = strideY / 2
+                while (y < before.height) {
+                    var x = strideX / 2
+                    while (x < before.width) {
+                        val first = before.getPixel(x, y)
+                        val second = after.getPixel(x, y)
+                        val difference = kotlin.math.abs(android.graphics.Color.red(first) - android.graphics.Color.red(second)) +
+                            kotlin.math.abs(android.graphics.Color.green(first) - android.graphics.Color.green(second)) +
+                            kotlin.math.abs(android.graphics.Color.blue(first) - android.graphics.Color.blue(second))
+                        if (difference >= 72) changed++
+                        sampled++
+                        x += strideX
+                    }
+                    y += strideY
+                }
+                val percent = if (sampled == 0) 0 else changed * 100 / sampled
+                when {
+                    percent >= 18 -> "当前新截图相对动作前明显变化，采样变化约$percent%；必须检查新出现的项目，不能无依据重复原动作"
+                    percent >= 4 -> "当前新截图相对动作前有局部变化，采样变化约$percent%；请核对目标和滚动位置"
+                    else -> "当前新截图相对动作前基本未变化，采样变化约$percent%；原动作可能未生效，应调整方向、起点、距离或策略"
+                }
+            }
+        } finally {
+            before.recycle()
+            after.recycle()
+        }
     }
 
     private fun buildFinalMessage(task: String, rawMessage: String?, thinking: String): String {
