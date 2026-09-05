@@ -92,33 +92,50 @@ object PhoneUiActionParser {
             .replace(Regex("^```(?:json)?\\s*", RegexOption.IGNORE_CASE), "")
             .replace(Regex("\\s*```$"), "")
             .trim()
-        val json = runCatching { JSONObject(candidate) }.getOrElse {
-            val begin = candidate.indexOf('{')
-            val end = candidate.lastIndexOf('}')
-            if (begin < 0 || end <= begin) throw IllegalArgumentException("模型没有返回JSON动作")
-            JSONObject(candidate.substring(begin, end + 1))
+        val root = runCatching { JSONObject(candidate) }.getOrElse {
+            firstJsonObject(candidate) ?: throw IllegalArgumentException("模型没有返回JSON动作")
         }
-        val name = json.optString("action").ifBlank { json.optString("name") }
-        if (name.isBlank()) throw IllegalArgumentException("JSON动作缺少action字段")
-        val element = json.optJSONArray("element")
-        val start = json.optJSONArray("start")
-        val end = json.optJSONArray("end")
-        val finished = name.equals("finish", true)
+        val json = jsonObject(root.opt("arguments"))
+            ?: jsonObject(root.opt("parameters"))
+            ?: root.optJSONObject("action")
+            ?: root
+        val rawName = json.optString("action").ifBlank {
+            json.optString("name").ifBlank { root.optString("name") }
+        }
+        if (rawName.isBlank()) throw IllegalArgumentException("JSON动作缺少action字段")
+        val name = canonicalActionName(rawName)
+        val thinking = firstText(json, "thinking", "reason", "thought", "analysis")
+            ?: firstText(root, "thinking", "reason", "thought", "analysis")
+            ?: ""
+        val element = firstCoordinate(json, "element", "coordinate", "coordinates", "position", "point")
+        val start = firstCoordinate(json, "start", "from", "start_coordinate")
+        val end = firstCoordinate(json, "end", "to", "end_coordinate", "coordinate2")
+        val text = firstText(json, "text", "value", "content", "input_text", "inputText")
+        val app = firstText(json, "app", "app_name", "appName", "package", "package_name", "packageName")
+            ?: text.takeIf { name == "Launch" }
+        val seconds = firstNumber(json, "seconds", "duration", "time")
+        val action = when (name) {
+            "Swipe" -> swipeAction(json, "$rawName $thinking", element, start, end)
+            "Tap", "Double Tap", "Long Press" -> PhoneUiAction(name, element?.first ?: start?.first, element?.second ?: start?.second)
+            "Type", "Type_Name" -> PhoneUiAction(name, text = text)
+            "Launch" -> PhoneUiAction(name, app = app)
+            "Wait" -> PhoneUiAction(name, seconds = seconds ?: 1.0)
+            "Back", "Home" -> PhoneUiAction(name)
+            "Take_over", "Interact", "Note", "Call_api" -> PhoneUiAction(
+                name,
+                message = firstText(json, "message", "instruction", "reason", "text"),
+            )
+            "finish" -> PhoneUiAction(
+                name,
+                message = firstText(json, "message", "result", "answer", "text") ?: "任务已完成",
+                finished = true,
+            )
+            else -> throw IllegalArgumentException("模型返回了不支持的JSON动作：$rawName")
+        }
         return PhoneUiModelDecision(
             raw,
-            json.optString("thinking"),
-            PhoneUiAction(
-                name = name,
-                x = element?.optInt(0) ?: start?.optInt(0),
-                y = element?.optInt(1) ?: start?.optInt(1),
-                endX = end?.optInt(0),
-                endY = end?.optInt(1),
-                text = json.optString("text").ifBlank { null },
-                app = json.optString("app").ifBlank { null },
-                seconds = json.optDouble("seconds", Double.NaN).takeUnless { it.isNaN() },
-                message = json.optString("message").ifBlank { null },
-                finished = finished,
-            ),
+            thinking,
+            action,
         )
     }
 
@@ -126,53 +143,158 @@ object PhoneUiActionParser {
         val toolMarker = raw.indexOf("<tool_call>", ignoreCase = true)
         val json = firstJsonObject(if (toolMarker >= 0) raw.substring(toolMarker + 11) else raw)
             ?: throw IllegalArgumentException("GUI Plus响应缺少可解析的tool_call JSON")
-        val arguments = json.optJSONObject("arguments") ?: json
-        val actionName = arguments.optString("action").trim().lowercase()
+        val arguments = jsonObject(json.opt("arguments")) ?: json
+        val actionName = arguments.optString("action").trim().lowercase().replace('-', '_')
         if (actionName.isBlank()) throw IllegalArgumentException("GUI Plus动作缺少action字段")
-        val first = coordinate(arguments.optJSONArray("coordinate"))
-        val second = coordinate(arguments.optJSONArray("coordinate2"))
+        val thinking = raw.substring(0, if (toolMarker >= 0) toolMarker else 0)
+            .replace(Regex("^Action:\\s*", RegexOption.IGNORE_CASE), "")
+            .trim()
+        val first = firstCoordinate(arguments, "coordinate", "element", "position", "point")
+        val second = firstCoordinate(arguments, "coordinate2", "end", "to")
         val action = when (actionName) {
-            "click" -> PhoneUiAction("Tap", first?.first, first?.second)
-            "long_press" -> PhoneUiAction("Long Press", first?.first, first?.second)
-            "swipe", "scroll" -> PhoneUiAction(
-                "Swipe",
-                first?.first,
-                first?.second,
-                second?.first,
-                second?.second,
+            "click", "tap", "click_at" -> PhoneUiAction("Tap", first?.first, first?.second)
+            "long_press", "long_click" -> PhoneUiAction("Long Press", first?.first, first?.second)
+            "swipe", "scroll" -> swipeAction(arguments, "$actionName $thinking", first, null, second)
+            "type", "type_text", "input_text" -> PhoneUiAction(
+                "Type",
+                text = firstText(arguments, "text", "value", "content"),
             )
-            "type" -> PhoneUiAction("Type", text = arguments.optString("text"))
-            "open" -> PhoneUiAction("Launch", app = arguments.optString("text"))
-            "wait" -> PhoneUiAction("Wait", seconds = arguments.optDouble("time", 2.0))
-            "answer" -> PhoneUiAction(
+            "open", "launch", "open_app" -> PhoneUiAction(
+                "Launch",
+                app = firstText(arguments, "text", "app", "app_name", "package_name"),
+            )
+            "wait" -> PhoneUiAction("Wait", seconds = firstNumber(arguments, "time", "seconds", "duration") ?: 2.0)
+            "answer", "finish" -> PhoneUiAction(
                 "finish",
-                message = arguments.optString("text").ifBlank { "任务已完成" },
+                message = firstText(arguments, "text", "message", "result") ?: "任务已完成",
                 finished = true,
             )
-            "terminate", "done" -> PhoneUiAction(
+            "terminate", "done", "completed" -> PhoneUiAction(
                 "finish",
-                message = arguments.optString("text").ifBlank {
+                message = firstText(arguments, "text", "message", "result") ?: run {
                     "任务已结束，状态：${arguments.optString("status").ifBlank { "success" }}"
                 },
                 finished = true,
             )
-            "interact" -> PhoneUiAction("Take_over", message = arguments.optString("text"))
+            "interact", "take_over" -> PhoneUiAction(
+                "Take_over",
+                message = firstText(arguments, "text", "message", "reason"),
+            )
             "system_button" -> when (arguments.optString("button").lowercase()) {
                 "back" -> PhoneUiAction("Back")
                 "home" -> PhoneUiAction("Home")
                 else -> throw IllegalArgumentException("GUI Plus返回了不支持的系统按钮：${arguments.optString("button")}")
             }
+            "back", "press_back" -> PhoneUiAction("Back")
+            "home", "press_home" -> PhoneUiAction("Home")
             else -> throw IllegalArgumentException("GUI Plus返回了不支持的动作：$actionName")
         }
-        val thinking = raw.substring(0, if (toolMarker >= 0) toolMarker else 0)
-            .replace(Regex("^Action:\\s*", RegexOption.IGNORE_CASE), "")
-            .trim()
         return PhoneUiModelDecision(raw, thinking, action)
     }
 
-    private fun coordinate(value: JSONArray?): Pair<Int, Int>? = value
-        ?.takeIf { it.length() >= 2 }
-        ?.let { it.optInt(0) to it.optInt(1) }
+    private fun canonicalActionName(value: String): String {
+        val compact = value.trim().lowercase().replace(Regex("[\\s_-]+"), "")
+        return when (compact) {
+            "tap", "click", "press", "clickat" -> "Tap"
+            "doubletap", "doubleclick" -> "Double Tap"
+            "longpress", "longclick" -> "Long Press"
+            "type", "input", "fill", "entertext", "typetext", "inputtext" -> "Type"
+            "typename" -> "Type_Name"
+            "swipe", "scroll", "scrollup", "scrolldown", "scrollleft", "scrollright" -> "Swipe"
+            "launch", "open", "openapp", "launchapp", "startapp" -> "Launch"
+            "back", "goback" -> "Back"
+            "home", "gohome" -> "Home"
+            "wait", "sleep" -> "Wait"
+            "takeover" -> "Take_over"
+            "interact" -> "Interact"
+            "note" -> "Note"
+            "callapi" -> "Call_api"
+            "finish", "finished", "done", "complete", "completed", "answer", "terminate" -> "finish"
+            else -> value.trim()
+        }
+    }
+
+    private fun swipeAction(
+        json: JSONObject,
+        context: String,
+        element: Pair<Int, Int>?,
+        start: Pair<Int, Int>?,
+        end: Pair<Int, Int>?,
+    ): PhoneUiAction {
+        val from = start ?: element
+        if (from != null && end != null) {
+            return PhoneUiAction("Swipe", from.first, from.second, end.first, end.second)
+        }
+        val explicitDirection = firstText(json, "direction", "swipe_direction", "scroll_direction")
+        val direction = normalizeSwipeDirection(explicitDirection, context)
+        val distance = (firstNumber(json, "distance", "pixels", "amount") ?: 450.0)
+            .toInt()
+            .coerceIn(80, 700)
+        val anchor = from ?: when (direction) {
+            "down" -> 500 to 200
+            "left" -> 800 to 500
+            "right" -> 200 to 500
+            else -> 500 to 800
+        }
+        val target = when (direction) {
+            "down" -> anchor.first to (anchor.second + distance).coerceAtMost(999)
+            "left" -> (anchor.first - distance).coerceAtLeast(0) to anchor.second
+            "right" -> (anchor.first + distance).coerceAtMost(999) to anchor.second
+            else -> anchor.first to (anchor.second - distance).coerceAtLeast(0)
+        }
+        require(target != anchor) { "Swipe动作的方向或距离无效" }
+        return PhoneUiAction("Swipe", anchor.first, anchor.second, target.first, target.second)
+    }
+
+    private fun normalizeSwipeDirection(explicit: String?, context: String): String {
+        val value = explicit.orEmpty().trim().lowercase()
+        if (value in setOf("up", "down", "left", "right")) return value
+        val normalized = context.lowercase().replace(Regex("[\\s_-]+"), "")
+        return when {
+            listOf("scrollleft", "swipeleft", "向左滑", "左滑").any(normalized::contains) -> "left"
+            listOf("scrollright", "swiperight", "向右滑", "右滑").any(normalized::contains) -> "right"
+            listOf("scrollup", "swipedown", "向上滚动", "回到顶部", "查看更上方").any(normalized::contains) -> "down"
+            listOf("scrolldown", "swipeup", "向下滚动", "向下滑动页面", "查看更多", "查看更下方").any(normalized::contains) -> "up"
+            else -> "up"
+        }
+    }
+
+    private fun firstCoordinate(json: JSONObject, vararg keys: String): Pair<Int, Int>? {
+        for (key in keys) {
+            val value = json.opt(key)
+            if (value is JSONArray && value.length() >= 2) {
+                return value.optInt(0) to value.optInt(1)
+            }
+            if (value is JSONObject && value.has("x") && value.has("y")) {
+                return value.optInt("x") to value.optInt("y")
+            }
+        }
+        return null
+    }
+
+    private fun firstText(json: JSONObject, vararg keys: String): String? {
+        for (key in keys) {
+            val value = json.optString(key).trim()
+            if (value.isNotEmpty() && value != "null") return value
+        }
+        return null
+    }
+
+    private fun firstNumber(json: JSONObject, vararg keys: String): Double? {
+        for (key in keys) {
+            val value = json.optDouble(key, Double.NaN)
+            if (!value.isNaN()) return value
+            val parsed = json.optString(key).replace(Regex("[^0-9.]"), "").toDoubleOrNull()
+            if (parsed != null) return parsed
+        }
+        return null
+    }
+
+    private fun jsonObject(value: Any?): JSONObject? = when (value) {
+        is JSONObject -> value
+        is String -> runCatching { JSONObject(value) }.getOrNull()
+        else -> null
+    }
 
     private fun firstJsonObject(value: String): JSONObject? {
         val start = value.indexOf('{')
@@ -296,7 +418,7 @@ object PhoneUiAgentPrompt {
         }
         if (protocol == PhoneUiModelProtocol.GENERIC_JSON) {
             return """
-                You control an Android phone from screenshots and must carry out the user's requested actions. Return one JSON object only. Supported actions are Launch, Tap, Type, Swipe, Back, Home, Wait, Double Tap, Long Press, Take_over and finish. Coordinates use 0..999 relative to the screenshot. Examples: {"action":"Tap","element":[500,500],"thinking":"short reason"}; {"action":"finish","message":"result"}. After Type, the host attempts to dismiss the software keyboard. Always inspect the next screenshot and locate the send or confirm control again; never reuse coordinates from before typing. If the requested text is already visible in the input field, do not Type it again; locate the send control instead. Distinguish vertical page scrolling from horizontal carousel navigation: to reveal content lower on a vertical page, move the finger upward from the lower center toward the upper center; to reveal earlier content, move it downward. Use left or right swipes only for a clearly horizontal control. After every Swipe, inspect newly visible labels and content before choosing another action. Repeat the same-direction Swipe only when the target is still absent and the screenshot proves that the page moved. If a Swipe does not move the page, change its start point and distance once; if it still fails, try the opposite direction, another scrollable region, search or filters, or finish with an accurate not-found result. Never consume the remaining steps by mechanically repeating Tap, Type, Swipe, Wait, Launch, Back, Double Tap, or Long Press. Wait at most three times for one unchanged page. If one tap does not change the page, wait once and then choose a different visible control or strategy instead of repeatedly tapping the same coordinates. The finish message must contain two to five concise sentences stating what was done, the result actually observed on screen, and any remaining issue; do not return only a generic success phrase. Do not classify an app, screen, or ordinary action such as typing, sending, signing in, confirming, deleting, installing, or granting permission as sensitive, and do not pause merely because of its category. A black frame or a protected/sensitive-screen placeholder means the capture is unavailable; it is not evidence that the user's task is sensitive and must never trigger Take_over by itself. If the Pocket Lobster virtual workspace is visible, launch the app required by the user's task. Use Take_over only when progress is technically impossible without the user manually entering a secret or dynamic challenge such as a password, one-time code, CAPTCHA, or biometric verification.
+                You control an Android phone from screenshots and must carry out the user's requested actions. Return one JSON object only. Supported actions are Launch, Tap, Type, Swipe, Back, Home, Wait, Double Tap, Long Press, Take_over and finish. Coordinates use 0..999 relative to the screenshot. Tap requires element:[x,y]. Type always requires the exact text field. Swipe requires start:[x1,y1] and end:[x2,y2]; element:[x,y] plus direction and distance is also accepted. Launch requires app. Examples: {"action":"Tap","element":[500,500],"thinking":"short reason"}; {"action":"Swipe","start":[500,800],"end":[500,300],"thinking":"scroll down"}; {"action":"finish","message":"result"}. After Type, the host attempts to dismiss the software keyboard. Always inspect the next screenshot and locate the send or confirm control again; never reuse coordinates from before typing. If the requested text is already visible in the input field, do not Type it again; locate the send control instead. Distinguish vertical page scrolling from horizontal carousel navigation: to reveal content lower on a vertical page, move the finger upward from the lower center toward the upper center; to reveal earlier content, move it downward. Use left or right swipes only for a clearly horizontal control. After every Swipe, inspect newly visible labels and content before choosing another action. Repeat the same-direction Swipe only when the target is still absent and the screenshot proves that the page moved. If a Swipe does not move the page, change its start point and distance once; if it still fails, try the opposite direction, another scrollable region, search or filters, or finish with an accurate not-found result. Never consume the remaining steps by mechanically repeating Tap, Type, Swipe, Wait, Launch, Back, Double Tap, or Long Press. Wait at most three times for one unchanged page. If one tap does not change the page, wait once and then choose a different visible control or strategy instead of repeatedly tapping the same coordinates. The finish message must contain two to five concise sentences stating what was done, the result actually observed on screen, and any remaining issue; do not return only a generic success phrase. Do not classify an app, screen, or ordinary action such as typing, sending, signing in, confirming, deleting, installing, or granting permission as sensitive, and do not pause merely because of its category. A black frame or a protected/sensitive-screen placeholder means the capture is unavailable; it is not evidence that the user's task is sensitive and must never trigger Take_over by itself. If the Pocket Lobster virtual workspace is visible, launch the app required by the user's task. Use Take_over only when progress is technically impossible without the user manually entering a secret or dynamic challenge such as a password, one-time code, CAPTCHA, or biometric verification.
             """.trimIndent()
         }
         return """
@@ -357,26 +479,34 @@ object PhoneUiAgentModelClient {
             PhoneUiModelProtocol.GENERIC_JSON -> body.put("top_p", config.topP)
         }
         var lastDiagnostic = ""
-        for (attempt in 1..2) {
+        val maxAttempts = when (config.protocol) {
+            PhoneUiModelProtocol.AUTOGLM_NATIVE -> 2
+            PhoneUiModelProtocol.GUI_PLUS_NATIVE -> 3
+            PhoneUiModelProtocol.GENERIC_JSON -> 4
+        }
+        for (attempt in 1..maxAttempts) {
             val response = post(config, body)
             val rawResult = runCatching { extractContent(response) }
             if (rawResult.isFailure) {
                 val error = rawResult.exceptionOrNull()!!
                 lastDiagnostic = responseDiagnostic(response, "", error)
-                if (attempt == 1) continue
-                throw IllegalStateException("模型连续两次没有返回可执行文本；$lastDiagnostic", error)
+                if (attempt < maxAttempts) {
+                    messages.put(JSONObject().put("role", "user").put("content", correctionPrompt(config.protocol, error)))
+                    continue
+                }
+                throw IllegalStateException("模型连续${maxAttempts}次没有返回可执行文本；$lastDiagnostic", error)
             }
             val rawContent = rawResult.getOrThrow()
             val decisionResult = runCatching { PhoneUiActionParser.parse(rawContent, config.protocol) }
             if (decisionResult.isFailure) {
                 val error = decisionResult.exceptionOrNull()!!
                 lastDiagnostic = responseDiagnostic(response, rawContent, error)
-                if (attempt == 1) {
+                if (attempt < maxAttempts) {
                     messages.put(JSONObject().put("role", "assistant").put("content", rawContent.take(4_000)))
-                    messages.put(JSONObject().put("role", "user").put("content", correctionPrompt(config.protocol)))
+                    messages.put(JSONObject().put("role", "user").put("content", correctionPrompt(config.protocol, error)))
                     continue
                 }
-                throw IllegalStateException("模型连续两次返回了不可执行动作；$lastDiagnostic", error)
+                throw IllegalStateException("模型连续${maxAttempts}次返回了不可执行动作；$lastDiagnostic", error)
             }
             val decision = decisionResult.getOrThrow()
             val reasoning = response.optJSONArray("choices")?.optJSONObject(0)
@@ -424,13 +554,16 @@ object PhoneUiAgentModelClient {
         return "连接与真实视觉生成均成功：${decision.action.name}，协议${config.protocol.value}"
     }
 
-    private fun correctionPrompt(protocol: PhoneUiModelProtocol): String = when (protocol) {
-        PhoneUiModelProtocol.AUTOGLM_NATIVE ->
-            "上一条响应无法执行。不要解释，只按<answer>do(action=...)或<answer>finish(message=...)格式重新返回一个完整动作。"
-        PhoneUiModelProtocol.GUI_PLUS_NATIVE ->
-            "The previous response was not executable. Return one Action line and exactly one complete <tool_call> JSON object for mobile_use."
-        PhoneUiModelProtocol.GENERIC_JSON ->
-            "The previous response was not executable. Return exactly one complete JSON action object and no other text."
+    private fun correctionPrompt(protocol: PhoneUiModelProtocol, error: Throwable): String {
+        val detail = error.message.orEmpty().take(300).ifBlank { "response format is invalid" }
+        return when (protocol) {
+            PhoneUiModelProtocol.AUTOGLM_NATIVE ->
+                "上一条响应无法执行，具体错误：$detail。不要解释，只按<answer>do(action=...)或<answer>finish(message=...)格式重新返回一个完整动作。"
+            PhoneUiModelProtocol.GUI_PLUS_NATIVE ->
+                "The previous response was not executable: $detail. Return one Action line and exactly one complete <tool_call> JSON object for mobile_use. Preserve the intended action and include every required field."
+            PhoneUiModelProtocol.GENERIC_JSON ->
+                "The previous response was not executable: $detail. Correct the same intended action and return exactly one complete JSON object. Tap requires element:[x,y]. Type requires text. Swipe requires start:[x1,y1] and end:[x2,y2], or element:[x,y] with direction up/down/left/right and distance. Launch requires app. Finish requires message. Do not add Markdown or explanations."
+        }
     }
 
     private fun responseDiagnostic(response: JSONObject, rawContent: String, error: Throwable): String {
@@ -484,19 +617,43 @@ object PhoneUiAgentModelClient {
     }
 
     private fun extractContent(response: JSONObject): String {
-        val content = response.optJSONArray("choices")?.optJSONObject(0)
-            ?.optJSONObject("message")?.opt("content")
-            ?: throw IllegalStateException("模型响应缺少choices[0].message.content")
-        if (content is String) return content
-        if (content is JSONArray) {
-            return buildString {
+        val message = response.optJSONArray("choices")?.optJSONObject(0)
+            ?.optJSONObject("message")
+            ?: throw IllegalStateException("模型响应缺少choices[0].message")
+        val content = message.opt("content")
+        val contentText = when (content) {
+            is String -> content
+            is JSONArray -> buildString {
                 for (index in 0 until content.length()) {
                     val item = content.optJSONObject(index) ?: continue
-                    val text = item.optString("text")
-                    if (text.isNotBlank()) append(text)
+                    val itemText = item.optString("text")
+                    if (itemText.isNotBlank()) append(itemText)
+                    val function = item.optJSONObject("function")
+                    if (function != null) append("\n<tool_call>").append(function).append("</tool_call>")
                 }
-            }.ifBlank { throw IllegalStateException("模型响应文本为空") }
+            }
+            else -> ""
         }
-        return content.toString()
+        val toolCalls = message.optJSONArray("tool_calls")
+        if (toolCalls != null && toolCalls.length() > 0) {
+            return buildString {
+                if (contentText.isNotBlank()) append(contentText.trim()).append('\n')
+                val reasoning = message.optString("reasoning_content").trim()
+                if (reasoning.isNotBlank()) append("Action: ").append(reasoning).append('\n')
+                for (index in 0 until toolCalls.length()) {
+                    val call = toolCalls.optJSONObject(index) ?: continue
+                    val function = call.optJSONObject("function") ?: call
+                    append("<tool_call>").append(function).append("</tool_call>")
+                }
+            }.ifBlank { throw IllegalStateException("模型tool_calls为空") }
+        }
+        val functionCall = message.optJSONObject("function_call")
+        if (functionCall != null) {
+            return buildString {
+                if (contentText.isNotBlank()) append(contentText.trim()).append('\n')
+                append("<tool_call>").append(functionCall).append("</tool_call>")
+            }
+        }
+        return contentText.ifBlank { throw IllegalStateException("模型响应正文和tool_calls均为空") }
     }
 }

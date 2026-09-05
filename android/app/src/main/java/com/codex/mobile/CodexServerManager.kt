@@ -28,7 +28,7 @@ class CodexServerManager(private val context: Context) {
         private const val TAG = "CodexServerManager"
         const val SERVER_PORT = 18923
         private const val PROXY_PORT = 18924
-        private const val CODEX_VERSION = "0.147.0"
+        private const val CODEX_VERSION = "0.153.4"
         private const val CLAUDE_CODE_VERSION = "2.1.112"
         private const val COLLABORATION_PROTOCOL_ID = "durable-agent-tools-v2"
         const val OPENCLAW_GATEWAY_PORT = 18789
@@ -2422,15 +2422,8 @@ EOF
         val npmCli = "$prefix/lib/node_modules/npm/bin/npm-cli.js"
         val installedVersion = getInstalledCodexVersion()
 
-        if (installedVersion.isNotBlank() && installedVersion != CODEX_VERSION) {
-            onProgress("Removing old Codex CLI $installedVersion …")
-            runInPrefix(
-                "rm -rf \"$prefix/lib/node_modules/@openai/codex\" \"$prefix/lib/node_modules/@openai/codex-linux-arm64\" \"$prefix/bin/codex\" 2>&1 || true",
-                onOutput = { onProgress(it) },
-            )
-        }
-
-        onProgress("Installing Codex CLI $CODEX_VERSION …")
+        val operation = if (installedVersion.isBlank()) "Installing" else "Updating"
+        onProgress("$operation Codex CLI $CODEX_VERSION …")
         val codexCode = runInPrefix(
             "node $npmCli install -g --force @openai/codex@$CODEX_VERSION 2>&1",
             onOutput = { onProgress(it) },
@@ -2625,6 +2618,7 @@ WEOF
 
         // Use Node.js (which has working TLS) to download the npm tarball
         val installCmd = """
+            rm -rf "$prefix/tmp/_codex_bin" &&
             mkdir -p "$prefix/tmp/_codex_bin" && cd "$prefix/tmp/_codex_bin" &&
             node -e '
               const https = require("https");
@@ -2644,11 +2638,20 @@ WEOF
               }).on("error", (e) => { console.error(e.message); process.exit(1); });
             ' 2>&1 &&
             tar xzf codex-bin.tgz 2>&1 &&
-            rm -rf "$targetPkg/vendor" &&
-            mkdir -p "$targetPkg" &&
-            cp -a package/vendor "$targetPkg/vendor" &&
-            cp package/package.json "$targetPkg/package.json" &&
-            find "$targetPkg/vendor" -type f \( -name codex -o -name codex-code-mode-host -o -name rg -o -name bwrap -o -name zsh \) -exec chmod 700 {} \; 2>/dev/null || true &&
+            rm -rf "$targetPkg.staging" "$targetPkg.backup" &&
+            mkdir -p "$targetPkg.staging" &&
+            cp -a package/. "$targetPkg.staging/" &&
+            find "$targetPkg.staging/vendor" -type f \( -name codex -o -name codex-code-mode-host -o -name rg -o -name bwrap -o -name zsh \) -exec chmod 700 {} \; 2>/dev/null || true &&
+            "$targetPkg.staging/vendor/aarch64-unknown-linux-musl/bin/codex" --version 2>&1 | grep -F "codex-cli $CODEX_VERSION" &&
+            if [ -d "$targetPkg" ]; then mv "$targetPkg" "$targetPkg.backup"; fi &&
+            mv "$targetPkg.staging" "$targetPkg" &&
+            if "$targetPkg/vendor/aarch64-unknown-linux-musl/bin/codex" --version 2>&1 | grep -F "codex-cli $CODEX_VERSION"; then
+              rm -rf "$targetPkg.backup";
+            else
+              rm -rf "$targetPkg";
+              if [ -d "$targetPkg.backup" ]; then mv "$targetPkg.backup" "$targetPkg"; fi;
+              exit 1;
+            fi &&
             rm -rf "$prefix/tmp/_codex_bin" &&
             echo "Platform binary installed"
         """.trimIndent()

@@ -45,8 +45,8 @@ android {
         // Android 10+ (targetSdk 29+) enforces W^X which blocks this via SELinux.
         // Termux (F-Droid) uses the same approach.
         targetSdk = 28
-        versionCode = 340
-        versionName = "1.0.99-codex-cli-0.147.0-gpt-5.6-openminis-1.12-phone-ui-agent-models-v340"
+        versionCode = 341
+        versionName = "1.0.100-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-phone-ui-agent-protocol-v341"
     }
 
     flavorDimensions += "channel"
@@ -156,4 +156,5 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
