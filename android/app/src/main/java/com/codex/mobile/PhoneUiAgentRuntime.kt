@@ -81,6 +81,7 @@ object PhoneUiAgentRuntime {
     private var applicationContext: Context? = null
     private var state: JSONObject = emptyState()
     private var activeFuture: Future<*>? = null
+    @Volatile private var activeThread: Thread? = null
     private var keepAliveFuture: ScheduledFuture<*>? = null
     @Volatile private var paused = false
     @Volatile private var cancelled = false
@@ -132,7 +133,14 @@ object PhoneUiAgentRuntime {
             persistLocked()
             CodexForegroundService.ensureStarted(context)
             val appContext = context.applicationContext
-            activeFuture = executor.submit { runTask(appContext) }
+            activeFuture = executor.submit {
+                activeThread = Thread.currentThread()
+                try {
+                    if (!cancelled) runTask(appContext)
+                } finally {
+                    activeThread = null
+                }
+            }
             return snapshotLocked()
         }
     }
@@ -187,7 +195,9 @@ object PhoneUiAgentRuntime {
         requireCurrentTaskLocked(taskId)
         cancelled = true
         paused = false
-        activeFuture?.cancel(true)
+        // Future.cancel marks done before blocking I/O has exited. Keep ownership until
+        // the worker really returns, otherwise an old task can overwrite its successor.
+        activeThread?.interrupt()
         stopKeepAliveLocked()
         if (state.optString("status") in setOf("starting", "running", "paused")) {
             state.put("status", "cancelled").put("statusText", "任务已由用户终止")
@@ -260,12 +270,15 @@ object PhoneUiAgentRuntime {
             var previousScreenshot: ByteArray? = null
             var previousActionSignature = ""
             var identicalActionStreak = 0
-            for (step in 1..maxSteps) {
+            var executedSteps = 0
+            while (executedSteps < maxSteps) {
+                val step = executedSteps + 1
                 awaitRunnable()
                 if (cancelled) return@runBlocking
                 val revision = observationRevision.get()
                 updateStep(step, "正在截取当前屏幕")
                 val screenshot = captureScreenshot(context, mode)
+                if (cancelled) return@runBlocking
                 if (revision != observationRevision.get()) continue
                 val priorScreenshot = previousScreenshot
                 if (actionResult.isNotBlank() && priorScreenshot != null) {
@@ -290,6 +303,9 @@ object PhoneUiAgentRuntime {
                     actionResult,
                     step,
                     maxSteps,
+                    onProgress = { progress ->
+                        if (!cancelled && !paused) updateStep(step, progress)
+                    },
                 )
                 awaitRunnable()
                 if (cancelled) return@runBlocking
@@ -297,14 +313,16 @@ object PhoneUiAgentRuntime {
                     actionResult = "用户暂停后选择继续。之前截图对应的待执行动作已作废；请仅依据这次新截图重新判断，不要假定用户做过任何操作。"
                     previousScreenshot = null
                     previousActionSignature = ""
+                    identicalActionStreak = 0
                     continue
                 }
                 if (decision.thinking.isNotBlank()) {
                     appendEvent("thinking", "第${step}步判断", decision.thinking)
                 }
-                val currentPrompt = if (step == 1) "用户任务：$task" else "上一动作结果：$actionResult；继续任务：$task"
+                val currentPrompt = PhoneUiAgentModelClient.historyUserPrompt(config.protocol, task, history.isEmpty(), actionResult)
                 history += "user" to currentPrompt
-                history += "assistant" to decision.raw
+                history += "assistant" to PhoneUiAgentModelClient.historyAssistant(config.protocol, decision)
+                executedSteps++
                 if (decision.action.finished) {
                     val message = buildFinalMessage(task, decision.action.message, decision.thinking)
                     appendEvent("result", "任务完成", message)
@@ -321,6 +339,7 @@ object PhoneUiAgentRuntime {
                     actionResult = "用户选择继续，没有提供任何已完成操作的确认。请仅依据这次新截图重新判断，不要沿用此前关于页面的推测。"
                     previousScreenshot = null
                     previousActionSignature = ""
+                    identicalActionStreak = 0
                     continue
                 }
                 val signature = actionSignature(decision.action)
@@ -355,7 +374,7 @@ object PhoneUiAgentRuntime {
     private suspend fun captureScreenshot(context: Context, mode: PhoneUiScreenMode): ByteArray {
         if (mode == PhoneUiScreenMode.VIRTUAL) {
             validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(10_000), "virtual-video")?.let { return it }
-            appendEvent("status", "正在恢复原生视频流", "首帧暂时不可用，正在重新绑定虚拟屏幕解码器。")
+            appendEvent("status", "正在恢复原生视频流", "当前视频帧未能成功复制，正在重新连接解码器；尚未向模型发送此次画面。")
             PhoneUiVirtualDisplayCapture.attach(context)
             validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(10_000), "virtual-video-reconnected")?.let { return it }
             throw IllegalStateException("虚拟屏幕原生H.264视频流未产生可解码画面；任务已停止，未向模型发送黑屏或替代截图")
@@ -595,7 +614,7 @@ object PhoneUiAgentRuntime {
                 when {
                     percent >= 18 -> "当前新截图相对动作前明显变化，采样变化约$percent%；必须检查新出现的项目，不能无依据重复原动作"
                     percent >= 4 -> "当前新截图相对动作前有局部变化，采样变化约$percent%；请核对目标和滚动位置"
-                    else -> "当前新截图相对动作前基本未变化，采样变化约$percent%；原动作可能未生效，应调整方向、起点、距离或策略"
+                    else -> "图像粗采样变化约$percent%；小字、光标及局部控件变化可能未被采样覆盖，不能据此断定动作失败，请直接核对新截图"
                 }
             }
         } finally {
@@ -605,16 +624,8 @@ object PhoneUiAgentRuntime {
     }
 
     private fun buildFinalMessage(task: String, rawMessage: String?, thinking: String): String {
-        val message = rawMessage.orEmpty().trim().ifBlank { "任务已完成" }
-        if (message.length >= 48) return message
-        val verification = thinking.trim().replace(Regex("\\s+"), " ").take(800)
-        return buildString {
-            append("任务已完成。执行结果：").append(message.trimEnd('。', '.', '！', '!')).append('。')
-            if (verification.isNotBlank() && !verification.contains(message)) {
-                append("完成前核对：").append(verification.trimEnd('。', '.', '！', '!')).append('。')
-            } else {
-                append("已按要求执行任务：").append(task.trim().take(240).trimEnd('。', '.', '！', '!')).append('。')
-            }
+        return rawMessage.orEmpty().trim().ifBlank {
+            thinking.trim().ifBlank { "模型已结束任务，但未提供执行结果说明。" }
         }
     }
 

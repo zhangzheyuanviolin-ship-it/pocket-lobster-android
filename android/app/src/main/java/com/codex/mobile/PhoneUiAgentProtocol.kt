@@ -48,7 +48,15 @@ object PhoneUiActionParser {
     private fun parseAutoGlm(raw: String): PhoneUiModelDecision {
         val normalized = raw.replace('\u201c', '"').replace('\u201d', '"')
             .replace('\u2018', '\'').replace('\u2019', '\'')
-        val answer = tag(normalized, "answer").ifBlank { normalized.trim() }
+        val answer = tag(normalized, "answer").ifBlank {
+            val withoutThinking = normalized.replace(
+                Regex("<think>.*?</think>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)), "",
+            ).trim()
+            require(!withoutThinking.contains("<think>", ignoreCase = true)) {
+                "模型的思考标签未闭合且缺少完整answer动作"
+            }
+            withoutThinking
+        }
         val finishBody = callBody(answer, "finish")
         if (finishBody != null) {
             return PhoneUiModelDecision(
@@ -380,6 +388,13 @@ object PhoneUiActionParser {
     }
 
     private fun validate(action: PhoneUiAction) {
+        require(action.name.trim().lowercase() in setOf(
+            "launch", "tap", "type", "type_name", "swipe", "double tap", "long press",
+            "back", "home", "wait", "take_over", "interact", "note", "call_api", "finish",
+        )) { "不支持的动作：${action.name}；请使用已声明的动作名称" }
+        require(listOfNotNull(action.x, action.y, action.endX, action.endY).all { it in 0..999 }) {
+            "动作坐标超出相对屏幕范围0..999；请勿使用实际像素坐标"
+        }
         when (action.name.trim().lowercase()) {
             "tap", "double tap", "long press" -> require(action.x != null && action.y != null) {
                 "${action.name}动作缺少element坐标"
@@ -438,6 +453,7 @@ object PhoneUiAgentModelClient {
         actionResult: String,
         step: Int,
         maxSteps: Int,
+        onProgress: (String) -> Unit = {},
     ): PhoneUiModelDecision {
         require(config.baseUrl.isNotBlank()) { "模型Base URL未配置" }
         require(config.apiKey.isNotBlank()) { "模型API密钥未配置" }
@@ -445,24 +461,28 @@ object PhoneUiAgentModelClient {
         val messages = JSONArray().put(
             JSONObject().put("role", "system").put("content", PhoneUiAgentPrompt.system(config.protocol)),
         )
-        history.takeLast(24).forEach { (role, content) ->
-            messages.put(JSONObject().put("role", role).put("content", content.take(12_000)))
+        val retainedHistory = if (config.protocol == PhoneUiModelProtocol.AUTOGLM_NATIVE) {
+            if (history.size <= 24) history else history.take(2) + history.takeLast(22)
+        } else history.takeLast(24)
+        retainedHistory.forEach { (role, content) ->
+            messages.put(JSONObject().put("role", role).put("content",
+                if (config.protocol == PhoneUiModelProtocol.AUTOGLM_NATIVE) content else content.take(12_000)))
         }
         val prompt = buildString {
-            append(if (history.isEmpty()) "用户任务：$task" else "继续完成用户任务：$task")
-            if (actionResult.isNotBlank()) append("\n上一动作执行结果：$actionResult")
+            append(historyUserPrompt(config.protocol, task, history.isEmpty(), actionResult))
             append("\n当前进度：第${step.coerceAtLeast(1)}步，最多${maxSteps.coerceAtLeast(1)}步。")
             append("\n请根据当前截图返回下一步动作。")
         }
         val content = JSONArray()
-            .put(JSONObject().put("type", "text").put("text", prompt))
             .put(
                 JSONObject().put("type", "image_url").put(
                     "image_url",
                     JSONObject().put("url", "data:image/png;base64,${Base64.encodeToString(screenshotPng, Base64.NO_WRAP)}"),
                 ),
             )
+            .put(JSONObject().put("type", "text").put("text", prompt))
         messages.put(JSONObject().put("role", "user").put("content", content))
+        val originalMessages = messages.toString()
         val body = JSONObject()
             .put("model", config.modelId)
             .put("messages", messages)
@@ -480,30 +500,38 @@ object PhoneUiAgentModelClient {
         }
         var lastDiagnostic = ""
         val maxAttempts = when (config.protocol) {
-            PhoneUiModelProtocol.AUTOGLM_NATIVE -> 2
+            PhoneUiModelProtocol.AUTOGLM_NATIVE -> 3
             PhoneUiModelProtocol.GUI_PLUS_NATIVE -> 3
             PhoneUiModelProtocol.GENERIC_JSON -> 4
         }
         for (attempt in 1..maxAttempts) {
+            if (Thread.currentThread().isInterrupted) throw InterruptedException("手机操作任务已终止")
+            onProgress("正在等待模型响应，第${attempt}/${maxAttempts}次请求；连接上限30秒，读取上限120秒")
             val response = post(config, body)
+            val truncated = response.optJSONArray("choices")?.optJSONObject(0)
+                ?.optString("finish_reason") == "length"
             val rawResult = runCatching { extractContent(response) }
             if (rawResult.isFailure) {
                 val error = rawResult.exceptionOrNull()!!
                 lastDiagnostic = responseDiagnostic(response, "", error)
+                onProgress("模型响应不可执行：$lastDiagnostic")
                 if (attempt < maxAttempts) {
-                    messages.put(JSONObject().put("role", "user").put("content", correctionPrompt(config.protocol, error)))
+                    prepareRecoveryRequest(body, originalMessages, config.protocol, error, truncated)
                     continue
                 }
                 throw IllegalStateException("模型连续${maxAttempts}次没有返回可执行文本；$lastDiagnostic", error)
             }
             val rawContent = rawResult.getOrThrow()
-            val decisionResult = runCatching { PhoneUiActionParser.parse(rawContent, config.protocol) }
+            val decisionResult = runCatching {
+                check(!truncated) { "模型达到输出长度上限，响应被截断；未执行不完整动作" }
+                PhoneUiActionParser.parse(rawContent, config.protocol)
+            }
             if (decisionResult.isFailure) {
                 val error = decisionResult.exceptionOrNull()!!
                 lastDiagnostic = responseDiagnostic(response, rawContent, error)
+                onProgress("模型响应不可执行：$lastDiagnostic")
                 if (attempt < maxAttempts) {
-                    messages.put(JSONObject().put("role", "assistant").put("content", rawContent.take(4_000)))
-                    messages.put(JSONObject().put("role", "user").put("content", correctionPrompt(config.protocol, error)))
+                    prepareRecoveryRequest(body, originalMessages, config.protocol, error, truncated)
                     continue
                 }
                 throw IllegalStateException("模型连续${maxAttempts}次返回了不可执行动作；$lastDiagnostic", error)
@@ -518,6 +546,36 @@ object PhoneUiAgentModelClient {
             }
         }
         throw IllegalStateException("模型响应无法解析；$lastDiagnostic")
+    }
+
+    internal fun historyUserPrompt(protocol: PhoneUiModelProtocol, task: String, first: Boolean, result: String): String =
+        buildString {
+            append(if (first) "用户任务：$task" else if (protocol == PhoneUiModelProtocol.AUTOGLM_NATIVE) {
+                "** Screen Info **"
+            } else "继续完成用户任务：$task")
+            if (result.isNotBlank()) append("\n上一动作执行结果：$result")
+        }
+
+    internal fun historyAssistant(protocol: PhoneUiModelProtocol, decision: PhoneUiModelDecision): String {
+        if (protocol != PhoneUiModelProtocol.AUTOGLM_NATIVE) return decision.raw
+        val action = decision.action
+        val arguments = mutableListOf<String>()
+        if (action.finished) arguments += "message=${JSONObject.quote(action.message.orEmpty())}"
+        else {
+            arguments += "action=${JSONObject.quote(action.name)}"
+            if (action.x != null && action.y != null) {
+                val field = if (action.name.equals("Swipe", true)) "start" else "element"
+                arguments += "$field=[${action.x},${action.y}]"
+            }
+            if (action.endX != null && action.endY != null) arguments += "end=[${action.endX},${action.endY}]"
+            action.text?.let { arguments += "text=${JSONObject.quote(it)}" }
+            action.app?.let { arguments += "app=${JSONObject.quote(it)}" }
+            action.seconds?.let { arguments += "duration=${JSONObject.quote("$it seconds")}" }
+            action.message?.let { arguments += "message=${JSONObject.quote(it)}" }
+        }
+        val call = (if (action.finished) "finish" else "do") + "(" + arguments.joinToString(", ") + ")"
+        // Keep the complete action even when a model produced very long reasoning.
+        return "<think>${decision.thinking.take(1_000)}</think><answer>$call</answer>"
     }
 
     fun probe(config: PhoneUiModelConfig): String {
@@ -552,6 +610,24 @@ object PhoneUiAgentModelClient {
             "视觉模型已响应，但返回了不支持的动作：${decision.action.name}"
         }
         return "连接与真实视觉生成均成功：${decision.action.name}，协议${config.protocol.value}"
+    }
+
+    internal fun prepareRecoveryRequest(
+        body: JSONObject,
+        originalMessages: String,
+        protocol: PhoneUiModelProtocol,
+        error: Throwable,
+        truncated: Boolean,
+    ) {
+        // Retry the same observation; never teach the model to continue its malformed output.
+        val retryMessages = JSONArray(originalMessages)
+        val currentContent = retryMessages.getJSONObject(retryMessages.length() - 1).getJSONArray("content")
+        val correction = if (truncated) {
+            "上一响应因输出长度上限被截断。不要重复用户任务、商品列表或长篇分析；只返回下一步的一个完整动作。\n"
+        } else ""
+        currentContent.put(JSONObject().put("type", "text")
+            .put("text", correction + correctionPrompt(protocol, error)))
+        body.put("messages", retryMessages)
     }
 
     private fun correctionPrompt(protocol: PhoneUiModelProtocol, error: Throwable): String {

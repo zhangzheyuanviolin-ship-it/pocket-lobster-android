@@ -53,10 +53,14 @@ class ShowerVideoRenderer {
     @Volatile
     private var warnedNoSurface: Boolean = false
 
-    @Volatile private var renderedPresentationUs = 0L
+    @Volatile private var submittedPresentationUs = 0L
+    @Volatile private var queuedPresentationUs = 0L
+    private var awaitingKeyFrame = true
+    @Volatile private var surfaceGeneration = 0L
 
     fun attach(surface: Surface, videoWidth: Int, videoHeight: Int) {
         synchronized(lock) {
+            surfaceGeneration++
             this.surface = surface
             this.width = videoWidth
             this.height = videoHeight
@@ -64,13 +68,14 @@ class ShowerVideoRenderer {
             releaseDecoderLocked()
             csd0 = null
             csd1 = null
-            renderedPresentationUs = 0L
+            submittedPresentationUs = 0L
             pendingFrames.clear()
         }
     }
 
     fun detach() {
         synchronized(lock) {
+            surfaceGeneration++
             releaseDecoderLocked()
             surface = null
             pendingFrames.clear()
@@ -81,7 +86,9 @@ class ShowerVideoRenderer {
     private fun releaseDecoderLocked() {
         val dec = decoder
         decoder = null
-        renderedPresentationUs = 0L
+        submittedPresentationUs = 0L
+        queuedPresentationUs = 0L
+        awaitingKeyFrame = true
         if (dec != null) {
             try {
                 dec.stop()
@@ -172,14 +179,32 @@ class ShowerVideoRenderer {
         synchronized(lock) {
             val dec = decoder ?: return
             try {
-                val inIndex = dec.dequeueInputBuffer(10000)
+                val types = splitAnnexbNalUnits(packet).map { it.type }
+                if (types.none { it in 1..5 }) return
+                if (awaitingKeyFrame && 5 !in types) return
+                drainOutputLocked(dec)
+                var inIndex = dec.dequeueInputBuffer(10000)
+                var attempts = 0
+                while (inIndex < 0 && attempts++ < 3) {
+                    drainOutputLocked(dec)
+                    inIndex = dec.dequeueInputBuffer(10000)
+                }
                 if (inIndex >= 0) {
                     val inputBuffer: ByteBuffer? = dec.getInputBuffer(inIndex)
                     if (inputBuffer != null) {
                         inputBuffer.clear()
                         inputBuffer.put(packet)
-                        dec.queueInputBuffer(inIndex, 0, packet.size, System.nanoTime() / 1000, 0)
+                        val presentationUs = System.nanoTime() / 1000
+                        dec.queueInputBuffer(inIndex, 0, packet.size, presentationUs, 0)
+                        queuedPresentationUs = presentationUs
+                        awaitingKeyFrame = false
                     }
+                } else {
+                    // Dropping a reference frame silently corrupts all following P frames.
+                    ShowerLog.w(TAG, "Decoder input stalled; waiting for a new key frame")
+                    releaseDecoderLocked()
+                    pendingFrames.clear()
+                    return
                 }
 
                 drainOutputLocked(dec)
@@ -199,7 +224,10 @@ class ShowerVideoRenderer {
             when (val index = dec.dequeueOutputBuffer(info, 0)) {
                 MediaCodec.INFO_TRY_AGAIN_LATER -> return
                 MediaCodec.INFO_OUTPUT_FORMAT_CHANGED, MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> continue
-                else -> if (index >= 0) dec.releaseOutputBuffer(index, true) else return
+                else -> if (index >= 0) {
+                    dec.releaseOutputBuffer(index, true)
+                    submittedPresentationUs = maxOf(submittedPresentationUs, info.presentationTimeUs)
+                } else return
             }
         }
     }
@@ -234,9 +262,10 @@ class ShowerVideoRenderer {
     }
 
     suspend fun captureCurrentFramePng(): ByteArray? {
-        val requestedPresentationUs = System.nanoTime() / 1000
+        val (generation, requestedPresentationUs) = synchronized(lock) { surfaceGeneration to queuedPresentationUs }
         val fresh = withTimeoutOrNull(4_000L) {
-            while (renderedPresentationUs < requestedPresentationUs) {
+            while (true) {
+                if (generation != surfaceGeneration) return@withTimeoutOrNull false
                 withContext(Dispatchers.IO) {
                     synchronized(lock) {
                         decoder?.let { dec ->
@@ -246,12 +275,16 @@ class ShowerVideoRenderer {
                         }
                     }
                 }
+                // A static screen need not emit a frame after this capture request.
+                // Drain input already received, then copy the Surface's latest real buffer.
+                if (submittedPresentationUs > 0L &&
+                    submittedPresentationUs >= requestedPresentationUs) break
                 delay(10)
             }
             true
         } ?: false
         if (!fresh) {
-            ShowerLog.w(TAG, "No newly rendered video frame before capture deadline")
+            ShowerLog.w(TAG, "No decoded video buffer before capture deadline: submittedUs=$submittedPresentationUs requestedUs=$requestedPresentationUs")
             return null
         }
         val s: Surface
@@ -271,16 +304,14 @@ class ShowerVideoRenderer {
             val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             suspendCancellableCoroutine { cont ->
                 val handler = Handler(Looper.getMainLooper())
-                cont.invokeOnCancellation {
-                    if (!bitmap.isRecycled) bitmap.recycle()
-                }
+                // PixelCopy owns the destination until its callback, even after cancellation.
                 try {
                     PixelCopy.request(s, bitmap, { result ->
                         if (!cont.isActive) {
                             if (!bitmap.isRecycled) bitmap.recycle()
                             return@request
                         }
-                        val bytes = if (result == PixelCopy.SUCCESS) {
+                        val bytes = if (result == PixelCopy.SUCCESS && generation == surfaceGeneration) {
                             runCatching {
                                 val baos = ByteArrayOutputStream()
                                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, baos)
@@ -318,9 +349,6 @@ class ShowerVideoRenderer {
 
             val dec = MediaCodec.createDecoderByType("video/avc")
             dec.configure(format, s, null, 0)
-            dec.setOnFrameRenderedListener({ codec, presentationUs, _ ->
-                if (decoder === codec) renderedPresentationUs = maxOf(renderedPresentationUs, presentationUs)
-            }, Handler(Looper.getMainLooper()))
             dec.start()
             decoder = dec
             ShowerLog.d(TAG, "MediaCodec decoder initialized for ${width}x${height}")

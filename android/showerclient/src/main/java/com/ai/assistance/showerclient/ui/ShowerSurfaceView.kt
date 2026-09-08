@@ -76,6 +76,7 @@ open class ShowerSurfaceView @JvmOverloads constructor(
                 ctrl.addBinaryHandler(this@ShowerSurfaceView) { data ->
                     renderer.onFrame(data)
                 }
+                ctrl.refreshVideoStream()
             } else {
                 ShowerLog.e(TAG, "Failed to get video size after multiple retries.")
             }

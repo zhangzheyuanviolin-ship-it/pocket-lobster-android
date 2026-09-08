@@ -137,6 +137,20 @@ class ShowerController {
         }
     }
 
+    suspend fun refreshVideoStream(): Boolean = withContext(Dispatchers.IO) {
+        val id = virtualDisplayId ?: return@withContext false
+        val service = getBinder() ?: return@withContext false
+        try {
+            // The server resends codec configuration and requests an IDR for this display.
+            // Never call while holding binaryLock: setVideoSink can call us back synchronously.
+            service.setVideoSink(id, videoSink.asBinder())
+            true
+        } catch (error: Exception) {
+            ShowerLog.e(TAG, "Unable to refresh video stream for display $id", error)
+            false
+        }
+    }
+
     private val videoSink = object : IShowerVideoSink.Stub() {
         override fun onVideoFrame(data: ByteArray) {
             val handlers: List<(ByteArray) -> Unit>
