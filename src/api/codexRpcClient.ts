@@ -45,6 +45,27 @@ export async function fetchWithTimeout(
   }
 }
 
+export async function fetchJsonWithTimeout<T>(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<{ response: Response; payload: T | null }> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(input, { ...init, signal: controller.signal })
+    let payload: T | null = null
+    try {
+      payload = await response.json() as T
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') throw error
+    }
+    return { response, payload }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -55,14 +76,17 @@ export async function rpcCall<T>(method: string, params?: unknown): Promise<T> {
   const body: RpcRequestBody = { method, params: params ?? null }
 
   let response: Response
+  let payload: unknown = null
   try {
-    response = await fetchWithTimeout('/codex-api/rpc', {
+    const result = await fetchJsonWithTimeout<unknown>('/codex-api/rpc', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
     }, RPC_TIMEOUT_BY_METHOD[method] ?? DEFAULT_REQUEST_TIMEOUT_MS)
+    response = result.response
+    payload = result.payload
   } catch (error) {
     const timedOut = error instanceof DOMException && error.name === 'AbortError'
     throw new CodexApiError(
@@ -71,13 +95,6 @@ export async function rpcCall<T>(method: string, params?: unknown): Promise<T> {
         : error instanceof Error ? error.message : `RPC ${method} failed before request was sent`,
       { code: timedOut ? 'timeout' : 'network_error', method },
     )
-  }
-
-  let payload: unknown = null
-  try {
-    payload = await response.json()
-  } catch {
-    payload = null
   }
 
   if (!response.ok) {

@@ -9,7 +9,8 @@ const layout = readFileSync('src/components/layout/DesktopLayout.vue', 'utf8')
 const tree = readFileSync('src/components/sidebar/SidebarThreadTree.vue', 'utf8')
 const gateway = readFileSync('src/api/codexGateway.ts', 'utf8')
 
-assert.match(rpcClient, /fetchWithTimeout\('\/codex-api\/rpc'/)
+assert.match(rpcClient, /fetchJsonWithTimeout<unknown>\('\/codex-api\/rpc'/)
+assert.match(rpcClient, /payload = await response\.json\(\)/)
 assert.match(rpcClient, /RPC_TIMEOUT_BY_METHOD/)
 assert.match(rpcClient, /source\.onerror/)
 
@@ -52,6 +53,9 @@ assert.match(loadThreadsFlow, /pendingThreadIds\.add\(selectedId\)/)
 assert.match(gateway, /isThreadMaterializationPending/)
 assert.match(gateway, /THREAD_MATERIALIZATION_RETRIES/)
 assert.match(gateway, /thread\/read returned no payload/)
+assert.match(gateway, /\/codex-api\/thread-snapshot/)
+assert.match(gateway, /seenCursors/)
+assert.match(bridge, /normalizeThreadMessagesV2\(read\)/)
 
 for (const rawToolType of ['commandExecution', 'fileChange', 'mcpToolCall', 'collabAgentToolCall', 'webSearch', 'imageView']) {
   assert.doesNotMatch(normalizer, new RegExp(`item\\.type === '${rawToolType}'`))

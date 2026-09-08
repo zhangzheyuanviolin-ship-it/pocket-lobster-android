@@ -1,6 +1,6 @@
 <template>
   <section class="conversation-root">
-    <p v-if="isLoading" class="conversation-loading">{{ t('conversation_loading') }}</p>
+    <p v-if="isLoading && messages.length === 0 && !liveOverlay" class="conversation-loading">{{ t('conversation_loading') }}</p>
 
     <p
       v-else-if="messages.length === 0 && pendingRequests.length === 0 && !liveOverlay"

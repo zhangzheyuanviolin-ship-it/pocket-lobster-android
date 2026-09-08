@@ -907,6 +907,8 @@ public class Main {
             format.setInteger(MediaFormat.KEY_BIT_RATE, actualBitRate);
             format.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
+            // Keep a static display observable without using a cached Surface as a live frame.
+            format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 250_000L);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 format.setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1);
             }

@@ -114,13 +114,10 @@ class ShowerController {
     }
 
     fun addBinaryHandler(key: Any, handler: (ByteArray) -> Unit) {
-        val framesToReplay: List<ByteArray>
         synchronized(binaryLock) {
-            binaryHandlers[key] = handler
             ShowerLog.d(TAG, "addBinaryHandler: id=${virtualDisplayId} handlers=${binaryHandlers.size}, bufferedFrames=${earlyBinaryFrames.size}")
-            framesToReplay = videoConfigFrames.values.map(ByteArray::copyOf) + earlyBinaryFrames.map(ByteArray::copyOf)
-        }
-        if (framesToReplay.isNotEmpty()) {
+            val framesToReplay = videoConfigFrames.values.map(ByteArray::copyOf) + earlyBinaryFrames.map(ByteArray::copyOf)
+            earlyBinaryFrames.clear()
             ShowerLog.d(TAG, "addBinaryHandler: replaying ${framesToReplay.size} buffered frames")
             framesToReplay.forEach { frame ->
                 try {
@@ -128,6 +125,8 @@ class ShowerController {
                 } catch (_: Exception) {
                 }
             }
+            // Publish only after replay: a live frame must not precede its decoder config.
+            binaryHandlers[key] = handler
         }
     }
 

@@ -24,6 +24,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import java.security.MessageDigest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
@@ -82,6 +84,7 @@ object PhoneUiAgentRuntime {
     private var keepAliveFuture: ScheduledFuture<*>? = null
     @Volatile private var paused = false
     @Volatile private var cancelled = false
+    private val observationRevision = AtomicLong()
 
     fun initialize(context: Context) {
         synchronized(lock) {
@@ -113,6 +116,7 @@ object PhoneUiAgentRuntime {
             archiveCurrentLocked()
             cancelled = false
             paused = false
+            observationRevision.incrementAndGet()
             state = JSONObject()
                 .put("id", UUID.randomUUID().toString())
                 .put("task", cleanTask)
@@ -159,6 +163,7 @@ object PhoneUiAgentRuntime {
         requireCurrentTaskLocked(taskId)
         if (state.optString("status") == "running") {
             paused = true
+            observationRevision.incrementAndGet()
             state.put("status", "paused").put("statusText", "任务已暂停，用户可以接管屏幕")
             appendEventLocked("status", "任务已暂停", "点击继续后，智能体将从当前页面重新截图判断。")
             persistLocked()
@@ -170,6 +175,7 @@ object PhoneUiAgentRuntime {
         requireCurrentTaskLocked(taskId)
         if (state.optString("status") == "paused") {
             paused = false
+            observationRevision.incrementAndGet()
             state.put("status", "running").put("statusText", "任务继续执行")
             appendEventLocked("status", "任务已继续", "智能体正在重新观察当前屏幕。")
             persistLocked()
@@ -257,14 +263,24 @@ object PhoneUiAgentRuntime {
             for (step in 1..maxSteps) {
                 awaitRunnable()
                 if (cancelled) return@runBlocking
+                val revision = observationRevision.get()
                 updateStep(step, "正在截取当前屏幕")
                 val screenshot = captureScreenshot(context, mode)
+                if (revision != observationRevision.get()) continue
                 val priorScreenshot = previousScreenshot
                 if (actionResult.isNotBlank() && priorScreenshot != null) {
                     actionResult += "；${screenChangeHint(priorScreenshot, screenshot)}"
                 }
                 previousScreenshot = screenshot
                 val dimensions = imageDimensions(screenshot)
+                synchronized(lock) {
+                    state.put("lastObservation", JSONObject()
+                        .put("step", step).put("displayId", displayId).put("mode", mode.value)
+                        .put("capturedAt", Instant.now().toString())
+                        .put("width", dimensions.first).put("height", dimensions.second)
+                        .put("sha256", MessageDigest.getInstance("SHA-256").digest(screenshot)
+                            .joinToString("") { "%02x".format(it) }))
+                }
                 updateStep(step, "模型正在判断下一步操作")
                 val decision = PhoneUiAgentModelClient.decide(
                     config,
@@ -277,6 +293,12 @@ object PhoneUiAgentRuntime {
                 )
                 awaitRunnable()
                 if (cancelled) return@runBlocking
+                if (revision != observationRevision.get()) {
+                    actionResult = "用户暂停后选择继续。之前截图对应的待执行动作已作废；请仅依据这次新截图重新判断，不要假定用户做过任何操作。"
+                    previousScreenshot = null
+                    previousActionSignature = ""
+                    continue
+                }
                 if (decision.thinking.isNotBlank()) {
                     appendEvent("thinking", "第${step}步判断", decision.thinking)
                 }
@@ -296,7 +318,9 @@ object PhoneUiAgentRuntime {
                     updateStatus("paused", message)
                     awaitRunnable()
                     if (cancelled) return@runBlocking
-                    actionResult = "用户已经完成手动操作并选择继续，请重新观察当前页面后决定下一步。"
+                    actionResult = "用户选择继续，没有提供任何已完成操作的确认。请仅依据这次新截图重新判断，不要沿用此前关于页面的推测。"
+                    previousScreenshot = null
+                    previousActionSignature = ""
                     continue
                 }
                 val signature = actionSignature(decision.action)

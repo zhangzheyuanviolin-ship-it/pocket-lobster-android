@@ -515,6 +515,10 @@
           <template v-else>
             <div class="content-grid">
               <div class="content-thread">
+                <div v-if="codexError" class="new-thread-error" role="alert">
+                  <p>{{ codexError }}</p>
+                  <button type="button" @click="selectThread(selectedThreadId)">{{ t('conversation_reload') }}</button>
+                </div>
                 <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages"
                   :active-thread-id="composerThreadContextId" :scroll-state="selectedThreadScrollState"
                   :live-overlay="liveOverlay"
@@ -575,6 +579,7 @@ import { useUiI18n, type LocalePreference } from './composables/useUiI18n'
 import type { ReasoningEffort, ThreadScrollState, UiServerRequest } from './types/codex'
 import type { OpenClawComposerSubmitPayload } from './types/openclaw'
 import type { ClaudeComposerSubmitPayload } from './types/claude'
+import { fetchJsonWithTimeout } from './api/codexRpcClient'
 import {
   abortCollaborationRun,
   archiveCollaborationRun,
@@ -909,7 +914,10 @@ function onSidebarSearchKeydown(event: KeyboardEvent): void {
 
 function onSelectThread(threadId: string): void {
   if (!threadId) return
-  if (route.name === 'thread' && routeThreadId.value === threadId) return
+  if (route.name === 'thread' && routeThreadId.value === threadId) {
+    void selectThread(threadId)
+    return
+  }
   void router.push({ name: 'thread', params: { threadId } })
 }
 
@@ -1399,21 +1407,21 @@ function normalizeMessageType(rawType: string | undefined, role: string): string
 
 async function initialize(): Promise<void> {
   isCodexBridgeAvailable.value = await checkCodexAvailability()
+  hasInitialized.value = true
   if (isCodexBridgeAvailable.value) {
-    await refreshAll()
+    await refreshAll({ threadId: routeThreadId.value || '', loadSelectedMessages: isThreadRoute.value })
     startPolling()
   }
   try {
-    await initializeOpenClaw(routeOpenClawSessionKey.value)
+    if (isOpenClawRoute.value) await initializeOpenClaw(routeOpenClawSessionKey.value)
   } catch {
     // Keep Codex UI available even if OpenClaw bootstrap is temporarily unavailable.
   }
   try {
-    await initializeClaude(routeClaudeSessionKey.value)
+    if (isClaudeRoute.value) await initializeClaude(routeClaudeSessionKey.value)
   } catch {
     // Keep Codex UI available even if Claude bootstrap is temporarily unavailable.
   }
-  hasInitialized.value = true
   await syncThreadSelectionWithRoute()
   if (isOpenClawRoute.value) {
     startOpenClawPolling()
@@ -1425,9 +1433,12 @@ async function initialize(): Promise<void> {
 
 async function checkCodexAvailability(): Promise<boolean> {
   try {
-    const response = await fetch('/codex-api/availability')
+    const { response, payload } = await fetchJsonWithTimeout<{ ok?: unknown }>(
+      '/codex-api/availability',
+      {},
+      5_000,
+    )
     if (!response.ok) return false
-    const payload = await response.json() as { ok?: unknown }
     return payload?.ok === true
   } catch {
     return false
@@ -1442,7 +1453,7 @@ async function syncThreadSelectionWithRoute(): Promise<void> {
   try {
     if (route.name === 'home') {
       if (selectedThreadId.value !== '') {
-        await selectThread('')
+        void selectThread('')
       }
       return
     }
@@ -1451,19 +1462,19 @@ async function syncThreadSelectionWithRoute(): Promise<void> {
       const threadId = routeThreadId.value
       if (!threadId) return
 
-      if (!knownThreadIdSet.value.has(threadId)) {
-        await router.replace({ name: 'home' })
-        return
-      }
-
       if (selectedThreadId.value !== threadId) {
-        await selectThread(threadId)
+        void selectThread(threadId)
       }
       return
     }
 
   } finally {
     isRouteSyncInProgress.value = false
+    // A second navigation can arrive while the first history request is pending.
+    if (isCodexRoute.value && ((route.name === 'thread' && routeThreadId.value !== selectedThreadId.value) ||
+      (route.name === 'home' && selectedThreadId.value !== ''))) {
+      void syncThreadSelectionWithRoute()
+    }
   }
 }
 

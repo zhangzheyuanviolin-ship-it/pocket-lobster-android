@@ -625,7 +625,8 @@ export function useDesktopState() {
   const pendingServerRequestsByThreadId = ref<Record<string, UiServerRequest[]>>({})
 
   const isLoadingThreads = ref(false)
-  const isLoadingMessages = ref(false)
+  const messageLoadsByThreadId = ref<Record<string, boolean>>({})
+  const isLoadingMessages = computed(() => messageLoadsByThreadId.value[selectedThreadId.value] === true)
   const isSendingMessage = ref(false)
   const isInterruptingTurn = ref(false)
   const error = ref('')
@@ -648,6 +649,7 @@ export function useDesktopState() {
   const selectedModelByProvider = new Map<string, string>()
   const pendingTurnStartsById = new Map<string, TurnStartedInfo>()
   const messageLoadRevisionByThreadId = new Map<string, number>()
+  const messageRequestsByThreadId = new Map<string, Promise<void>>()
   const pendingAgentDeltasByThreadId = new Map<string, Map<string, string>>()
   const pendingReasoningDeltasByThreadId = new Map<string, string>()
   const lastSnapshotTurnIdByThreadId = new Map<string, string>()
@@ -909,6 +911,8 @@ export function useDesktopState() {
 
   function pruneThreadScopedState(flatThreads: UiThread[]): void {
     const activeThreadIds = new Set(flatThreads.map((thread) => thread.id))
+    const selectedId = selectedThreadId.value.trim()
+    if (selectedId) activeThreadIds.add(selectedId)
     for (const threadId of Object.keys(optimisticUserMessagesByThreadId.value)) {
       activeThreadIds.add(threadId)
     }
@@ -1901,7 +1905,7 @@ export function useDesktopState() {
         inProgressById.value[selectedThreadId.value] === true ||
         (optimisticUserMessagesByThreadId.value[selectedThreadId.value] ?? []).length > 0
 
-      if (!currentExists && !currentIsPending) {
+      if (!selectedThreadId.value && !currentExists && !currentIsPending) {
         setSelectedThreadId(flatThreads[0]?.id ?? '')
       }
     } finally {
@@ -1912,6 +1916,18 @@ export function useDesktopState() {
   }
 
   async function loadMessages(threadId: string, options: { silent?: boolean } = {}) {
+    const pending = messageRequestsByThreadId.get(threadId)
+    if (pending) return pending
+    const request = readMessages(threadId, options)
+    messageRequestsByThreadId.set(threadId, request)
+    try {
+      await request
+    } finally {
+      if (messageRequestsByThreadId.get(threadId) === request) messageRequestsByThreadId.delete(threadId)
+    }
+  }
+
+  async function readMessages(threadId: string, options: { silent?: boolean } = {}) {
     if (!threadId) {
       return
     }
@@ -1922,23 +1938,10 @@ export function useDesktopState() {
     const alreadyLoaded = loadedMessagesByThreadId.value[threadId] === true
     const shouldShowLoading = options.silent !== true && !alreadyLoaded
     if (shouldShowLoading) {
-      isLoadingMessages.value = true
+      messageLoadsByThreadId.value = { ...messageLoadsByThreadId.value, [threadId]: true }
     }
 
     try {
-      if (resumedThreadById.value[threadId] !== true) {
-        await resumeThread(threadId)
-        resumedThreadById.value = {
-          ...resumedThreadById.value,
-          [threadId]: true,
-        }
-        const thread = flattenThreads(sourceGroups.value).find((row) => row.id === threadId)
-        resumedModelProviderById.value = {
-          ...resumedModelProviderById.value,
-          [threadId]: thread?.modelProvider || 'openai',
-        }
-      }
-
       const snapshot = await getThreadSnapshot(threadId)
       if (messageLoadRevisionByThreadId.get(threadId) !== requestRevision) return
       const nextMessages = snapshot.messages
@@ -2009,13 +2012,14 @@ export function useDesktopState() {
         shouldShowLoading &&
         messageLoadRevisionByThreadId.get(threadId) === requestRevision
       ) {
-        isLoadingMessages.value = false
+        messageLoadsByThreadId.value = omitKey(messageLoadsByThreadId.value, threadId)
       }
     }
   }
 
-  async function refreshAll() {
+  async function refreshAll(options: { threadId?: string; loadSelectedMessages?: boolean } = {}) {
     error.value = ''
+    if (options.threadId !== undefined) setSelectedThreadId(options.threadId)
 
     try {
       const activeThreadId = selectedThreadId.value
@@ -2031,8 +2035,9 @@ export function useDesktopState() {
       await Promise.all([
         loadThreads(),
         refreshModelPreferences(),
+        options.threadId ? loadMessages(options.threadId) : Promise.resolve(),
       ])
-      await loadMessages(selectedThreadId.value)
+      if (options.loadSelectedMessages !== false && !options.threadId) await loadMessages(selectedThreadId.value)
     } catch (unknownError) {
       error.value = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
     }
@@ -2040,6 +2045,7 @@ export function useDesktopState() {
 
   async function selectThread(threadId: string) {
     setSelectedThreadId(threadId)
+    error.value = ''
 
     try {
       await loadMessages(threadId)
@@ -2047,12 +2053,15 @@ export function useDesktopState() {
         // Message rendering must not depend on route metadata refresh.
       })
     } catch (unknownError) {
-      error.value = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
+      if (selectedThreadId.value === threadId) {
+        error.value = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
+      }
     }
   }
 
   async function syncSelectionToThreadRoute(threadId: string): Promise<void> {
     const route = await getThreadRoute(threadId)
+    if (selectedThreadId.value !== threadId) return
     const routedModel = allAvailableModels.value.find(
       (model) => model.providerId === route.providerId && (!route.model || model.modelId === route.model),
     )
@@ -2629,6 +2638,8 @@ export function useDesktopState() {
     pendingThreadMessageRefresh.clear()
     pendingTurnStartsById.clear()
     messageLoadRevisionByThreadId.clear()
+    messageRequestsByThreadId.clear()
+    messageLoadsByThreadId.value = {}
     lastSnapshotTurnIdByThreadId.clear()
     threadLoadRevision += 1
     if (eventSyncTimer !== null && typeof window !== 'undefined') {

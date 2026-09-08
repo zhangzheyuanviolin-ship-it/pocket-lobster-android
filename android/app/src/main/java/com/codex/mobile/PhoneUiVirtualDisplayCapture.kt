@@ -13,6 +13,7 @@ import com.ai.assistance.showerclient.ui.ShowerSurfaceView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Keeps the virtual display video decoder alive and exposes its latest rendered frame. */
 object PhoneUiVirtualDisplayCapture {
@@ -74,13 +75,14 @@ object PhoneUiVirtualDisplayCapture {
     }
 
     suspend fun capturePng(timeoutMs: Long = 5_000L): ByteArray? {
-        val attempts = (timeoutMs / 125L).coerceAtLeast(1L).toInt()
-        repeat(attempts) {
-            val bytes = surfaceView?.captureCurrentFramePng()
-            if (bytes != null && bytes.size > 1_024) return bytes
-            delay(125)
+        return withTimeoutOrNull(timeoutMs) {
+            var bytes: ByteArray? = null
+            while (bytes == null || bytes.size <= 1_024) {
+                bytes = surfaceView?.captureCurrentFramePng()
+                if (bytes == null || bytes.size <= 1_024) delay(125)
+            }
+            bytes
         }
-        return null
     }
 
     suspend fun detach() = withContext(Dispatchers.Main) { detachLocked() }

@@ -6,6 +6,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, dirname, extname } from 'node:path'
 import { handleCodexProviderAdapterRequest } from './codexProviderAdapter.js'
+import { normalizeThreadMessagesV2 } from '../api/normalizers/v2.js'
+import type { ThreadReadResponse } from '../api/appServerDtos.js'
 import {
   ensureCodexCollaborationThread,
   isCodexThreadMaterializationPendingMessage,
@@ -6402,6 +6404,40 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         runtimeStatusPath: codexProviderRuntimeStatusPath,
         diagnosticPath: codexChatDiagnosticPath,
       })) {
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/thread-snapshot') {
+        if (!appServer.isCommandAvailable()) {
+          setJson(res, 503, { error: appServer.getUnavailableReason() || 'Codex CLI not installed' })
+          return
+        }
+        const payload = asRecord(await readJsonBody(req))
+        const threadId = normalizeText(payload?.threadId)
+        if (!threadId) {
+          setJson(res, 400, { error: 'Missing threadId' })
+          return
+        }
+        await appendCodexDiagnostic('rpc_request', diagnosticRpcFields('thread/read', { threadId, includeTurns: true }))
+        try {
+          const read = await appServer.rpc('thread/read', { threadId, includeTurns: true }) as ThreadReadResponse
+          const turns = Array.isArray(read.thread?.turns) ? read.thread.turns : []
+          const latestTurn = turns.at(-1)
+          const result = {
+            messages: normalizeThreadMessagesV2(read),
+            latestTurnId: latestTurn?.id ?? '',
+            latestTurnStatus: latestTurn?.status ?? '',
+            latestTurnError: latestTurn?.error?.message ?? '',
+          }
+          await appendCodexDiagnostic('rpc_success', diagnosticRpcFields('thread/read', { threadId, includeTurns: true }, read))
+          setJson(res, 200, result)
+        } catch (error) {
+          await appendCodexDiagnostic('rpc_failure', {
+            ...diagnosticRpcFields('thread/read', { threadId, includeTurns: true }),
+            error: getErrorMessage(error, 'Unknown Codex RPC error').slice(0, 800),
+          })
+          throw error
+        }
         return
       }
 

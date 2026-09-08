@@ -59,10 +59,15 @@ class PhoneUiActionParserTest {
         val nativePrompt = PhoneUiAgentPrompt.system(PhoneUiModelProtocol.AUTOGLM_NATIVE)
         val genericPrompt = PhoneUiAgentPrompt.system(PhoneUiModelProtocol.GENERIC_JSON)
 
-        assertTrue(nativePrompt.contains("不要把应用名称、页面类别"))
-        assertTrue(nativePrompt.contains("输入、发送、签到、确认、删除、安装、授权"))
-        assertTrue(genericPrompt.contains("do not pause merely because of its category"))
-        assertTrue(genericPrompt.contains("technically impossible"))
+        assertTrue(nativePrompt.contains("当前页面以这次新截图为准"))
+        assertTrue(nativePrompt.contains("不得根据应用名称或历史推测"))
+        assertTrue(genericPrompt.contains("Treat the latest image as the only evidence"))
+        assertTrue(genericPrompt.contains("Do not invent dialogs, required steps, or page text"))
+        listOf(nativePrompt, genericPrompt).forEach { prompt ->
+            assertTrue(!prompt.contains("敏感屏幕"))
+            assertTrue(!prompt.contains("验证码"))
+            assertTrue(!prompt.contains("CAPTCHA", ignoreCase = true))
+        }
     }
 
     @Test

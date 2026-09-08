@@ -2,6 +2,7 @@ import {
   fetchRpcMethodCatalog,
   fetchRpcNotificationCatalog,
   fetchPendingServerRequests,
+  fetchJsonWithTimeout,
   fetchWithTimeout,
   rpcCall,
   respondServerRequest,
@@ -12,10 +13,9 @@ import type {
   ConfigReadResponse,
   ModelListResponse,
   ThreadListResponse,
-  ThreadReadResponse,
 } from './appServerDtos'
 import { CodexApiError, extractErrorMessage, normalizeCodexApiError } from './codexErrors'
-import { normalizeThreadGroupsV2, normalizeThreadMessagesV2 } from './normalizers/v2'
+import { normalizeThreadGroupsV2 } from './normalizers/v2'
 import type { CodexModelOption, ReasoningEffort, UiMessage, UiProjectGroup } from '../types/codex'
 
 type CurrentModelConfig = {
@@ -133,13 +133,17 @@ function inferProviderLabel(row: StoredCodexModelConfig): string {
   return displayName && displayName !== modelId ? displayName.split(' / ')[0] || displayName : displayName || modelId
 }
 
-async function postCodexJson<T>(path: string, body: Record<string, unknown>): Promise<T> {
-  const response = await fetchWithTimeout(path, {
+async function postCodexJson<T>(
+  path: string,
+  body: Record<string, unknown>,
+  timeoutMs?: number,
+): Promise<T> {
+  const result = await fetchJsonWithTimeout<T | { error?: unknown }>(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  })
-  const payload = await response.json().catch(() => null) as T | { error?: unknown } | null
+  }, timeoutMs)
+  const { response, payload } = result
   if (!response.ok) {
     throw new CodexApiError(
       extractErrorMessage(payload, `Codex request failed with HTTP ${response.status}`),
@@ -150,22 +154,30 @@ async function postCodexJson<T>(path: string, body: Record<string, unknown>): Pr
 }
 
 async function getThreadGroupsV2(): Promise<UiProjectGroup[]> {
-  const payload = await callRpc<ThreadListResponse>('thread/list', {
-    archived: false,
-    limit: 100,
-    sortKey: 'updated_at',
-  })
-  return normalizeThreadGroupsV2(payload)
+  const rows: ThreadListResponse['data'] = []
+  let cursor: string | null = null
+  const seenCursors = new Set<string>()
+  for (let page = 0; page < 20; page += 1) {
+    const payload: ThreadListResponse = await callRpc<ThreadListResponse>('thread/list', {
+      archived: false,
+      cursor,
+      limit: 100,
+      sortKey: 'updated_at',
+    })
+    rows.push(...payload.data)
+    const nextCursor: string | null = payload.nextCursor?.trim() || null
+    if (!nextCursor || seenCursors.has(nextCursor)) break
+    seenCursors.add(nextCursor)
+    cursor = nextCursor
+  }
+  return normalizeThreadGroupsV2({ data: rows, nextCursor: null })
 }
 
 async function getThreadSnapshotV2(threadId: string): Promise<ThreadSnapshot> {
-  let payload: ThreadReadResponse | null = null
+  let payload: ThreadSnapshot | null = null
   for (let attempt = 0; attempt <= THREAD_MATERIALIZATION_RETRIES; attempt += 1) {
     try {
-      payload = await callRpc<ThreadReadResponse>('thread/read', {
-        threadId,
-        includeTurns: true,
-      })
+      payload = await postCodexJson<ThreadSnapshot>('/codex-api/thread-snapshot', { threadId }, 35_000)
       break
     } catch (error) {
       if (!isThreadMaterializationPending(error) || attempt === THREAD_MATERIALIZATION_RETRIES) {
@@ -175,14 +187,7 @@ async function getThreadSnapshotV2(threadId: string): Promise<ThreadSnapshot> {
     }
   }
   if (!payload) throw new Error(`thread/read returned no payload for ${threadId}`)
-  const turns = Array.isArray(payload.thread.turns) ? payload.thread.turns : []
-  const latestTurn = turns[turns.length - 1]
-  return {
-    messages: normalizeThreadMessagesV2(payload),
-    latestTurnId: latestTurn?.id ?? '',
-    latestTurnStatus: latestTurn?.status ?? '',
-    latestTurnError: latestTurn?.error?.message ?? '',
-  }
+  return payload
 }
 
 export async function getThreadGroups(): Promise<UiProjectGroup[]> {

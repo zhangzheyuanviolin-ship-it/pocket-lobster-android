@@ -26,8 +26,20 @@ const openMinisBuild = read('android/openminis/build.gradle.kts')
 const cliActivity = read('android/app/src/main/java/com/codex/mobile/CliAgentChatActivity.kt')
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex')
-assert.equal(sha256(runtime), 'e8ff5df1896550cd81cd6d09397f1b2931a82faacd1a1ebb9122405287f3d142')
-assert.equal(sha256(protocol), '0e17021897fb3885d37e1c0ca87fe58c9178a86f83b6911abad586e1eb437b04')
+const executeAction = runtime.slice(
+  runtime.indexOf('    private suspend fun executeAction('),
+  runtime.indexOf('    private suspend fun awaitRunnable('),
+)
+const actionParser = protocol.slice(
+  protocol.indexOf('object PhoneUiActionParser {'),
+  protocol.indexOf('object PhoneUiAgentPrompt {'),
+)
+const agentPrompt = protocol.slice(
+  protocol.indexOf('object PhoneUiAgentPrompt {'),
+  protocol.indexOf('object PhoneUiAgentModelClient {'),
+)
+assert.equal(sha256(executeAction), '98dae61aa93f4e2a3b734da985facfa992599515c120d963046de8bd6a157f1c')
+assert.equal(sha256(actionParser), '2111cac4fba1f9402bd222c05ea4af4397196522136e7d0d56b58f41c34bad83')
 assert.equal(sha256(activity), '01963c83d5ffd769ae4cc424668304f529554922ba0c3f0671ba5d1406b3408a')
 assert.equal(sha256(overlay), 'ef4b136384bd49ddbc49a0421429da079de5bed186c867b072a3ebec6db344dc')
 assert.equal(sha256(layout), '9c078ca714bfba563cce26eccb496eb89fde510b8d72b5440f69cc9a9fba16d3')
@@ -80,10 +92,13 @@ assert.match(showerController, /handlers\.forEach/)
 assert.match(showerController, /videoConfigFrames/)
 assert.match(showerController, /h264NalTypes/)
 assert.match(showerRenderer, /splitAnnexbNalUnits/)
+assert.match(showerRenderer, /setOnFrameRenderedListener/)
+assert.match(showerRenderer, /renderedPresentationUs < requestedPresentationUs/)
 assert.match(showerServer, /codecConfig0/)
 assert.match(showerServer, /PARAMETER_KEY_REQUEST_SYNC_FRAME/)
 assert.match(showerServer, /BUFFER_FLAG_CODEC_CONFIG/)
 assert.match(showerServer, /KEY_PREPEND_HEADER_TO_SYNC_FRAMES/)
+assert.match(showerServer, /KEY_REPEAT_PREVIOUS_FRAME_AFTER/)
 assert.match(workflow, /patched-shower-classes\.dex/)
 assert.match(workflow, /Unpatched upstream Shower server must not ship/)
 assert.match(protocol, /AUTOGLM_NATIVE/)
@@ -126,6 +141,7 @@ for (const modelId of [
   assert.ok(modelStore.includes(`modelId = "${modelId}"`))
 }
 assert.doesNotMatch(protocol, /登录、验证码、支付、发送、删除、安装、授权和隐私操作必须Take_over/)
+assert.doesNotMatch(agentPrompt, /敏感屏幕|验证码|CAPTCHA|password|one-time code|支付页面|登录页面/i)
 assert.doesNotMatch(modelManager, /Spinner/)
 assert.match(modelManager, /提供商预设，当前为/)
 assert.match(modelManager, /阿里云 GUI Plus 原生协议/)
