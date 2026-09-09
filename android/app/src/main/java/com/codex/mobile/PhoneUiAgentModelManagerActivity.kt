@@ -20,6 +20,7 @@ class PhoneUiAgentModelManagerActivity : AppCompatActivity() {
     private lateinit var listView: ListView
     private lateinit var statusView: TextView
     private var rows: List<PhoneUiModelConfig> = emptyList()
+    private lateinit var summaryButton: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -29,6 +30,13 @@ class PhoneUiAgentModelManagerActivity : AppCompatActivity() {
             "配置支持图片输入的模型。连接测试会发送内置截图并验证模型能返回真实可解析动作。"
         listView = findViewById(R.id.listAgentModels)
         statusView = findViewById(R.id.tvAgentModelStatus)
+        summaryButton = Button(this).apply {
+            text = "上下文压缩模型"
+            contentDescription = "选择或配置上下文压缩模型"
+            setOnClickListener { showSummaryModels() }
+        }
+        val root = statusView.parent as LinearLayout
+        root.addView(summaryButton, root.indexOfChild(statusView))
         findViewById<Button>(R.id.btnAgentModelRefresh).setOnClickListener { refresh() }
         findViewById<Button>(R.id.btnAgentModelCreate).setOnClickListener { showEditDialog(null) }
     }
@@ -89,6 +97,91 @@ class PhoneUiAgentModelManagerActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun showSummaryModels() {
+        summaryButton.isEnabled = false
+        Thread {
+            val result = runCatching { PhoneUiSummaryModelStore.candidates(this) }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                summaryButton.isEnabled = true
+                result.onFailure {
+                    Toast.makeText(this, "读取模型列表失败：${it.message}", Toast.LENGTH_LONG).show()
+                }.onSuccess { candidates ->
+                    val selected = PhoneUiSummaryModelStore.selectionId(this)
+                    val labels = listOf("不自动调用；接近上限时暂停") + candidates.map { it.config.displayName }
+                    AlertDialog.Builder(this)
+                        .setTitle("选择上下文压缩模型")
+                        .setSingleChoiceItems(labels.toTypedArray(), candidates.indexOfFirst { it.config.id == selected } + 1) { dialog, index ->
+                            PhoneUiSummaryModelStore.select(this, if (index == 0) "" else candidates[index - 1].config.id)
+                            summaryButton.text = "上下文压缩：${labels[index]}"
+                            dialog.dismiss()
+                        }
+                        .setNeutralButton("单独配置") { _, _ -> showCustomSummaryModel() }
+                        .setNegativeButton("关闭", null)
+                        .show()
+                }
+            }
+        }.start()
+    }
+
+    private fun showCustomSummaryModel() {
+        val existing = PhoneUiSummaryModelStore.custom(this)
+        val wires = listOf("chat", "responses", "anthropic", "gemini")
+        val names = listOf("OpenAI Chat Completions", "OpenAI Responses", "Anthropic Messages", "Gemini")
+        var wire = existing?.wireProtocol ?: "chat"
+        val protocol = Button(this).apply { text = "接口协议：${names[wires.indexOf(wire).coerceAtLeast(0)]}" }
+        protocol.setOnClickListener {
+            AlertDialog.Builder(this).setTitle("摘要接口协议")
+                .setSingleChoiceItems(names.toTypedArray(), wires.indexOf(wire)) { dialog, index ->
+                    wire = wires[index]; protocol.text = "接口协议：${names[index]}"; dialog.dismiss()
+                }.setNegativeButton("取消", null).show()
+        }
+        val name = textInput("摘要模型名称", existing?.config?.displayName.orEmpty())
+        val base = textInput("API基础端点", existing?.config?.baseUrl.orEmpty())
+        val model = textInput("模型ID", existing?.config?.modelId.orEmpty())
+        val key = textInput("API密钥", existing?.config?.apiKey.orEmpty()).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            listOf(protocol, name, base, model, key).forEach { addView(it) }
+        }
+        val dialog = AlertDialog.Builder(this).setTitle("单独配置压缩模型")
+            .setView(android.widget.ScrollView(this).apply { addView(form) })
+            .setPositiveButton("保存并选用", null).setNeutralButton("测试连接", null).setNegativeButton("取消", null).create()
+        dialog.setOnShowListener {
+            fun draft(): PhoneUiSummaryModel? {
+                for (field in listOf(base, model, key)) if (field.text.isBlank()) {
+                    field.error = "必填"; return null
+                }
+                return PhoneUiSummaryModelStore.model("summary-custom", name.text.toString().ifBlank { model.text.toString() },
+                    base.text.toString().trim(), key.text.toString().trim(), model.text.toString().trim(), wire)
+            }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val value = draft() ?: return@setOnClickListener
+                PhoneUiSummaryModelStore.saveCustom(this, value)
+                summaryButton.text = "上下文压缩：${value.config.displayName}"
+                dialog.dismiss()
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                val value = draft() ?: return@setOnClickListener
+                val button = dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
+                button.isEnabled = false
+                Thread {
+                    val result = runCatching { PhoneUiAgentModelClient.summarizeContext(value.config,
+                        "测试记录：用户要求打开示例页面，已打开，尚未输入文字。", value.wireProtocol) }
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed && dialog.isShowing) {
+                            button.isEnabled = true
+                            Toast.makeText(this, result.fold({ "摘要连接成功：$it" }, { "摘要连接失败：${it.message}" }), Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }.start()
+            }
+        }
+        dialog.show()
+    }
+
     private fun showEditDialog(existing: PhoneUiModelConfig?) {
         val presets = PhoneUiAgentModelStore.presets()
         val presetLabels = presets.map(PhoneUiModelConfig::displayName)
@@ -118,6 +211,9 @@ class PhoneUiAgentModelManagerActivity : AppCompatActivity() {
         val modelIdInput = textInput("模型ID", existing?.modelId.orEmpty())
         val apiKeyInput = textInput("API密钥", existing?.apiKey.orEmpty()).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val contextInput = textInput("上下文容量tokens，0为内置默认值", (existing?.contextWindowTokens ?: 0).toString()).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
         }
         val defaultCheck = CheckBox(this).apply {
             text = "设为当前模型"
@@ -167,11 +263,12 @@ class PhoneUiAgentModelManagerActivity : AppCompatActivity() {
             addView(baseUrlInput)
             addView(modelIdInput)
             addView(apiKeyInput)
+            addView(contextInput)
             addView(defaultCheck)
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle(if (existing == null) "新建手机操作模型" else "编辑手机操作模型")
-            .setView(container)
+            .setView(android.widget.ScrollView(this).apply { addView(container) })
             .setNegativeButton("取消", null)
             .setNeutralButton("测试连接", null)
             .setPositiveButton("保存", null)
@@ -192,6 +289,7 @@ class PhoneUiAgentModelManagerActivity : AppCompatActivity() {
                     modelId = modelId,
                     protocol = selectedProtocol,
                     isDefault = defaultCheck.isChecked,
+                    contextWindowTokens = contextInput.text.toString().toIntOrNull()?.coerceAtLeast(0) ?: 0,
                 )
             }
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {

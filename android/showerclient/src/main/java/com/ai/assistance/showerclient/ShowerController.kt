@@ -331,9 +331,14 @@ class ShowerController {
         suspend fun doEnsure(service: IShowerService): Boolean {
             val existingId = virtualDisplayId
             if (existingId != null && videoWidth == targetWidth && videoHeight == targetHeight) {
-                service.setVideoSink(existingId, videoSink.asBinder())
-                ShowerLog.d(TAG, "ensureDisplay reuse existing displayId=$existingId, size=${videoWidth}x${videoHeight}")
-                return true
+                try {
+                    service.setVideoSink(existingId, videoSink.asBinder())
+                    ShowerLog.d(TAG, "ensureDisplay reuse existing displayId=$existingId, size=${videoWidth}x${videoHeight}")
+                    return true
+                } catch (error: IllegalStateException) {
+                    ShowerLog.w(TAG, "Previous display no longer exists; creating a new session", error)
+                    resetLocalDisplayState()
+                }
             }
 
             if (existingId != null) {

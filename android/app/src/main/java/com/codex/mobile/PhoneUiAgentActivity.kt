@@ -41,7 +41,7 @@ class PhoneUiAgentActivity : AppCompatActivity() {
 
     private val poller = object : Runnable {
         override fun run() {
-            render(PhoneUiAgentRuntime.snapshot())
+            render(PhoneUiAgentRuntime.uiSnapshot())
             if (historyDialog?.isShowing == true) refreshHistory()
             handler.postDelayed(this, 500)
         }

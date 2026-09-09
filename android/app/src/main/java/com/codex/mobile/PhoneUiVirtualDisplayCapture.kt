@@ -21,8 +21,16 @@ object PhoneUiVirtualDisplayCapture {
     @Volatile private var windowManager: WindowManager? = null
     @Volatile private var windowView: View? = null
     @Volatile private var surfaceView: ShowerSurfaceView? = null
+    private var attachedDisplayId: Int? = null
+    private var attachedSize: Pair<Int, Int>? = null
 
-    suspend fun attach(context: Context): Boolean = withContext(Dispatchers.Main) {
+    suspend fun attach(context: Context, force: Boolean = false): Boolean = withContext(Dispatchers.Main) {
+        val displayId = PhoneUiShowerRuntime.controller.getDisplayId()
+        val size = PhoneUiShowerRuntime.controller.getVideoSize()
+        if (!force && displayId != null && attachedDisplayId == displayId && attachedSize == size &&
+            windowView?.isAttachedToWindow == true && surfaceView?.holder?.surface?.isValid == true) {
+            return@withContext true
+        }
         detachLocked()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
             ShowerLog.w(TAG, "Overlay permission is unavailable; Shower screenshot RPC remains the fallback")
@@ -66,6 +74,8 @@ object PhoneUiVirtualDisplayCapture {
             windowManager = manager
             windowView = host
             surfaceView = view
+            attachedDisplayId = displayId
+            attachedSize = size
             true
         }.getOrElse { error ->
             ShowerLog.e(TAG, "Failed to attach virtual display frame capture", error)
@@ -87,12 +97,17 @@ object PhoneUiVirtualDisplayCapture {
 
     suspend fun detach() = withContext(Dispatchers.Main) { detachLocked() }
 
+    fun diagnostics(): Map<String, Long> = (surfaceView?.captureDiagnostics().orEmpty()) +
+        mapOf("displayId" to (attachedDisplayId ?: -1).toLong())
+
     private fun detachLocked() {
         val view = windowView
         val manager = windowManager
         windowView = null
         surfaceView = null
         windowManager = null
+        attachedDisplayId = null
+        attachedSize = null
         if (view != null && manager != null) {
             runCatching { manager.removeViewImmediate(view) }
         }

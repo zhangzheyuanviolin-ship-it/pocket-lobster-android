@@ -214,7 +214,7 @@ public class Main {
             byte[] cachedConfig0;
             byte[] cachedConfig1;
             synchronized (lock) {
-                if (videoSinkBinder != null && videoSinkBinder != sink && videoSinkDeathRecipient != null) {
+                if (videoSinkBinder != null && videoSinkDeathRecipient != null) {
                     try {
                         videoSinkBinder.unlinkToDeath(videoSinkDeathRecipient, 0);
                     } catch (Throwable t) {
@@ -625,7 +625,7 @@ public class Main {
                     if (session != null) {
                         session.setVideoSink(sink);
                     } else {
-                        logToFile("setVideoSink for unknown displayId: " + displayId, null);
+                        throw new IllegalStateException("setVideoSink for unknown displayId: " + displayId);
                     }
                 }
             };

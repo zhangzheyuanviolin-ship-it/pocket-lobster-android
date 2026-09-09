@@ -57,6 +57,13 @@ class ShowerVideoRenderer {
     @Volatile private var queuedPresentationUs = 0L
     private var awaitingKeyFrame = true
     @Volatile private var surfaceGeneration = 0L
+    @Volatile private var lastPixelCopyResult = -1
+
+    fun diagnostics(): Map<String, Long> = synchronized(lock) {
+        mapOf("generation" to surfaceGeneration, "queuedUs" to queuedPresentationUs,
+            "submittedUs" to submittedPresentationUs, "pixelCopyResult" to lastPixelCopyResult.toLong(),
+            "width" to width.toLong(), "height" to height.toLong())
+    }
 
     fun attach(surface: Surface, videoWidth: Int, videoHeight: Int) {
         synchronized(lock) {
@@ -84,6 +91,9 @@ class ShowerVideoRenderer {
     }
 
     private fun releaseDecoderLocked() {
+        // In-flight PixelCopy results from the previous decoder are obsolete too,
+        // even if the Java Surface object itself has not changed.
+        surfaceGeneration++
         val dec = decoder
         decoder = null
         submittedPresentationUs = 0L
@@ -300,28 +310,23 @@ class ShowerVideoRenderer {
 
         if (Build.VERSION.SDK_INT < 26) return null
 
-        return withTimeoutOrNull(2_000L) { withContext(Dispatchers.Main) {
+        val copied = withTimeoutOrNull(2_000L) { withContext(Dispatchers.Main) {
             val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            suspendCancellableCoroutine { cont ->
+            suspendCancellableCoroutine<Bitmap?> { cont ->
                 val handler = Handler(Looper.getMainLooper())
                 // PixelCopy owns the destination until its callback, even after cancellation.
                 try {
                     PixelCopy.request(s, bitmap, { result ->
+                        lastPixelCopyResult = result
                         if (!cont.isActive) {
                             if (!bitmap.isRecycled) bitmap.recycle()
                             return@request
                         }
-                        val bytes = if (result == PixelCopy.SUCCESS && generation == surfaceGeneration) {
-                            runCatching {
-                                val baos = ByteArrayOutputStream()
-                                bitmap.compress(Bitmap.CompressFormat.PNG, 100, baos)
-                                baos.toByteArray()
-                            }.getOrNull()
-                        } else {
-                            null
-                        }
-                        if (!bitmap.isRecycled) bitmap.recycle()
-                        cont.resume(bytes)
+                        val success = result == PixelCopy.SUCCESS && generation == surfaceGeneration
+                        if (!success && !bitmap.isRecycled) bitmap.recycle()
+                        cont.resume(if (success) bitmap else null, onCancellation = { _, discarded, _ ->
+                            if (discarded != null && !discarded.isRecycled) discarded.recycle()
+                        })
                     }, handler)
                 } catch (_: Exception) {
                     if (!bitmap.isRecycled) bitmap.recycle()
@@ -330,7 +335,18 @@ class ShowerVideoRenderer {
                     }
                 }
             }
-        } }
+        } } ?: return null
+        return try {
+            withContext(Dispatchers.IO) {
+                if (generation != surfaceGeneration) return@withContext null
+                runCatching {
+                    val baos = ByteArrayOutputStream()
+                    if (!copied.compress(Bitmap.CompressFormat.PNG, 100, baos)) null else baos.toByteArray()
+                }.getOrNull()
+            }
+        } finally {
+            if (!copied.isRecycled) copied.recycle()
+        }
     }
 
     private fun initDecoderLocked() {
@@ -339,6 +355,7 @@ class ShowerVideoRenderer {
         val localCsd1 = csd1 ?: return
         if (width <= 0 || height <= 0) return
 
+        var created: MediaCodec? = null
         try {
             val csd0Annexb = maybeAvccToAnnexb(localCsd0)
             val csd1Annexb = maybeAvccToAnnexb(localCsd1)
@@ -348,12 +365,14 @@ class ShowerVideoRenderer {
             format.setByteBuffer("csd-1", ByteBuffer.wrap(csd1Annexb))
 
             val dec = MediaCodec.createDecoderByType("video/avc")
+            created = dec
             dec.configure(format, s, null, 0)
             dec.start()
             decoder = dec
             ShowerLog.d(TAG, "MediaCodec decoder initialized for ${width}x${height}")
         } catch (e: Exception) {
             ShowerLog.e(TAG, "Failed to init decoder", e)
+            if (decoder !== created) runCatching { created?.release() }
             releaseDecoderLocked()
         }
     }

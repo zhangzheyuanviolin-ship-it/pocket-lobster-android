@@ -18,10 +18,10 @@ internal class PhoneUiConversationContext(
         history.sumOf { estimate(it.second) + 8 } + estimate(lastActionResult)
 
     fun needsCompaction(task: String, config: PhoneUiModelConfig): Boolean =
-        history.size >= 24 || ((history.size > 4 || memory.isBlank()) && history.isNotEmpty() && estimatedTextTokens(task, config) >= textBudget(config))
+        history.isNotEmpty() && estimatedTextTokens(task, config) >= textBudget(config)
 
     fun compact(config: PhoneUiModelConfig, task: String,
-        summarize: (PhoneUiModelConfig, String) -> String = PhoneUiAgentModelClient::summarizeContext) {
+        summarize: (PhoneUiModelConfig, String) -> String = { model, source -> PhoneUiAgentModelClient.summarizeContext(model, source) }) {
         val source = buildString {
             append("最初指令：").append(initialTask)
             append("\n最新指令：").append(task)
@@ -37,10 +37,9 @@ internal class PhoneUiConversationContext(
         memory = summary
         val recent = history.takeLast(4)
         history.clear()
+        history.add("user" to taskWithMemory(task))
+        history.add("assistant" to "已收到历史任务记录；当前页面以接下来提供的新截图为准。")
         history.addAll(recent)
-        // Native protocol repeats only Screen Info after its first user message.
-        // Anchor memory in the retained first user message, not just in the latest task string.
-        if (history.isNotEmpty()) history[0] = "user" to taskWithMemory(task)
     }
 
     fun save(state: JSONObject) {
@@ -72,7 +71,7 @@ internal class PhoneUiConversationContext(
 
         // Conservative estimate, not a tokenizer measurement or a claim about quality thresholds.
         fun estimate(text: String): Int = text.fold(0) { count, char -> count + if (char.code < 128) 1 else 3 } / 3 + 1
-        fun contextWindow(config: PhoneUiModelConfig): Int = when (config.modelId) {
+        fun contextWindow(config: PhoneUiModelConfig): Int = if (config.contextWindowTokens > 0) config.contextWindowTokens.coerceAtLeast(8_000) else when (config.modelId) {
             "autoglm-phone" -> 20_000
             "gui-plus", "gui-plus-2026-02-26" -> 256_000
             "qwen3.5-plus", "qwen3.5-flash", "qwen3.6-flash", "qwen3.7-plus",
@@ -80,6 +79,6 @@ internal class PhoneUiConversationContext(
             else -> 16_000 // Unknown or changed snapshots use a conservative budget, not a guessed advertised limit.
         }
         fun textBudget(config: PhoneUiModelConfig): Int =
-            minOf(12_000, (contextWindow(config) * 0.6).toInt() - 6_000).coerceAtLeast(2_000)
+            ((contextWindow(config) * 0.85).toInt() - 6_000).coerceAtLeast(2_000)
     }
 }

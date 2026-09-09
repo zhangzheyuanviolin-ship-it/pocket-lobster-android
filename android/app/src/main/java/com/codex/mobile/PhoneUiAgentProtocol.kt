@@ -470,12 +470,12 @@ object PhoneUiAgentModelClient {
         val messages = JSONArray().put(
             JSONObject().put("role", "system").put("content", PhoneUiAgentPrompt.system(config.protocol)),
         )
-        val retainedHistory = if (config.protocol == PhoneUiModelProtocol.AUTOGLM_NATIVE) {
-            if (history.size <= 24) history else history.take(2) + history.takeLast(22)
-        } else history.takeLast(24)
+        // The conversation budget owns retention. Never silently drop an instruction
+        // or cut a complete action while constructing the request.
+        val retainedHistory = history
         retainedHistory.forEach { (role, content) ->
             messages.put(JSONObject().put("role", role).put("content",
-                if (config.protocol == PhoneUiModelProtocol.AUTOGLM_NATIVE) content else content.take(12_000)))
+                content))
         }
         val prompt = buildString {
             append(historyUserPrompt(config.protocol, task, history.isEmpty(), actionResult))
@@ -667,15 +667,28 @@ object PhoneUiAgentModelClient {
         }
     }
 
-    internal fun summarizeContext(config: PhoneUiModelConfig, source: String): String {
+    internal fun summarizeContext(config: PhoneUiModelConfig, source: String, wireProtocol: String = "chat"): String {
+        val instruction = "您现在只整理手机任务的交接记录，不操作屏幕。请保留用户最新目标、约束、已确认的动作结果、未完成步骤、失败尝试和不确定信息；不得把计划当成已完成。不要输出思考过程、坐标或操作函数。只输出一段不超过1800字的中文摘要。"
         val body = JSONObject().put("model", config.modelId).put("stream", false)
             .put("temperature", 0).put("max_tokens", 1800)
             .put("messages", JSONArray()
                 .put(JSONObject().put("role", "system").put("content",
-                    "您现在只整理手机任务的交接记录，不操作屏幕。请保留用户最新目标、约束、已确认的动作结果、未完成步骤、失败尝试和不确定信息；不得把计划当成已完成。不要输出思考过程、坐标或操作函数。只输出一段不超过1800字的中文摘要。"))
+                    instruction))
                 .put(JSONObject().put("role", "user").put("content", source)))
-        if (config.protocol != PhoneUiModelProtocol.AUTOGLM_NATIVE) body.put("enable_thinking", false)
-        val response = post(config, body)
+        if (wireProtocol == "chat" && config.modelId.startsWith("qwen")) body.put("enable_thinking", false)
+        val request = when (wireProtocol) {
+            "responses" -> JSONObject().put("model", config.modelId).put("stream", false)
+                .put("max_output_tokens", 2500).put("instructions", instruction).put("input", source)
+            "anthropic" -> JSONObject().put("model", config.modelId).put("max_tokens", 2500)
+                .put("system", instruction).put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", source)))
+            "gemini" -> JSONObject().put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", instruction))))
+                .put("contents", JSONArray().put(JSONObject().put("role", "user")
+                    .put("parts", JSONArray().put(JSONObject().put("text", source)))))
+                .put("generationConfig", JSONObject().put("maxOutputTokens", 2500).put("temperature", 0))
+            else -> body
+        }
+        val rawResponse = post(config, request, wireProtocol = wireProtocol)
+        val response = normalizeSummaryResponse(rawResponse, wireProtocol)
         check(response.optJSONArray("choices")?.optJSONObject(0)?.optString("finish_reason") != "length") {
             "上下文摘要被提供商截断，原始记录未丢弃；请重试"
         }
@@ -686,9 +699,44 @@ object PhoneUiAgentModelClient {
         }
     }
 
-    private fun post(config: PhoneUiModelConfig, body: JSONObject, shouldStop: () -> Boolean = { false }): JSONObject {
+    internal fun normalizeSummaryResponse(raw: JSONObject, protocol: String): JSONObject {
+        if (protocol == "chat") return raw
+        val text: String
+        val truncated: Boolean
+        fun textParts(parts: JSONArray?): String = (0 until (parts?.length() ?: 0)).joinToString("") {
+            parts?.optJSONObject(it)?.optString("text").orEmpty()
+        }
+        when (protocol) {
+            "responses" -> {
+                val rows = raw.optJSONArray("output") ?: JSONArray()
+                text = (0 until rows.length()).joinToString("") { textParts(rows.optJSONObject(it)?.optJSONArray("content")) }
+                truncated = raw.optString("status") == "incomplete"
+            }
+            "anthropic" -> {
+                text = textParts(raw.optJSONArray("content"))
+                truncated = raw.optString("stop_reason") == "max_tokens"
+            }
+            "gemini" -> {
+                val candidate = raw.optJSONArray("candidates")?.optJSONObject(0)
+                text = textParts(candidate?.optJSONObject("content")?.optJSONArray("parts"))
+                truncated = candidate?.optString("finishReason") == "MAX_TOKENS"
+            }
+            else -> error("不支持的摘要协议：$protocol")
+        }
+        check(text.isNotBlank()) { "摘要模型未返回正文，原始记录已保留" }
+        return JSONObject().put("choices", JSONArray().put(JSONObject()
+            .put("finish_reason", if (truncated) "length" else "stop")
+            .put("message", JSONObject().put("content", text))))
+    }
+
+    private fun post(config: PhoneUiModelConfig, body: JSONObject, shouldStop: () -> Boolean = { false }, wireProtocol: String = "chat"): JSONObject {
         val base = config.baseUrl.trim().trimEnd('/')
-        val endpoint = if (base.endsWith("/chat/completions")) base else "$base/chat/completions"
+        val endpoint = when (wireProtocol) {
+            "responses" -> if (base.endsWith("/responses")) base else "$base/responses"
+            "anthropic" -> if (base.endsWith("/messages")) base else if (base.endsWith("/v1")) "$base/messages" else "$base/v1/messages"
+            "gemini" -> "${if (base.endsWith("/v1beta") || base.endsWith("/v1")) base else "$base/v1beta"}/models/${config.modelId.removePrefix("models/")}:generateContent"
+            else -> if (base.endsWith("/chat/completions")) base else "$base/chat/completions"
+        }
         val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 30_000
@@ -697,6 +745,11 @@ object PhoneUiAgentModelClient {
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Authorization", "Bearer ${config.apiKey}")
+            if (wireProtocol == "anthropic") {
+                setRequestProperty("x-api-key", config.apiKey)
+                setRequestProperty("anthropic-version", "2023-06-01")
+            }
+            if (wireProtocol == "gemini") setRequestProperty("x-goog-api-key", config.apiKey)
         }
         val worker = Thread.currentThread()
         connections[worker] = connection

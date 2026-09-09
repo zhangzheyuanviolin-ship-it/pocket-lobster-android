@@ -239,6 +239,13 @@ object PhoneUiAgentRuntime {
         throw IllegalArgumentException("未找到手机操作任务：$expected")
     }
 
+    fun uiSnapshot(): JSONObject = synchronized(lock) {
+        // The 500ms UI poll does not need a second copy of the model's full history.
+        val visible = JSONObject()
+        state.keys().forEach { key -> if (key != "conversationContext") visible.put(key, state.get(key)) }
+        JSONObject(visible.toString())
+    }
+
     fun history(): JSONArray = synchronized(lock) {
         val context = applicationContext ?: return@synchronized JSONArray()
         val rows = readHistory(context)
@@ -317,16 +324,17 @@ object PhoneUiAgentRuntime {
                 val detail = ShowerServerManager.lastError.ifBlank { "未收到服务握手" }
                 throw IllegalStateException("$target 未能启动：$detail")
             }
-            val hadVirtualDisplay = hasVirtualDisplay()
+            val previousDisplayId = PhoneUiShowerRuntime.controller.getDisplayId()?.takeIf { it > 0 }
             val screenReady = if (mode == PhoneUiScreenMode.MAIN) {
                 PhoneUiVirtualDisplayCapture.detach()
                 PhoneUiShowerRuntime.controller.prepareMainDisplay(context)
             } else {
                 val metrics = context.resources.displayMetrics
+                val existingSize = if (previousDisplayId != null) PhoneUiShowerRuntime.controller.getVideoSize() else null
                 PhoneUiShowerRuntime.controller.ensureDisplay(
                     context,
-                    metrics.widthPixels,
-                    metrics.heightPixels,
+                    existingSize?.first ?: metrics.widthPixels,
+                    existingSize?.second ?: metrics.heightPixels,
                     metrics.densityDpi,
                     3_000,
                 )
@@ -342,7 +350,7 @@ object PhoneUiAgentRuntime {
                 val target = resolveTaskTargetApp(context, task)
                 awaitRunnable()
                 if (cancelled || pendingInstruction != null) return@runBlocking
-                if (continuing && hadVirtualDisplay) {
+                if (continuing && previousDisplayId == displayId) {
                     // Continue on the user's current screen without relaunching its app.
                 } else if (target != null) {
                     appendEvent("status", "正在预热目标应用", "${target.label}将启动到虚拟屏幕displayId=$displayId。")
@@ -378,13 +386,28 @@ object PhoneUiAgentRuntime {
                 if (cancelled || pendingInstruction != null) return@runBlocking
                 val revision = observationRevision.get()
                 if (conversation.needsCompaction(task, config)) {
+                    val summaryModel = PhoneUiSummaryModelStore.selected(context)
+                    if (summaryModel == null) {
+                        paused = true
+                        appendEvent("status", "上下文接近容量上限", "请在模型管理中选择压缩模型后继续；尚未调用任何压缩服务。")
+                        updateStatus("paused", "等待选择上下文压缩模型")
+                        awaitRunnable()
+                        continue
+                    }
                     updateStep(step, "正在整理会话上下文，尚未执行屏幕动作")
-                    val summaryConfig = if (config.protocol == PhoneUiModelProtocol.GENERIC_JSON) config else
-                        PhoneUiAgentModelStore.loadConfigs(context).firstOrNull {
-                            it.protocol == PhoneUiModelProtocol.GENERIC_JSON && it.apiKey.isNotBlank() && it.baseUrl.isNotBlank()
-                        } ?: config
-                    conversation.compact(summaryConfig, task)
-                    appendEvent("status", "会话上下文已整理", "摘要模型：${summaryConfig.displayName}；完整任务记录仍保留，本轮剩余步数不变。")
+                    try {
+                        conversation.compact(summaryModel.config, task) { selected, source ->
+                            PhoneUiAgentModelClient.summarizeContext(selected, source, summaryModel.wireProtocol)
+                        }
+                    } catch (error: Exception) {
+                        if (cancelled || pendingInstruction != null) return@runBlocking
+                        paused = true
+                        appendEvent("error", "上下文整理未完成", "${error.message}；原始上下文已保留，点击继续后重试。")
+                        updateStatus("paused", "上下文整理失败，原始记录已保留")
+                        awaitRunnable()
+                        continue
+                    }
+                    appendEvent("status", "会话上下文已整理", "摘要模型：${summaryModel.config.displayName}；完整任务记录仍保留，本轮剩余步数不变。")
                     synchronized(lock) { conversation.save(state); persistLocked() }
                     if (cancelled || pendingInstruction != null) return@runBlocking
                 }
@@ -403,6 +426,7 @@ object PhoneUiAgentRuntime {
                         .put("step", step).put("displayId", displayId).put("mode", mode.value)
                         .put("capturedAt", Instant.now().toString())
                         .put("width", dimensions.first).put("height", dimensions.second)
+                        .put("video", if (mode == PhoneUiScreenMode.VIRTUAL) JSONObject(PhoneUiVirtualDisplayCapture.diagnostics()) else JSONObject.NULL)
                         .put("sha256", MessageDigest.getInstance("SHA-256").digest(screenshot)
                             .joinToString("") { "%02x".format(it) }))
                 }
@@ -491,9 +515,9 @@ object PhoneUiAgentRuntime {
         if (mode == PhoneUiScreenMode.VIRTUAL) {
             validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(10_000), "virtual-video")?.let { return it }
             appendEvent("status", "正在恢复原生视频流", "当前视频帧未能成功复制，正在重新连接解码器；尚未向模型发送此次画面。")
-            PhoneUiVirtualDisplayCapture.attach(context)
+            PhoneUiVirtualDisplayCapture.attach(context, force = true)
             validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(10_000), "virtual-video-reconnected")?.let { return it }
-            throw IllegalStateException("虚拟屏幕原生H.264视频流未产生可解码画面；任务已停止，未向模型发送黑屏或替代截图")
+            throw IllegalStateException("虚拟屏幕原生H.264视频流未产生可解码画面；任务已停止，未向模型发送黑屏或替代截图；${PhoneUiVirtualDisplayCapture.diagnostics()}")
         }
 
         PhoneUiAgentProgressOverlay.hideForCapture()

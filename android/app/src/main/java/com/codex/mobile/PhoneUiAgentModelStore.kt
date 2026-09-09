@@ -23,6 +23,7 @@ data class PhoneUiModelConfig(
     val isDefault: Boolean,
     val temperature: Double = 0.0,
     val topP: Double = 0.85,
+    val contextWindowTokens: Int = 0,
 )
 
 object PhoneUiAgentModelStore {
@@ -143,6 +144,7 @@ object PhoneUiAgentModelStore {
                 isDefault = item.optBoolean("isDefault", false),
                 temperature = item.optDouble("temperature", 0.0),
                 topP = item.optDouble("topP", 0.85),
+                contextWindowTokens = item.optInt("contextWindowTokens", 0).coerceAtLeast(0),
             )
         }
         return output.sortedWith(
@@ -192,7 +194,8 @@ object PhoneUiAgentModelStore {
                     .put("protocol", row.protocol.value)
                     .put("isDefault", row.isDefault)
                     .put("temperature", row.temperature)
-                    .put("topP", row.topP),
+                    .put("topP", row.topP)
+                    .put("contextWindowTokens", row.contextWindowTokens),
             )
         }
         preferences(context).edit().putString(KEY_CONFIGS, array.toString()).apply()
