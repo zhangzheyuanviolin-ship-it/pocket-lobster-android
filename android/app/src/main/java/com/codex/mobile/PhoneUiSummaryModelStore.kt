@@ -3,17 +3,16 @@ package com.codex.mobile
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import com.openminis.app.data.repository.ProviderRepository
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
+import java.io.File
+import org.xmlpull.v1.XmlPullParser
 import org.json.JSONObject
 
 internal data class PhoneUiSummaryModel(val config: PhoneUiModelConfig, val wireProtocol: String = "chat")
 
 /** Only an explicit user selection authorizes a paid summarization request. */
 internal object PhoneUiSummaryModelStore {
-    private fun preferences(context: Context) = EncryptedSharedPreferences.create(
-        context, "phone_ui_summary_model",
+    private fun preferences(context: Context, name: String = "phone_ui_summary_model") = EncryptedSharedPreferences.create(
+        context, name,
         MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
@@ -63,16 +62,39 @@ internal object PhoneUiSummaryModelStore {
                 provider.modelId, if (provider.protocol == ProviderProtocol.ANTHROPIC) "anthropic" else "chat")
         }
         runCatching {
-            val repository = ProviderRepository(context.applicationContext)
-            runBlocking { withTimeout(10_000) { repository.awaitConfigLoaded() } }
-            val config = repository.config.value
-            config.instances.filter { it.isEnabled && it.credentialType.name == "apiKey" && !it.azureMode }.forEach { instance ->
-                val protocol = when (instance.providerType.name) {
+            // Read Minis' documented JSON mirror without constructing its repository:
+            // repository initialization also reconciles/writes voice model defaults.
+            val mirror = File(context.applicationInfo.dataDir, "shared_prefs/provider_config.xml")
+            val secretFile = File(context.applicationInfo.dataDir, "shared_prefs/provider_secrets.xml")
+            if (!mirror.isFile || !secretFile.isFile) return@runCatching
+            val config = mirror.inputStream().use { input ->
+                val parser = android.util.Xml.newPullParser()
+                parser.setInput(input, "UTF-8")
+                var raw = "{}"
+                while (parser.next() != XmlPullParser.END_DOCUMENT) {
+                    if (parser.eventType == XmlPullParser.START_TAG && parser.name == "string" &&
+                        parser.getAttributeValue(null, "name") == "config") {
+                        raw = parser.nextText(); break
+                    }
+                }
+                JSONObject(raw)
+            }
+            val secrets = preferences(context, "provider_secrets")
+            val instances = config.optJSONArray("instances") ?: org.json.JSONArray()
+            val entries = config.optJSONArray("modelEntries") ?: org.json.JSONArray()
+            for (index in 0 until instances.length()) {
+                val instance = instances.optJSONObject(index) ?: continue
+                if (!instance.optBoolean("isEnabled", true) || instance.optString("credentialType") != "apiKey" || instance.optBoolean("azureMode")) continue
+                val instanceId = instance.getString("id")
+                val protocol = when (instance.optString("providerType")) {
                     "anthropic" -> "anthropic"
                     "gemini" -> "gemini"
-                    else -> if (instance.useResponsesAPI) "responses" else "chat"
+                    else -> if (instance.optBoolean("useResponsesAPI")) "responses" else "chat"
                 }
-                val base = instance.effectiveBaseURL ?: when (instance.providerType.name) {
+                val customBase = if (instance.isNull("customBaseURL")) "" else instance.optString("customBaseURL").trimEnd('/')
+                val base = if (customBase.isNotEmpty()) {
+                    if (instance.optBoolean("appendV1Suffix", true) && !customBase.endsWith("/v1")) "$customBase/v1" else customBase
+                } else when (instance.optString("providerType")) {
                     "anthropic" -> "https://api.anthropic.com/v1"
                     "gemini" -> "https://generativelanguage.googleapis.com/v1beta"
                     "openRouter" -> "https://openrouter.ai/api/v1"
@@ -80,10 +102,13 @@ internal object PhoneUiSummaryModelStore {
                     "kimiCode" -> "https://api.kimi.com/coding/v1"
                     else -> "https://api.openai.com/v1"
                 }
-                val key = repository.loadApiKey(instance.id).orEmpty()
-                config.modelEntries.filter { it.providerInstanceId == instance.id && !it.isHidden }.forEach { entry ->
-                    output += model("minis:${instance.id}:${entry.id}", "Minis：${instance.label} / ${entry.model.id}",
-                        base, key, entry.model.id, protocol)
+                val key = secrets.getString("apikey_$instanceId", "").orEmpty()
+                for (entryIndex in 0 until entries.length()) {
+                    val entry = entries.optJSONObject(entryIndex) ?: continue
+                    if (entry.optString("providerInstanceId") != instanceId || entry.optBoolean("isHidden")) continue
+                    val modelId = entry.optJSONObject("model")?.optString("id").orEmpty()
+                    output += model("minis:$instanceId:${entry.optString("uuid", modelId)}", "Minis：${instance.optString("label")} / $modelId",
+                        base, key, modelId, protocol)
                 }
             }
         }.onFailure { android.util.Log.w("PhoneSummaryModels", "Minis model catalog unavailable", it) }
