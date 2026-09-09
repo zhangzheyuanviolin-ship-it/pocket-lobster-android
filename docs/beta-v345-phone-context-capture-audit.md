@@ -35,7 +35,8 @@ silently accept sink attachment. Each is corrected in the owning layer.
   GUI Plus 256000. A model editor override supports custom limits.
 - Remove the step/message-count trigger and hidden 12000-token ceiling.
 - Preserve both recent user/assistant pairs when committing a summary, with a
-  separate memory anchor; no old user message is overwritten.
+  prepended memory anchor; no old user text is discarded and no synthetic
+  assistant response is inserted into the native action protocol.
 - No automatic choice of a billable summary model. The model manager allows
   selection of configured phone, Codex, Claude and Minis API-key models or a
   separately encrypted custom endpoint. Support Chat Completions, Responses,

@@ -37,9 +37,10 @@ internal class PhoneUiConversationContext(
         memory = summary
         val recent = history.takeLast(4)
         history.clear()
-        history.add("user" to taskWithMemory(task))
-        history.add("assistant" to "已收到历史任务记录；当前页面以接下来提供的新截图为准。")
         history.addAll(recent)
+        if (history.isNotEmpty()) {
+            history[0] = "user" to (taskWithMemory(task) + "\n保留的历史观察记录：\n" + history[0].second)
+        }
     }
 
     fun save(state: JSONObject) {

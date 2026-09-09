@@ -40,7 +40,7 @@ class PhoneUiConversationContextTest {
             assertTrue(source.contains("观察0"))
             "已打开豆包并输入问候，尚未发送。保留聊天。"
         }
-        assertEquals(6, context.history.size)
+        assertEquals(4, context.history.size)
         assertTrue(context.history.first().second.contains("尚未发送"))
         assertEquals("动作11", context.history.last().second)
         val saved = JSONObject()
@@ -80,6 +80,7 @@ class PhoneUiConversationContextTest {
             "user" to "观察B", "assistant" to "动作B"), "", "买鲜花饼", "已打开购物车")
         context.compact(config, "改为只比较价格，不购买") { _, _ -> "已打开购物车，尚未购买。" }
         assertTrue(context.history.first().second.contains("改为只比较价格，不购买"))
-        assertEquals(listOf("观察A", "动作A", "观察B", "动作B"), context.history.takeLast(4).map { it.second })
+        assertTrue(context.history.first().second.endsWith("观察A"))
+        assertEquals(listOf("动作A", "观察B", "动作B"), context.history.takeLast(3).map { it.second })
     }
 }
