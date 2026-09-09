@@ -10,6 +10,8 @@ const home = await mkdtemp(join(tmpdir(), 'pocket-route-e2e-'))
 const stateDir = join(home, '.openclaw-android', 'state')
 const codexDir = join(home, '.codex')
 const requests = []
+const mockOpenAi = process.env.E2E_MOCK_OPENAI === '1'
+const testOpenAi = mockOpenAi || Boolean(process.env.E2E_OPENAI_AUTH_PATH)
 let responseIndex = 0
 
 function responseEnvelope(model, text) {
@@ -162,7 +164,12 @@ async function waitForTurn(threadId, expectedTurns) {
       if (turns.length >= expectedTurns) {
         const status = turns.at(-1)?.status
         if (status === 'failed') throw new Error(`Turn failed: ${JSON.stringify(turns.at(-1))}`)
-        if (status !== 'inProgress') return result.thread
+        const diagnostics = await readFile(join(stateDir, 'codex-chat-latest.jsonl'), 'utf8').catch(() => '')
+        const completed = diagnostics.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+          .filter(row => row.event === 'codex_notification' && row.method === 'turn/completed' && row.threadId === threadId)
+        // Persisted reads can briefly report a completed snapshot before the live
+        // turn/completed notification. Do not steer the still-running first turn.
+        if (status !== 'inProgress' && completed.length >= expectedTurns) return result.thread
       }
     } catch (error) {
       const message = String(error)
@@ -223,7 +230,9 @@ try {
   if (process.env.E2E_OPENAI_AUTH_PATH) {
     await copyFile(process.env.E2E_OPENAI_AUTH_PATH, join(codexDir, 'auth.json'))
   }
-  await writeFile(join(codexDir, 'config.toml'), 'approval_policy="never"\nsandbox_mode="read-only"\n')
+  await writeFile(join(codexDir, 'config.toml'), 'approval_policy="never"\nsandbox_mode="read-only"\n' +
+    (mockOpenAi ? `openai_base_url="http://127.0.0.1:${upstreamPort}/v1"\n` : ''))
+  if (mockOpenAi) await writeFile(join(codexDir, 'auth.json'), JSON.stringify({ OPENAI_API_KEY: 'local-fixture-not-a-real-key' }))
   await writeFile(join(stateDir, 'codex-model-providers.json'), JSON.stringify({
     version: 1,
     currentConfigId: 'provider_alpha',
@@ -233,9 +242,12 @@ try {
     ],
   }))
   app = spawn(process.execPath, ['dist-cli/index.js', '--port', String(appPort), '--no-password'], {
+    detached: true,
     env: {
       ...process.env,
       HOME: home,
+      CODEX_HOME: codexDir,
+      E2E_LOCAL_KEY: 'local-fixture-not-a-real-key',
       ANYCLAW_EXPORT_DIR: exportDir,
       POCKET_LOBSTER_CODEX_PROVIDER_ALPHA_API_KEY: 'alpha-key',
       POCKET_LOBSTER_CODEX_PROVIDER_BETA_API_KEY: 'beta-key',
@@ -258,7 +270,7 @@ try {
 
   let expectedTurns = 2
   let removedReasoningTotal = 0
-  if (process.env.E2E_OPENAI_AUTH_PATH) {
+  if (testOpenAi) {
     const openAiModel = process.env.E2E_OPENAI_MODEL || 'gpt-5.6-luna'
     const openAiRoute = await switchRoute(threadId, 'openai', openAiModel)
     assert.equal(openAiRoute.providerId, 'openai')
@@ -314,7 +326,11 @@ try {
   const expectedModels = [
     'deepseek-v4-flash',
     'deepseek-v4-pro',
-    ...(process.env.E2E_OPENAI_AUTH_PATH ? ['deepseek-v4-pro'] : []),
+    ...(testOpenAi ? [
+      ...(mockOpenAi ? [process.env.E2E_OPENAI_MODEL || 'gpt-5.6-luna'] : []),
+      'deepseek-v4-pro',
+      ...(mockOpenAi ? [process.env.E2E_OPENAI_MODEL || 'gpt-5.6-luna'] : []),
+    ] : []),
     'deepseek-v4-pro',
     'deepseek-v4-flash',
   ]
@@ -342,7 +358,7 @@ try {
     assert.ok(diagnostics.some((event) => event.event === 'rpc_success' && event.method === 'thread/start'))
     assert.equal(
       diagnostics.filter((event) => event.event === 'provider_response' && event.success === true).length,
-      expectedModels.length,
+      expectedModels.length - (mockOpenAi ? 2 : 0),
     )
     assert.ok(diagnostics.some((event) => event.event === 'codex_notification' && event.method === 'turn/completed'))
     assert.ok(sharedDiagnostics.some((event) => event.event === 'engine_initialized' && event.engine === 'codex app-server'))
@@ -350,7 +366,10 @@ try {
   }
   console.log(JSON.stringify({ ok: true, turns: finalThread.turns.length, models: requests.map((request) => request.model), finalRoute }))
 } finally {
-  if (app && app.exitCode === null) app.kill('SIGTERM')
+  if (app && app.exitCode === null) {
+    try { process.kill(-app.pid, 'SIGTERM') } catch { app.kill('SIGTERM') }
+  }
+  upstream.closeAllConnections()
   await new Promise((resolve) => upstream.close(resolve))
   if (process.env.KEEP_E2E_HOME === '1') console.error(`E2E_HOME=${home}`)
   else await rm(home, { recursive: true, force: true })

@@ -138,6 +138,14 @@
     </LinearLayout>
 
     <Button
+        android:id="@+id/btnPhoneUiNewConversation"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="新建会话"
+        android:contentDescription="新建手机操作会话，不沿用当前上下文"
+        android:textAllCaps="false" />
+
+    <Button
         android:id="@+id/btnPhoneUiHistory"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

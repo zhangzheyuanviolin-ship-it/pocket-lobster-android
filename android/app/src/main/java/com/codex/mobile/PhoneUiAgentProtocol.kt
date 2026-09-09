@@ -12,6 +12,7 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.net.URL
 import java.time.LocalDate
+import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -445,6 +446,13 @@ object PhoneUiAgentPrompt {
 }
 
 object PhoneUiAgentModelClient {
+    private val connections = ConcurrentHashMap<Thread, HttpURLConnection>()
+
+    internal fun cancelRequest(worker: Thread?) {
+        val connection = worker?.let { connections.remove(it) } ?: return
+        Thread({ runCatching { connection.disconnect() } }, "phone-ui-request-cancel").start()
+    }
+
     fun decide(
         config: PhoneUiModelConfig,
         task: String,
@@ -454,6 +462,7 @@ object PhoneUiAgentModelClient {
         step: Int,
         maxSteps: Int,
         onProgress: (String) -> Unit = {},
+        shouldStop: () -> Boolean = { false },
     ): PhoneUiModelDecision {
         require(config.baseUrl.isNotBlank()) { "模型Base URL未配置" }
         require(config.apiKey.isNotBlank()) { "模型API密钥未配置" }
@@ -507,7 +516,7 @@ object PhoneUiAgentModelClient {
         for (attempt in 1..maxAttempts) {
             if (Thread.currentThread().isInterrupted) throw InterruptedException("手机操作任务已终止")
             onProgress("正在等待模型响应，第${attempt}/${maxAttempts}次请求；连接上限30秒，读取上限120秒")
-            val response = post(config, body)
+            val response = post(config, body, shouldStop)
             val truncated = response.optJSONArray("choices")?.optJSONObject(0)
                 ?.optString("finish_reason") == "length"
             val rawResult = runCatching { extractContent(response) }
@@ -658,7 +667,26 @@ object PhoneUiAgentModelClient {
         }
     }
 
-    private fun post(config: PhoneUiModelConfig, body: JSONObject): JSONObject {
+    internal fun summarizeContext(config: PhoneUiModelConfig, source: String): String {
+        val body = JSONObject().put("model", config.modelId).put("stream", false)
+            .put("temperature", 0).put("max_tokens", 1800)
+            .put("messages", JSONArray()
+                .put(JSONObject().put("role", "system").put("content",
+                    "您现在只整理手机任务的交接记录，不操作屏幕。请保留用户最新目标、约束、已确认的动作结果、未完成步骤、失败尝试和不确定信息；不得把计划当成已完成。不要输出思考过程、坐标或操作函数。只输出一段不超过1800字的中文摘要。"))
+                .put(JSONObject().put("role", "user").put("content", source)))
+        if (config.protocol != PhoneUiModelProtocol.AUTOGLM_NATIVE) body.put("enable_thinking", false)
+        val response = post(config, body)
+        check(response.optJSONArray("choices")?.optJSONObject(0)?.optString("finish_reason") != "length") {
+            "上下文摘要被提供商截断，原始记录未丢弃；请重试"
+        }
+        return extractContent(response).trim().also {
+            check(!it.contains("do(action=") && !it.contains("<tool_call>")) {
+                "当前模型未能生成上下文摘要，原始记录未丢弃；请切换模型后续接"
+            }
+        }
+    }
+
+    private fun post(config: PhoneUiModelConfig, body: JSONObject, shouldStop: () -> Boolean = { false }): JSONObject {
         val base = config.baseUrl.trim().trimEnd('/')
         val endpoint = if (base.endsWith("/chat/completions")) base else "$base/chat/completions"
         val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
@@ -670,7 +698,10 @@ object PhoneUiAgentModelClient {
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Authorization", "Bearer ${config.apiKey}")
         }
+        val worker = Thread.currentThread()
+        connections[worker] = connection
         return try {
+            if (shouldStop()) throw InterruptedException("旧模型请求已作废")
             connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
             val text = (if (code in 200..299) connection.inputStream else connection.errorStream)
@@ -688,6 +719,7 @@ object PhoneUiAgentModelClient {
         } catch (error: IOException) {
             throw IllegalStateException("模型提供商网络请求失败：${error.message ?: error.javaClass.simpleName}", error)
         } finally {
+            connections.remove(worker, connection)
             connection.disconnect()
         }
     }

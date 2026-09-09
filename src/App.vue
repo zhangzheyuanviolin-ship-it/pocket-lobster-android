@@ -1027,8 +1027,9 @@ function onWindowKeyDown(event: KeyboardEvent): void {
 }
 
 async function onSubmitThreadMessage(text: string, complete: (success: boolean) => void): Promise<void> {
+  const isCollaborationSubmission = collaborationEnabled.value
   try {
-    if (collaborationEnabled.value) {
+    if (isCollaborationSubmission) {
       const run = await startCollaborationRun('codex', text)
       collaborationRuns.value = [run, ...collaborationRuns.value.filter((row) => row.id !== run.id)]
       openCollaborationBoard()
@@ -1040,8 +1041,10 @@ async function onSubmitThreadMessage(text: string, complete: (success: boolean) 
     else await sendMessageToSelectedThread(text)
     complete(true)
   } catch (error) {
-    collaborationError.value = error instanceof Error ? error.message : '启动三智能体协作失败'
-    showCollaborationBoard.value = true
+    if (isCollaborationSubmission) {
+      collaborationError.value = error instanceof Error ? error.message : '启动三智能体协作失败'
+      showCollaborationBoard.value = true
+    }
     complete(false)
   }
 }

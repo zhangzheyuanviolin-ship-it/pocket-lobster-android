@@ -34,6 +34,23 @@ const codexProviderRuntimeStatusPath = homeDir
   ? join(homeDir, '.openclaw-android', 'state', 'codex-provider-runtime-status.json')
   : ''
 const codexSessionsPath = homeDir ? join(homeDir, '.codex', 'sessions') : ''
+const codexThreadRoutesPath = homeDir ? join(homeDir, '.openclaw-android', 'state', 'codex-thread-routes.json') : ''
+let codexThreadRouteWriteChain: Promise<void> = Promise.resolve()
+
+async function rememberCodexThreadRoute(threadId: string, providerId: string, model: string): Promise<void> {
+  const write = codexThreadRouteWriteChain.catch(() => undefined).then(async () => {
+    const routes = await readJsonFile(codexThreadRoutesPath) ?? {}
+    routes[threadId] = { providerId, model }
+    await writeJsonFileAtomic(codexThreadRoutesPath, routes)
+  })
+  codexThreadRouteWriteChain = write
+  await write
+}
+
+async function rememberedCodexThreadRoute(threadId: string): Promise<Record<string, unknown> | null> {
+  await codexThreadRouteWriteChain.catch(() => undefined)
+  return asRecord((await readJsonFile(codexThreadRoutesPath))?.[threadId])
+}
 const codexChatDiagnosticPath = homeDir
   ? join(homeDir, '.openclaw-android', 'state', 'codex-chat-latest.jsonl')
   : ''
@@ -3490,6 +3507,7 @@ async function abortClaudeRun(runId: string): Promise<boolean> {
 class AppServerProcess {
   private process: ChildProcessWithoutNullStreams | null = null
   private initialized = false
+  private stoppingCompletion: Promise<void> = Promise.resolve()
   private readBuffer = ''
   private nextId = 1
   private stopping = false
@@ -3792,6 +3810,7 @@ class AppServerProcess {
   }
 
   async rpc(method: string, params: unknown): Promise<unknown> {
+    await this.stoppingCompletion
     await this.ensureInitialized()
     return this.call(method, params)
   }
@@ -3851,6 +3870,10 @@ class AppServerProcess {
     if (!this.process) return
 
     const proc = this.process
+    this.stoppingCompletion = new Promise<void>((resolve) => {
+      if (proc.exitCode !== null || proc.signalCode !== null) resolve()
+      else proc.once('exit', () => resolve())
+    })
     this.stopping = true
     this.process = null
     this.initialized = false
@@ -3877,7 +3900,7 @@ class AppServerProcess {
     }
 
     const forceKillTimer = setTimeout(() => {
-      if (!proc.killed) {
+      if (proc.exitCode === null && proc.signalCode === null) {
         try {
           proc.kill('SIGKILL')
         } catch {
@@ -3886,6 +3909,10 @@ class AppServerProcess {
       }
     }, 1500)
     forceKillTimer.unref()
+  }
+
+  async waitUntilStopped(): Promise<void> {
+    await this.stoppingCompletion
   }
 }
 
@@ -4288,7 +4315,8 @@ async function switchCodexThreadRoute(
   let previousProvider = ''
   try {
     const read = asRecord(await appServer.rpc('thread/read', { threadId, includeTurns: false }))
-    previousProvider = normalizeText(asRecord(read?.thread)?.modelProvider)
+    const remembered = await rememberedCodexThreadRoute(threadId)
+    previousProvider = normalizeText(remembered?.providerId) || normalizeText(asRecord(read?.thread)?.modelProvider)
   } catch {
     previousProvider = ''
   }
@@ -4301,6 +4329,7 @@ async function switchCodexThreadRoute(
   let migration: PersistedThreadRouteMigration | null = null
   if (previousProvider && previousProvider !== providerId) {
     appServer.dispose()
+    await appServer.waitUntilStopped()
     migration = await migratePersistedThreadRoute(threadId, providerId)
   }
 
@@ -4310,10 +4339,13 @@ async function switchCodexThreadRoute(
     const injected = await buildInjectedDeveloperInstructions(routeParams)
     if (injected) routeParams.developerInstructions = injected
     const resumed = asRecord(await appServer.rpc('thread/resume', routeParams))
-    const actualProvider = normalizeText(asRecord(resumed?.thread)?.modelProvider)
+    // Resume's top-level route is the live engine config. The thread object may
+    // still describe the provider recorded when the conversation was created.
+    const actualProvider = normalizeText(resumed?.modelProvider) || normalizeText(asRecord(resumed?.thread)?.modelProvider)
     if (actualProvider && actualProvider !== providerId) {
       throw new Error(`Codex route mismatch: expected ${providerId}, received ${actualProvider}`)
     }
+    await rememberCodexThreadRoute(threadId, actualProvider || providerId, model)
     await appendCodexDiagnostic('route_switch_success', {
       threadId,
       providerId: actualProvider || providerId,
@@ -4329,11 +4361,12 @@ async function switchCodexThreadRoute(
       previousProvider,
       sanitizedReasoningItems: migration?.sanitizedReasoningItems ?? 0,
       removedCompactionItems: migration?.removedCompactionItems ?? 0,
-      thread: resumed?.thread,
+      thread: { ...asRecord(resumed?.thread), modelProvider: actualProvider || providerId },
     }
   } catch (error) {
     if (migration) {
       appServer.dispose()
+      await appServer.waitUntilStopped()
       await restorePersistedThreadRoute(migration)
     }
     await appendCodexDiagnostic('route_switch_failure', {
@@ -6544,8 +6577,9 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
         const read = asRecord(await appServer.rpc('thread/read', { threadId, includeTurns: false }))
-        const providerId = normalizeText(asRecord(read?.thread)?.modelProvider) || 'openai'
-        const model = await readPersistedThreadModel(threadId)
+        const remembered = await rememberedCodexThreadRoute(threadId)
+        const providerId = normalizeText(remembered?.providerId) || normalizeText(asRecord(read?.thread)?.modelProvider) || 'openai'
+        const model = normalizeText(remembered?.model) || await readPersistedThreadModel(threadId)
         setJson(res, 200, { providerId, model })
         return
       }

@@ -353,14 +353,14 @@ export async function startThread(
     if (typeof modelProvider === 'string' && modelProvider.trim().length > 0) {
       params.modelProvider = modelProvider.trim()
     }
-    const payload = await callRpc<{ thread?: { id?: string; modelProvider?: string } }>('thread/start', params)
+    const payload = await callRpc<{ modelProvider?: string; thread?: { id?: string; modelProvider?: string } }>('thread/start', params)
     const threadId = normalizeThreadIdFromPayload(payload)
     if (!threadId) {
       throw new Error('thread/start did not return a thread id')
     }
     return {
       threadId,
-      modelProvider: payload.thread?.modelProvider?.trim() || modelProvider?.trim() || 'openai',
+      modelProvider: payload.modelProvider?.trim() || payload.thread?.modelProvider?.trim() || modelProvider?.trim() || 'openai',
     }
   } catch (error) {
     throw normalizeCodexApiError(error, 'Failed to start a new thread', 'thread/start')

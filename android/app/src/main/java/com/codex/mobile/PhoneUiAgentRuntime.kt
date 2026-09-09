@@ -86,6 +86,8 @@ object PhoneUiAgentRuntime {
     @Volatile private var paused = false
     @Volatile private var cancelled = false
     private val observationRevision = AtomicLong()
+    @Volatile private var pendingInstruction: Pair<String, Int>? = null
+    private var workerRunning = false
 
     fun initialize(context: Context) {
         synchronized(lock) {
@@ -111,7 +113,7 @@ object PhoneUiAgentRuntime {
         require(ShizukuController.isServiceRunning()) { "Shizuku服务未运行" }
         require(ShizukuController.hasPermission()) { "口袋大龙虾尚未获得Shizuku授权" }
         synchronized(lock) {
-            if (activeFuture?.isDone == false) {
+            if (workerRunning) {
                 throw IllegalStateException("已有手机操作任务正在运行，taskId=${state.optString("id")}")
             }
             archiveCurrentLocked()
@@ -121,9 +123,11 @@ object PhoneUiAgentRuntime {
             state = JSONObject()
                 .put("id", UUID.randomUUID().toString())
                 .put("task", cleanTask)
+                .put("initialTask", cleanTask)
                 .put("mode", mode.value)
                 .put("maxSteps", maxSteps.coerceIn(1, 100))
                 .put("step", 0)
+                .put("round", 1)
                 .put("status", "starting")
                 .put("statusText", "正在初始化手机操作环境")
                 .put("createdAt", Instant.now().toString())
@@ -132,16 +136,94 @@ object PhoneUiAgentRuntime {
             appendEventLocked("status", "任务已创建", "模式：${if (mode == PhoneUiScreenMode.MAIN) "主屏幕" else "虚拟屏幕"}；最大步数：${maxSteps.coerceIn(1, 100)}")
             persistLocked()
             CodexForegroundService.ensureStarted(context)
-            val appContext = context.applicationContext
-            activeFuture = executor.submit {
-                activeThread = Thread.currentThread()
-                try {
-                    if (!cancelled) runTask(appContext)
-                } finally {
-                    activeThread = null
+            launchWorkerLocked(context.applicationContext, continuing = false)
+            return snapshotLocked()
+        }
+    }
+
+    fun continueTask(context: Context, task: String, maxSteps: Int): JSONObject = synchronized(lock) {
+        require(state.optString("id").isNotBlank()) { "请先新建会话" }
+        require(task.isNotBlank()) { "补充指令不能为空" }
+        require(pendingInstruction == null) { "上一条补充指令正在接收，请稍候" }
+        pendingInstruction = task.trim() to maxSteps.coerceIn(1, 100)
+        observationRevision.incrementAndGet()
+        paused = false
+        PhoneUiAgentModelClient.cancelRequest(activeThread)
+        state.put("statusText", "补充指令已接收，正在结束旧请求；不会执行旧请求返回的动作")
+        appendEventLocked("user", "收到补充指令", task.trim())
+        persistLocked()
+        if (!workerRunning) launchWorkerLocked(context.applicationContext, continuing = true)
+        snapshotLocked()
+    }
+
+    fun selectConversation(taskId: String): JSONObject = synchronized(lock) {
+        if (state.optString("id") == taskId) return@synchronized snapshotLocked()
+        require(!workerRunning) { "请先终止当前任务并等待执行结束" }
+        val selected = snapshot(taskId)
+        archiveCurrentLocked()
+        state = selected
+        persistLocked()
+        snapshotLocked()
+    }
+
+    fun newConversation(): JSONObject = synchronized(lock) {
+        require(!workerRunning) { "请先终止当前任务并等待执行结束" }
+        archiveCurrentLocked()
+        state = emptyState()
+        persistLocked()
+        snapshotLocked()
+    }
+
+    // A single worker owns all actions. A new instruction invalidates the old
+    // observation immediately, but changes round state only after old I/O exits.
+    private fun launchWorkerLocked(context: Context, continuing: Boolean) {
+        workerRunning = true
+        activeFuture = executor.submit {
+            activeThread = Thread.currentThread()
+            var nextIsContinuation = continuing
+            try {
+                while (true) {
+                    synchronized(lock) {
+                        pendingInstruction?.let { (instruction, limit) ->
+                            if (!state.has("initialTask")) state.put("initialTask", state.optString("task"))
+                            if (!state.has("conversationContext")) PhoneUiConversationContext.fromState(state).save(state)
+                            val rounds = state.optJSONArray("rounds") ?: JSONArray().also { state.put("rounds", it) }
+                            rounds.put(JSONObject().put("round", state.optInt("round", 1))
+                                .put("task", state.optString("task")).put("status", if (state.optString("status") in setOf("starting", "running", "paused")) "superseded" else state.optString("status"))
+                                .put("events", state.optJSONArray("events") ?: JSONArray()))
+                            state.put("events", JSONArray())
+                            state.put("task", instruction).put("round", state.optInt("round", 1) + 1)
+                                .put("step", 0).put("maxSteps", limit)
+                                .put("status", "starting").put("statusText", "正在承接会话上下文")
+                            state.remove("error")
+                            state.remove("result")
+                            pendingInstruction = null
+                            cancelled = false
+                            paused = false
+                            Thread.interrupted()
+                            appendEventLocked("user", "第${state.optInt("round")}轮指令", instruction)
+                            persistLocked()
+                        }
+                    }
+                    if (!cancelled) runTask(context, nextIsContinuation)
+                    synchronized(lock) {
+                        if (pendingInstruction == null) {
+                            workerRunning = false
+                            activeThread = null
+                            return@submit
+                        }
+                    }
+                    nextIsContinuation = true
+                }
+            } finally {
+                synchronized(lock) {
+                    // Normal return already released ownership while holding lock.
+                    if (activeThread === Thread.currentThread()) {
+                        activeThread = null
+                        workerRunning = false
+                    }
                 }
             }
-            return snapshotLocked()
         }
     }
 
@@ -159,7 +241,15 @@ object PhoneUiAgentRuntime {
 
     fun history(): JSONArray = synchronized(lock) {
         val context = applicationContext ?: return@synchronized JSONArray()
-        readHistory(context)
+        val rows = readHistory(context)
+        val id = state.optString("id")
+        if (id.isNotBlank()) {
+            for (index in rows.length() - 1 downTo 0) {
+                if (rows.optJSONObject(index)?.optString("id") == id) rows.remove(index)
+            }
+            rows.put(snapshotLocked())
+        }
+        rows
     }
 
     fun clearHistory() = synchronized(lock) {
@@ -169,7 +259,7 @@ object PhoneUiAgentRuntime {
 
     fun pause(taskId: String? = null): JSONObject = synchronized(lock) {
         requireCurrentTaskLocked(taskId)
-        if (state.optString("status") == "running") {
+        if (state.optString("status") in setOf("starting", "running")) {
             paused = true
             observationRevision.incrementAndGet()
             state.put("status", "paused").put("statusText", "任务已暂停，用户可以接管屏幕")
@@ -194,10 +284,12 @@ object PhoneUiAgentRuntime {
     fun cancel(taskId: String? = null): JSONObject = synchronized(lock) {
         requireCurrentTaskLocked(taskId)
         cancelled = true
+        pendingInstruction = null
         paused = false
         // Future.cancel marks done before blocking I/O has exited. Keep ownership until
         // the worker really returns, otherwise an old task can overwrite its successor.
         activeThread?.interrupt()
+        PhoneUiAgentModelClient.cancelRequest(activeThread)
         stopKeepAliveLocked()
         if (state.optString("status") in setOf("starting", "running", "paused")) {
             state.put("status", "cancelled").put("statusText", "任务已由用户终止")
@@ -210,7 +302,7 @@ object PhoneUiAgentRuntime {
 
     fun hasVirtualDisplay(): Boolean = PhoneUiShowerRuntime.controller.getDisplayId()?.let { it > 0 } == true
 
-    private fun runTask(context: Context) = runBlocking {
+    private fun runTask(context: Context, continuing: Boolean = false) = runBlocking {
         var taskMode: PhoneUiScreenMode? = null
         try {
             val config = PhoneUiAgentModelStore.loadCurrent(context)
@@ -225,6 +317,7 @@ object PhoneUiAgentRuntime {
                 val detail = ShowerServerManager.lastError.ifBlank { "未收到服务握手" }
                 throw IllegalStateException("$target 未能启动：$detail")
             }
+            val hadVirtualDisplay = hasVirtualDisplay()
             val screenReady = if (mode == PhoneUiScreenMode.MAIN) {
                 PhoneUiVirtualDisplayCapture.detach()
                 PhoneUiShowerRuntime.controller.prepareMainDisplay(context)
@@ -247,7 +340,11 @@ object PhoneUiAgentRuntime {
                 }
                 val task = synchronized(lock) { state.optString("task") }
                 val target = resolveTaskTargetApp(context, task)
-                if (target != null) {
+                awaitRunnable()
+                if (cancelled || pendingInstruction != null) return@runBlocking
+                if (continuing && hadVirtualDisplay) {
+                    // Continue on the user's current screen without relaunching its app.
+                } else if (target != null) {
                     appendEvent("status", "正在预热目标应用", "${target.label}将启动到虚拟屏幕displayId=$displayId。")
                     if (!PhoneUiShowerRuntime.controller.launchApp(target.packageName)) {
                         throw IllegalStateException("无法在虚拟屏幕启动目标应用：${target.label}")
@@ -265,8 +362,12 @@ object PhoneUiAgentRuntime {
 
             val task = synchronized(lock) { state.optString("task") }
             val maxSteps = synchronized(lock) { state.optInt("maxSteps", 25) }
-            val history = mutableListOf<Pair<String, String>>()
-            var actionResult = ""
+            val conversation = synchronized(lock) { PhoneUiConversationContext.fromState(state) }
+            val history = conversation.history
+            var actionResult = if (continuing) "用户发来了新的补充指令：$task。请根据当前新截图和已确认的历史进展继续，新的指令优先于旧目标。" else ""
+            if (continuing && conversation.lastActionResult.isNotBlank()) {
+                actionResult += "\n上一轮最后动作的实际返回：${conversation.lastActionResult}"
+            }
             var previousScreenshot: ByteArray? = null
             var previousActionSignature = ""
             var identicalActionStreak = 0
@@ -274,11 +375,22 @@ object PhoneUiAgentRuntime {
             while (executedSteps < maxSteps) {
                 val step = executedSteps + 1
                 awaitRunnable()
-                if (cancelled) return@runBlocking
+                if (cancelled || pendingInstruction != null) return@runBlocking
                 val revision = observationRevision.get()
+                if (conversation.needsCompaction(task, config)) {
+                    updateStep(step, "正在整理会话上下文，尚未执行屏幕动作")
+                    val summaryConfig = if (config.protocol == PhoneUiModelProtocol.GENERIC_JSON) config else
+                        PhoneUiAgentModelStore.loadConfigs(context).firstOrNull {
+                            it.protocol == PhoneUiModelProtocol.GENERIC_JSON && it.apiKey.isNotBlank() && it.baseUrl.isNotBlank()
+                        } ?: config
+                    conversation.compact(summaryConfig, task)
+                    appendEvent("status", "会话上下文已整理", "摘要模型：${summaryConfig.displayName}；完整任务记录仍保留，本轮剩余步数不变。")
+                    synchronized(lock) { conversation.save(state); persistLocked() }
+                    if (cancelled || pendingInstruction != null) return@runBlocking
+                }
                 updateStep(step, "正在截取当前屏幕")
                 val screenshot = captureScreenshot(context, mode)
-                if (cancelled) return@runBlocking
+                if (cancelled || pendingInstruction != null) return@runBlocking
                 if (revision != observationRevision.get()) continue
                 val priorScreenshot = previousScreenshot
                 if (actionResult.isNotBlank() && priorScreenshot != null) {
@@ -297,18 +409,19 @@ object PhoneUiAgentRuntime {
                 updateStep(step, "模型正在判断下一步操作")
                 val decision = PhoneUiAgentModelClient.decide(
                     config,
-                    task,
+                    conversation.taskWithMemory(task),
                     screenshot,
                     history,
                     actionResult,
                     step,
                     maxSteps,
                     onProgress = { progress ->
-                        if (!cancelled && !paused) updateStep(step, progress)
+                        if (!cancelled && !paused && pendingInstruction == null) updateStep(step, progress)
                     },
+                    shouldStop = { cancelled || pendingInstruction != null },
                 )
                 awaitRunnable()
-                if (cancelled) return@runBlocking
+                if (cancelled || pendingInstruction != null) return@runBlocking
                 if (revision != observationRevision.get()) {
                     actionResult = "用户暂停后选择继续。之前截图对应的待执行动作已作废；请仅依据这次新截图重新判断，不要假定用户做过任何操作。"
                     previousScreenshot = null
@@ -319,10 +432,11 @@ object PhoneUiAgentRuntime {
                 if (decision.thinking.isNotBlank()) {
                     appendEvent("thinking", "第${step}步判断", decision.thinking)
                 }
-                val currentPrompt = PhoneUiAgentModelClient.historyUserPrompt(config.protocol, task, history.isEmpty(), actionResult)
+                val currentPrompt = PhoneUiAgentModelClient.historyUserPrompt(config.protocol, conversation.taskWithMemory(task), history.isEmpty(), actionResult)
                 history += "user" to currentPrompt
                 history += "assistant" to PhoneUiAgentModelClient.historyAssistant(config.protocol, decision)
                 executedSteps++
+                synchronized(lock) { conversation.save(state); persistLocked() }
                 if (decision.action.finished) {
                     val message = buildFinalMessage(task, decision.action.message, decision.thinking)
                     appendEvent("result", "任务完成", message)
@@ -335,7 +449,7 @@ object PhoneUiAgentRuntime {
                     appendEvent("takeover", "等待用户接管", message)
                     updateStatus("paused", message)
                     awaitRunnable()
-                    if (cancelled) return@runBlocking
+                    if (cancelled || pendingInstruction != null) return@runBlocking
                     actionResult = "用户选择继续，没有提供任何已完成操作的确认。请仅依据这次新截图重新判断，不要沿用此前关于页面的推测。"
                     previousScreenshot = null
                     previousActionSignature = ""
@@ -355,13 +469,15 @@ object PhoneUiAgentRuntime {
                 identicalActionStreak = if (signature == previousActionSignature) identicalActionStreak + 1 else 1
                 previousActionSignature = signature
                 actionResult = modelActionResult(decision.action, executionResult, identicalActionStreak)
+                conversation.lastActionResult = actionResult
+                synchronized(lock) { conversation.save(state); persistLocked() }
                 updateStep(step, "动作已执行，正在等待页面稳定")
                 delay(650)
             }
             appendEvent("error", "达到最大步数", "任务尚未明确完成，已停止继续操作。")
             updateStatus("step_limit", "已达到最大步数，任务停止")
         } catch (error: Throwable) {
-            if (!cancelled) {
+            if (!cancelled && pendingInstruction == null) {
                 Log.e(TAG, "Phone UI task failed", error)
                 appendEvent("error", "任务异常", error.message ?: error.javaClass.simpleName)
                 updateStatus("failed", error.message ?: "任务执行失败")
@@ -794,9 +910,15 @@ object PhoneUiAgentRuntime {
         val context = applicationContext ?: return
         if (state.optString("id").isBlank()) return
         val history = readHistory(context)
+        for (index in history.length() - 1 downTo 0) {
+            if (history.optJSONObject(index)?.optString("id") == state.optString("id")) history.remove(index)
+        }
         history.put(JSONObject(state.toString()))
         while (history.length() > 50) history.remove(0)
-        historyFile(context).writeText(history.toString())
+        val target = historyFile(context)
+        val temp = File(target.parentFile, "${target.name}.tmp")
+        temp.writeText(history.toString())
+        check(temp.renameTo(target)) { "历史会话写入失败，原始记录已保留" }
     }
 
     private fun readHistory(context: Context): JSONArray = runCatching {

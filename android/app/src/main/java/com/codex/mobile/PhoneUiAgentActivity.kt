@@ -8,6 +8,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
@@ -32,10 +33,16 @@ class PhoneUiAgentActivity : AppCompatActivity() {
     private lateinit var displayButton: Button
     private lateinit var overlayPermissionButton: Button
     private var lastRenderKey = ""
+    private var selectedRound: Int? = null
+    private var historyDialog: AlertDialog? = null
+    private var historyAdapter: ArrayAdapter<String>? = null
+    private var historyRows = emptyList<JSONObject>()
+    private var historyRenderKey = ""
 
     private val poller = object : Runnable {
         override fun run() {
             render(PhoneUiAgentRuntime.snapshot())
+            if (historyDialog?.isShowing == true) refreshHistory()
             handler.postDelayed(this, 500)
         }
     }
@@ -85,6 +92,11 @@ class PhoneUiAgentActivity : AppCompatActivity() {
             startActivity(Intent(this, PhoneUiAgentModelManagerActivity::class.java))
         }
         findViewById<Button>(R.id.btnPhoneUiHistory).setOnClickListener { showHistory() }
+        findViewById<Button>(R.id.btnPhoneUiNewConversation).setOnClickListener {
+            runCatching { PhoneUiAgentRuntime.newConversation() }
+                .onSuccess { selectedRound = null; render(it, force = true) }
+                .onFailure { Toast.makeText(this, it.message, Toast.LENGTH_LONG).show() }
+        }
         overlayPermissionButton.setOnClickListener {
             if (PhoneUiAgentProgressOverlay.canShow(this)) {
                 Toast.makeText(this, "主屏幕进度悬浮窗权限已授权", Toast.LENGTH_SHORT).show()
@@ -125,8 +137,13 @@ class PhoneUiAgentActivity : AppCompatActivity() {
         val maxSteps = maxStepsInput.text.toString().toIntOrNull()?.coerceIn(1, 100) ?: 25
         val mode = if (mainMode.isChecked) PhoneUiScreenMode.MAIN else PhoneUiScreenMode.VIRTUAL
         val start = {
-            runCatching { PhoneUiAgentRuntime.startTask(this, task, mode, maxSteps) }
+            runCatching {
+                if (PhoneUiAgentRuntime.snapshot().optString("id").isNotBlank()) {
+                    PhoneUiAgentRuntime.continueTask(this, task, maxSteps)
+                } else PhoneUiAgentRuntime.startTask(this, task, mode, maxSteps)
+            }
                 .onSuccess {
+                    selectedRound = null
                     taskInput.text.clear()
                     render(it, force = true)
                 }
@@ -151,16 +168,42 @@ class PhoneUiAgentActivity : AppCompatActivity() {
         val status = snapshot.optString("status", "idle")
         val step = snapshot.optInt("step")
         val maxSteps = snapshot.optInt("maxSteps", 25)
-        statusView.text = "状态：${statusLabel(status)}；步骤：$step/$maxSteps；${snapshot.optString("statusText")}"
+        statusView.text = "第${snapshot.optInt("round", 1)}轮；状态：${statusLabel(status)}；本轮步骤：$step/$maxSteps；${snapshot.optString("statusText")}"
         val active = status in setOf("starting", "running", "paused")
-        sendButton.isEnabled = !active
-        pauseButton.isEnabled = status in setOf("running", "paused")
+        sendButton.isEnabled = true
+        sendButton.text = if (snapshot.optString("id").isBlank()) "发送手机操作任务" else "发送补充指令并继续"
+        val hasConversation = snapshot.optString("id").isNotBlank()
+        mainMode.isEnabled = !hasConversation
+        findViewById<RadioButton>(R.id.radioPhoneUiVirtual).isEnabled = !hasConversation
+        if (hasConversation) {
+            mainMode.isChecked = snapshot.optString("mode") == "main"
+            findViewById<RadioButton>(R.id.radioPhoneUiVirtual).isChecked = snapshot.optString("mode") == "virtual"
+        }
+        pauseButton.isEnabled = status in setOf("starting", "running", "paused")
         pauseButton.text = if (status == "paused") "继续任务" else "暂停任务"
         stopButton.isEnabled = active
         displayButton.isEnabled = PhoneUiAgentRuntime.hasVirtualDisplay()
 
         eventsLayout.removeAllViews()
-        val events = snapshot.optJSONArray("events")
+        val rounds = snapshot.optJSONArray("rounds")
+        if (rounds != null && rounds.length() > 0) {
+            eventsLayout.addView(Button(this).apply {
+                text = "选择对话轮次"
+                setOnClickListener {
+                    val labels = (0 until rounds.length()).map { index ->
+                        val row = rounds.getJSONObject(index)
+                        "第${row.optInt("round")}轮：${row.optString("task").take(40)}"
+                    } + "当前第${snapshot.optInt("round")}轮"
+                    AlertDialog.Builder(this@PhoneUiAgentActivity).setTitle("对话轮次")
+                        .setItems(labels.toTypedArray()) { _, index ->
+                            selectedRound = if (index < rounds.length()) index else null
+                            render(PhoneUiAgentRuntime.snapshot(), force = true)
+                        }.show()
+                }
+            })
+        }
+        val events = selectedRound?.let { rounds?.optJSONObject(it)?.optJSONArray("events") }
+            ?: snapshot.optJSONArray("events")
         if (events == null || events.length() == 0) {
             eventsLayout.addView(eventView("任务动态", "发送任务后，每一步判断和动作结果会显示在这里。"))
         } else {
@@ -169,7 +212,7 @@ class PhoneUiAgentActivity : AppCompatActivity() {
                 eventsLayout.addView(eventView(event.optString("title"), event.optString("detail")))
             }
         }
-        eventsScroll.post { eventsScroll.fullScroll(View.FOCUS_DOWN) }
+        if (selectedRound == null) eventsScroll.post { eventsScroll.fullScroll(View.FOCUS_DOWN) }
     }
 
     private fun eventView(title: String, detail: String): View = TextView(this).apply {
@@ -196,21 +239,30 @@ class PhoneUiAgentActivity : AppCompatActivity() {
     }
 
     private fun showHistory() {
-        val history = PhoneUiAgentRuntime.history()
-        if (history.length() == 0) {
-            Toast.makeText(this, "暂无历史任务", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val rows = (history.length() - 1 downTo 0).mapNotNull { history.optJSONObject(it) }
-        val labels = rows.map { row ->
-            "${statusLabel(row.optString("status"))}，${row.optString("task").take(60)}"
-        }.toTypedArray()
-        AlertDialog.Builder(this)
+        historyAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, mutableListOf<String>())
+        historyRenderKey = ""
+        refreshHistory()
+        historyDialog = AlertDialog.Builder(this)
             .setTitle("手机操作历史任务")
-            .setItems(labels) { _, which -> showHistoryDetail(rows[which]) }
+            .setAdapter(historyAdapter) { _, which -> historyRows.getOrNull(which)?.let { showHistoryDetail(it) } }
             .setNeutralButton("清空历史") { _, _ -> confirmClearHistory() }
             .setNegativeButton("关闭", null)
             .show()
+    }
+
+    private fun refreshHistory() {
+        val history = PhoneUiAgentRuntime.history()
+        val rows = (history.length() - 1 downTo 0).mapNotNull { history.optJSONObject(it) }
+        val key = rows.joinToString(";") { it.optString("id") + it.optString("status") + it.optString("task") }
+        historyRows = rows
+        if (key == historyRenderKey) return
+        historyRenderKey = key
+        historyAdapter?.apply {
+            setNotifyOnChange(false)
+            clear()
+            addAll(rows.map { "${statusLabel(it.optString("status"))}，${it.optString("task").take(60)}" })
+            notifyDataSetChanged()
+        }
     }
 
     private fun showHistoryDetail(row: JSONObject) {
@@ -229,7 +281,12 @@ class PhoneUiAgentActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("历史任务详情")
             .setMessage(detail)
-            .setPositiveButton("关闭", null)
+            .setPositiveButton("打开并继续此会话") { _, _ ->
+                runCatching { PhoneUiAgentRuntime.selectConversation(row.optString("id")) }
+                    .onSuccess { selectedRound = null; render(it, force = true); taskInput.requestFocus() }
+                    .onFailure { Toast.makeText(this, it.message, Toast.LENGTH_LONG).show() }
+            }
+            .setNegativeButton("关闭", null)
             .show()
     }
 
