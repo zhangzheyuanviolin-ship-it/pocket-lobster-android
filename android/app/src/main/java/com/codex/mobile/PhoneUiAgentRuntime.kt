@@ -367,7 +367,7 @@ object PhoneUiAgentRuntime {
                 if (continuing && previousDisplayId == displayId) {
                     // Continue on the user's current screen without relaunching its app.
                 } else if (targetAlreadyAvailable) {
-                    appendEvent("status", "正在恢复目标应用", "${target?.label}已在虚拟屏幕displayId=$displayId运行，继续使用现有页面。")
+                    appendEvent("status", "正在恢复目标应用", "${target?.label}已在虚拟屏幕displayId=${displayId}运行，继续使用现有页面。")
                 } else if (target != null) {
                     appendEvent("status", "正在预热目标应用", "${target.label}将启动到虚拟屏幕displayId=$displayId。")
                     if (!PhoneUiShowerRuntime.controller.launchApp(target.packageName)) {
