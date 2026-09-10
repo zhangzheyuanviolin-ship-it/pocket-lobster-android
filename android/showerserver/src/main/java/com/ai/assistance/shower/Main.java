@@ -1071,6 +1071,8 @@ public class Main {
         }
     }
 
+    // This entrypoint runs under app_process as shell, not as an installed app UID.
+    @android.annotation.SuppressLint({"BlockedPrivateApi", "PrivateApi"})
     private org.json.JSONObject inspectTasks(int displayId, String restorePackage) {
         org.json.JSONObject result = new org.json.JSONObject();
         try {

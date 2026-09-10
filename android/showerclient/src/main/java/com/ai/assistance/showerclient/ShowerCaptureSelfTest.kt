@@ -5,6 +5,9 @@ import android.graphics.Color
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.os.Binder
+import android.os.Parcel
+import com.ai.assistance.shower.IShowerVideoSink
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 
@@ -12,6 +15,7 @@ import kotlinx.coroutines.runBlocking
 object ShowerCaptureSelfTest {
     @JvmStatic fun main(args: Array<String>) {
         runBlocking {
+            verifyTransport()
             val width = args.getOrNull(0)?.toInt() ?: 320
             val height = args.getOrNull(1)?.toInt() ?: 240
             val encoder = MediaCodec.createEncoderByType("video/avc")
@@ -79,6 +83,24 @@ object ShowerCaptureSelfTest {
                 encoder.stop(); encoder.release()
             }
         }
+    }
+
+    private fun verifyTransport() {
+        var received: ByteArray? = null
+        val sink = object : IShowerVideoSink.Stub() {
+            override fun onVideoFrame(data: ByteArray) { received = data }
+        }
+        val remote = object : Binder() {
+            override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean =
+                sink.transact(code, data, reply, flags)
+        }
+        val proxy = IShowerVideoSink.Stub.asInterface(remote)
+        for (size in listOf(65536, 65537, 2 * 1024 * 1024 + 17)) {
+            val sent = ByteArray(size) { (it * 31).toByte() }
+            proxy.onVideoFrame(sent)
+            check(received?.contentEquals(sent) == true) { "Video chunk reassembly failed for $size bytes" }
+        }
+        println("{\"transportBoundaryTests\":3,\"ok\":true}")
     }
 
     private suspend fun verify(capture: ShowerFrameCapture, blue: Boolean) {

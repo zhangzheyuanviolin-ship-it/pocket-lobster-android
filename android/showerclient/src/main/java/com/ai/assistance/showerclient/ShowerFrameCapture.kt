@@ -15,8 +15,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 /** CPU-readable decoder output, independent of any visible window or preview Surface. */
 class ShowerFrameCapture(width: Int, height: Int) : AutoCloseable {
     private val lock = Any()
-    private val thread = HandlerThread("ShowerCaptureImages").apply { start() }
     private val reader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 3)
+    private val thread = HandlerThread("ShowerCaptureImages").apply { start() }
     private val renderer = ShowerVideoRenderer()
     private var image: Image? = null
     private var closed = false

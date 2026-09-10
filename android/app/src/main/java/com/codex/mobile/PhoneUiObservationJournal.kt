@@ -11,8 +11,13 @@ internal object PhoneUiObservationJournal {
     private const val MAX_BYTES = 24L * 1024 * 1024
     private const val MAX_OBSERVATIONS = 8
 
-    fun save(context: Context, png: ByteArray, metadata: JSONObject): File? = runCatching {
+    @Synchronized fun clear(context: Context) {
+        File(context.filesDir, "phone-ui-agent/observations").deleteRecursively()
+    }
+
+    @Synchronized fun save(context: Context, png: ByteArray, metadata: JSONObject): File? = runCatching {
         val dir = File(context.filesDir, "phone-ui-agent/observations").apply { mkdirs() }
+        dir.listFiles().orEmpty().filter { it.name.endsWith(".new") || it.name.endsWith(".bak") }.forEach { it.delete() }
         val name = "${System.currentTimeMillis()}-${metadata.optInt("round")}-${metadata.optInt("step")}"
         val prior = dir.listFiles().orEmpty().filter { it.extension == "png" }.sortedBy { it.name }.toMutableList()
         var size = prior.sumOf { it.length() }
@@ -30,8 +35,8 @@ internal object PhoneUiObservationJournal {
         sidecar
     }.onFailure { Log.w("PhoneUiEvidence", "Observation journal unavailable", it) }.getOrNull()
 
-    fun decision(sidecar: File?, raw: String) {
-        if (sidecar == null) return
+    @Synchronized fun decision(sidecar: File?, raw: String) {
+        if (sidecar == null || !sidecar.exists()) return
         runCatching {
             val value = JSONObject(sidecar.readText()).put("modelOutput", raw.take(16000))
             write(sidecar, value.toString().toByteArray(Charsets.UTF_8))

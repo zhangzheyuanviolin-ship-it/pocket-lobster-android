@@ -262,6 +262,7 @@ object PhoneUiAgentRuntime {
     fun clearHistory() = synchronized(lock) {
         val context = applicationContext ?: return@synchronized
         historyFile(context).writeText("[]")
+        PhoneUiObservationJournal.clear(context)
     }
 
     fun pause(taskId: String? = null): JSONObject = synchronized(lock) {
@@ -348,6 +349,9 @@ object PhoneUiAgentRuntime {
                 }
                 val task = synchronized(lock) { state.optString("task") }
                 val target = resolveTaskTargetApp(context, task)
+                    ?: (if (continuing) launchableApps(context).firstOrNull {
+                        it.packageName == synchronized(lock) { state.optString("targetPackage") }
+                    } else null)
                     ?: resolveTaskTargetApp(context, synchronized(lock) { state.optString("initialTask") })
                 if (target != null) synchronized(lock) { state.put("targetPackage", target.packageName) }
                 awaitRunnable()
