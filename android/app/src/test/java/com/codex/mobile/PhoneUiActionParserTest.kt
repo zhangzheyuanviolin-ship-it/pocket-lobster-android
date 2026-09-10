@@ -114,16 +114,32 @@ class PhoneUiActionParserTest {
     fun promptsDoNotBlockOrdinaryUserRequestedActions() {
         val nativePrompt = PhoneUiAgentPrompt.system(PhoneUiModelProtocol.AUTOGLM_NATIVE)
         val genericPrompt = PhoneUiAgentPrompt.system(PhoneUiModelProtocol.GENERIC_JSON)
+        val guiPrompt = PhoneUiAgentPrompt.system(PhoneUiModelProtocol.GUI_PLUS_NATIVE)
 
         assertTrue(nativePrompt.contains("当前页面以这次新截图为准"))
         assertTrue(nativePrompt.contains("不得根据应用名称或历史推测"))
         assertTrue(genericPrompt.contains("Treat the latest image as the only evidence"))
         assertTrue(genericPrompt.contains("Do not invent dialogs, required steps, or page text"))
-        listOf(nativePrompt, genericPrompt).forEach { prompt ->
-            assertTrue(!prompt.contains("敏感屏幕"))
-            assertTrue(!prompt.contains("验证码"))
-            assertTrue(!prompt.contains("CAPTCHA", ignoreCase = true))
+        assertTrue(nativePrompt.contains("黑色或无内容画面只代表截图不可用"))
+        assertTrue(nativePrompt.contains("不得按照应用、页面"))
+        assertTrue(genericPrompt.contains("A black or content-free frame is a capture failure"))
+        assertTrue(guiPrompt.contains("A black or content-free frame is a capture failure"))
+        listOf(nativePrompt, genericPrompt, guiPrompt).forEach { prompt ->
+            assertTrue(prompt.contains("Home") && prompt.contains("恢复动作") || prompt.contains("Home is not a recovery action"))
         }
+    }
+
+    @Test
+    fun guiTerminateIsFailureRatherThanFalseSuccess() {
+        val result = PhoneUiActionParser.parse(
+            """Action: unable to continue
+                <tool_call>{"name":"mobile_use","arguments":{"action":"terminate","status":"success","text":"black screen"}}</tool_call>
+            """.trimIndent(),
+            PhoneUiModelProtocol.GUI_PLUS_NATIVE,
+        )
+
+        assertTrue(result.action.finished)
+        assertTrue(!result.action.successful)
     }
 
     @Test

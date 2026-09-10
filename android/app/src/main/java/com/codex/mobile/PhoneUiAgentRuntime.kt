@@ -60,7 +60,7 @@ object PhoneUiAgentRuntime {
     private const val MAX_EVENTS = 240
     private val KNOWN_APP_ALIASES = mapOf(
         "tv.danmaku.bili" to setOf("哔哩哔哩", "哔哩哔哩动画", "bilibili", "b站"),
-        "com.taobao.taobao" to setOf("淘宝", "手机淘宝"),
+        "com.taobao.taobao" to setOf("淘宝", "手机淘宝", "taobao"),
         "com.jingdong.app.mall" to setOf("京东", "京东商城", "jd"),
         "com.larus.nova" to setOf("豆包"),
         "com.ss.android.ugc.aweme" to setOf("抖音", "douyin"),
@@ -356,8 +356,18 @@ object PhoneUiAgentRuntime {
                 if (target != null) synchronized(lock) { state.put("targetPackage", target.packageName) }
                 awaitRunnable()
                 if (cancelled || pendingInstruction != null) return@runBlocking
+                val prewarmState = if (target != null) {
+                    PhoneUiShowerRuntime.controller.syncDisplay(target.packageName)
+                } else JSONObject()
+                val targetAlreadyAvailable = target != null && (
+                    prewarmState.optJSONObject("tasks")?.has("restoredTaskId") == true ||
+                        taskExistsOnDisplay(prewarmState, target.packageName, displayId)
+                    )
+                if (prewarmState.optJSONObject("tasks")?.has("restoredTaskId") == true) delay(650)
                 if (continuing && previousDisplayId == displayId) {
                     // Continue on the user's current screen without relaunching its app.
+                } else if (targetAlreadyAvailable) {
+                    appendEvent("status", "正在恢复目标应用", "${target?.label}已在虚拟屏幕displayId=$displayId运行，继续使用现有页面。")
                 } else if (target != null) {
                     appendEvent("status", "正在预热目标应用", "${target.label}将启动到虚拟屏幕displayId=$displayId。")
                     if (!PhoneUiShowerRuntime.controller.launchApp(target.packageName)) {
@@ -431,11 +441,18 @@ object PhoneUiAgentRuntime {
                 }
                 previousScreenshot = screenshot
                 val dimensions = imageDimensions(screenshot)
+                val frameQuality = PhoneUiFrameQuality.inspect(screenshot)
                 synchronized(lock) {
                     state.put("lastObservation", JSONObject()
                         .put("step", step).put("displayId", displayId).put("mode", mode.value)
                         .put("capturedAt", Instant.now().toString())
                         .put("width", dimensions.first).put("height", dimensions.second)
+                        .put("frameQuality", JSONObject()
+                            .put("usable", frameQuality.usable)
+                            .put("sampled", frameQuality.sampled)
+                            .put("nonBlackPermille", frameQuality.nonBlackPermille)
+                            .put("averageLuma", frameQuality.averageLuma)
+                            .put("lumaRange", frameQuality.lumaRange))
                         .put("source", sourceState)
                         .put("video", if (mode == PhoneUiScreenMode.VIRTUAL) JSONObject(PhoneUiVirtualDisplayCapture.diagnostics()) else JSONObject.NULL)
                         .put("sha256", MessageDigest.getInstance("SHA-256").digest(screenshot)
@@ -480,8 +497,13 @@ object PhoneUiAgentRuntime {
                 synchronized(lock) { conversation.save(state); persistLocked() }
                 if (decision.action.finished) {
                     val message = buildFinalMessage(task, decision.action.message, decision.thinking)
-                    appendEvent("result", "任务完成", message)
-                    updateStatus("completed", message)
+                    if (decision.action.successful) {
+                        appendEvent("result", "任务完成", message)
+                        updateStatus("completed", message)
+                    } else {
+                        appendEvent("error", "任务未完成", message)
+                        updateStatus("failed", message)
+                    }
                     return@runBlocking
                 }
                 if (requiresTakeover(decision.action)) {
@@ -534,11 +556,11 @@ object PhoneUiAgentRuntime {
 
     private suspend fun captureScreenshot(context: Context, mode: PhoneUiScreenMode): ByteArray {
         if (mode == PhoneUiScreenMode.VIRTUAL) {
-            validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(10_000), "virtual-video")?.let { return it }
-            appendEvent("status", "正在恢复原生视频流", "当前视频帧未能成功复制，正在重新连接解码器；尚未向模型发送此次画面。")
+            captureUsableVirtualFrame("virtual-video", attempts = 12)?.let { return it }
+            appendEvent("status", "正在恢复目标应用画面", "视频流暂未产生包含应用内容的画面，正在重新连接解码器；无内容画面不会发送给模型。")
             PhoneUiVirtualDisplayCapture.attach(context, force = true)
-            validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(10_000), "virtual-video-reconnected")?.let { return it }
-            throw IllegalStateException("虚拟屏幕原生H.264视频流未产生可解码画面；任务已停止，未向模型发送黑屏或替代截图；${PhoneUiVirtualDisplayCapture.diagnostics()}")
+            captureUsableVirtualFrame("virtual-video-reconnected", attempts = 8)?.let { return it }
+            throw IllegalStateException("虚拟屏幕视频流没有产生包含应用内容的有效画面；任务已停止，未向模型发送黑色占位帧；${PhoneUiVirtualDisplayCapture.diagnostics()}")
         }
 
         PhoneUiAgentProgressOverlay.hideForCapture()
@@ -560,6 +582,31 @@ object PhoneUiAgentRuntime {
         } finally {
             PhoneUiAgentProgressOverlay.restoreAfterCapture()
         }
+    }
+
+    private suspend fun captureUsableVirtualFrame(source: String, attempts: Int): ByteArray? {
+        repeat(attempts) { attempt ->
+            val frame = validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(4_000), "$source-${attempt + 1}")
+            if (frame != null) {
+                val quality = PhoneUiFrameQuality.inspect(frame)
+                if (quality.usable) return frame
+                Log.w(TAG, "Rejected content-free virtual frame: source=$source attempt=${attempt + 1} $quality")
+                synchronized(lock) {
+                    state.put("lastRejectedFrame", JSONObject()
+                        .put("source", source).put("attempt", attempt + 1)
+                        .put("capturedAt", Instant.now().toString())
+                        .put("bytes", frame.size).put("sampled", quality.sampled)
+                        .put("nonBlackPermille", quality.nonBlackPermille)
+                        .put("averageLuma", quality.averageLuma)
+                        .put("lumaRange", quality.lumaRange)
+                        .put("sha256", MessageDigest.getInstance("SHA-256").digest(frame)
+                            .joinToString("") { "%02x".format(it) }))
+                    persistLocked()
+                }
+            }
+            delay(if (attempt < 3) 350 else 750)
+        }
+        return null
     }
 
     private fun captureViaShizuku(): ByteArray? {
@@ -807,6 +854,19 @@ object PhoneUiAgentRuntime {
         }
         return matches.maxByOrNull { app -> app.names.maxOf { normalizeAppName(it).length } }?.packageName
             ?: throw IllegalArgumentException("未找到可启动应用：$target，请让模型返回准确包名")
+    }
+
+    internal fun taskExistsOnDisplay(sourceState: JSONObject, packageName: String, displayId: Int): Boolean {
+        if (packageName.isBlank()) return false
+        val roots = sourceState.optJSONObject("tasks")?.optJSONArray("roots") ?: return false
+        for (index in 0 until roots.length()) {
+            val root = roots.optJSONObject(index) ?: continue
+            if (root.optInt("displayId", -1) != displayId) continue
+            if (listOf(root.optString("top"), root.optString("base")).any {
+                    it == packageName || it.startsWith("$packageName/")
+                }) return true
+        }
+        return false
     }
 
     private data class LaunchableApp(val packageName: String, val label: String, val names: Set<String>)

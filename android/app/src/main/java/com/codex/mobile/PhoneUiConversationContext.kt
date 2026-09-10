@@ -73,7 +73,8 @@ internal class PhoneUiConversationContext(
         // Conservative estimate, not a tokenizer measurement or a claim about quality thresholds.
         fun estimate(text: String): Int = text.fold(0) { count, char -> count + if (char.code < 128) 1 else 3 } / 3 + 1
         fun contextWindow(config: PhoneUiModelConfig): Int = if (config.contextWindowTokens > 0) config.contextWindowTokens.coerceAtLeast(8_000) else when (config.modelId) {
-            "autoglm-phone" -> 20_000
+            // The official AutoGLM-Phone-9B model config declares 65,536 positions.
+            "autoglm-phone" -> 65_536
             "gui-plus", "gui-plus-2026-02-26" -> 256_000
             "qwen3.5-plus", "qwen3.5-flash", "qwen3.6-flash", "qwen3.7-plus",
             "qwen3.8-max", "qwen3.8-flash" -> 1_000_000

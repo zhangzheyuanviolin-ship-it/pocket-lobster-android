@@ -61,8 +61,8 @@ class PhoneUiConversationContextTest {
     @Test fun longTextTriggersBudgetEvenBeforeTwelveActions() {
         val context = PhoneUiConversationContext(mutableListOf("user" to "字".repeat(12000)), "", "测试", "")
         assertTrue(context.needsCompaction("测试", config))
-        assertEquals(20000, PhoneUiConversationContext.contextWindow(config))
-        assertTrue(PhoneUiConversationContext.textBudget(config) < 20000 - 3000)
+        assertEquals(65536, PhoneUiConversationContext.contextWindow(config))
+        assertTrue(PhoneUiConversationContext.textBudget(config) < 65536 - 3000)
     }
 
     @Test fun guiBudgetDoesNotInheritTheSmallNativeModelLimit() {
@@ -71,7 +71,7 @@ class PhoneUiConversationContextTest {
         repeat(100) { context.history.add("user" to "继续搜索商品"); context.history.add("assistant" to "点击商品".repeat(30)) }
         assertFalse(context.needsCompaction("搜索商品", gui))
         assertTrue(PhoneUiConversationContext.textBudget(gui) > 200_000)
-        assertEquals(11_000, PhoneUiConversationContext.textBudget(config))
+        assertEquals(49_705, PhoneUiConversationContext.textBudget(config))
         assertEquals(79_000, PhoneUiConversationContext.textBudget(gui.copy(contextWindowTokens = 100_000)))
     }
 
