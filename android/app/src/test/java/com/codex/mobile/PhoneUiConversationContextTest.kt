@@ -59,7 +59,7 @@ class PhoneUiConversationContextTest {
     }
 
     @Test fun longTextTriggersBudgetEvenBeforeTwelveActions() {
-        val context = PhoneUiConversationContext(mutableListOf("user" to "字".repeat(12000)), "", "测试", "")
+        val context = PhoneUiConversationContext(mutableListOf("user" to "字".repeat(60_000)), "", "测试", "")
         assertTrue(context.needsCompaction("测试", config))
         assertEquals(65536, PhoneUiConversationContext.contextWindow(config))
         assertTrue(PhoneUiConversationContext.textBudget(config) < 65536 - 3000)
