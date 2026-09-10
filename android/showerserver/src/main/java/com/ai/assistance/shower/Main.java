@@ -150,6 +150,50 @@ public class Main {
         volatile byte[] codecConfig0;
         volatile byte[] codecConfig1;
         final Object lock = new Object();
+        final Object deliveryLock = new Object();
+        final java.util.ArrayList<byte[]> replayGop = new java.util.ArrayList<>();
+        int replayBytes;
+        long encodedFrames;
+        long deliveredFrames;
+        long lastEncodedUs;
+        String deliveryError = "";
+
+        String inspect() {
+            synchronized (deliveryLock) {
+                try {
+                    return new org.json.JSONObject().put("displayId", displayId)
+                            .put("sinkAlive", videoSinkBinder != null && videoSinkBinder.isBinderAlive())
+                            .put("encodedFrames", encodedFrames).put("deliveredFrames", deliveredFrames)
+                            .put("lastEncodedUs", lastEncodedUs).put("deliveryError", deliveryError)
+                            .put("replayBytes", replayBytes).toString();
+                } catch (org.json.JSONException e) { throw new IllegalStateException(e); }
+            }
+        }
+
+        void rememberFrame(byte[] data) {
+            boolean idr = false;
+            boolean video = false;
+            for (int i = 0; i + 4 < data.length; i++) {
+                int n = data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 ? i + 3
+                        : data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1 ? i + 4 : -1;
+                if (n >= 0) {
+                    int type = data[n] & 31;
+                    idr |= type == 5;
+                    video |= type >= 1 && type <= 5;
+                }
+            }
+            if (!video) return;
+            encodedFrames++;
+            lastEncodedUs = System.nanoTime() / 1000;
+            if (idr) { replayGop.clear(); replayBytes = 0; }
+            if (idr || !replayGop.isEmpty()) {
+                replayGop.add(data);
+                replayBytes += data.length;
+                if (replayBytes > 8 * 1024 * 1024 || replayGop.size() > 120) {
+                    replayGop.clear(); replayBytes = 0;
+                }
+            }
+        }
 
         DisplaySession(int displayId, VirtualDisplay virtualDisplay, MediaCodec videoEncoder, Surface encoderSurface, InputController inputController) {
             this.displayId = displayId;
@@ -210,6 +254,7 @@ public class Main {
         }
 
         void setVideoSink(IBinder sink) {
+            synchronized (deliveryLock) {
             IShowerVideoSink attachedSink;
             byte[] cachedConfig0;
             byte[] cachedConfig1;
@@ -257,14 +302,19 @@ public class Main {
             // INFO_OUTPUT_FORMAT_CHANGED creates a race that leaves late clients unable to
             // decode every subsequent frame. Replay both parameter sets and request a fresh
             // key frame whenever a sink attaches.
+            deliveryError = "";
             sendVideoFrame(attachedSink, cachedConfig0);
             sendVideoFrame(attachedSink, cachedConfig1);
+            // A static producer need not emit another frame after an IDR request.
+            // Replay a complete, bounded GOP instead of stranding a new decoder.
+            for (byte[] packet : replayGop) sendVideoFrame(attachedSink, packet);
             try {
                 Bundle parameters = new Bundle();
                 parameters.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
                 videoEncoder.setParameters(parameters);
             } catch (Throwable t) {
                 logToFile("Failed to request sync frame for display " + displayId + ": " + t.getMessage(), t);
+            }
             }
         }
 
@@ -301,7 +351,10 @@ public class Main {
                             if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
                                 cacheCodecConfigPacket(data);
                             }
-                            sendVideoFrame(data);
+                            synchronized (deliveryLock) {
+                                rememberFrame(data);
+                                sendVideoFrame(data);
+                            }
                         }
                     }
                     codec.releaseOutputBuffer(index, false);
@@ -383,10 +436,13 @@ public class Main {
             if (sink != null) {
                 try {
                     sink.onVideoFrame(data);
+                    if (deliveryError.isEmpty()) deliveredFrames = encodedFrames;
                 } catch (Exception e) {
-                    // Client may have died, invalidate the sink.
+                    deliveryError = e.getClass().getSimpleName() + ": " + e.getMessage();
+                    logToFile("Video delivery failed display=" + displayId + " bytes=" + data.length + " " + deliveryError, e);
+                    // A transient Binder failure does not mean the client is dead.
                     synchronized (lock) {
-                        if (videoSink == sink) {
+                        if (videoSink == sink && !sink.asBinder().isBinderAlive()) {
                             videoSink = null;
                             videoSinkBinder = null;
                             videoSinkDeathRecipient = null;
@@ -501,6 +557,17 @@ public class Main {
 
         try {
             IShowerService service = new IShowerService.Stub() {
+                @Override
+                public String syncDisplay(int displayId, String restorePackage) {
+                    markClientActive();
+                    DisplaySession session = displays.get(displayId);
+                    if (session == null) throw new IllegalStateException("No display session " + displayId);
+                    try {
+                        org.json.JSONObject result = new org.json.JSONObject(session.inspect());
+                        result.put("tasks", inspectTasks(displayId, restorePackage));
+                        return result.toString();
+                    } catch (org.json.JSONException e) { throw new IllegalStateException(e); }
+                }
                 @Override
                 public int ensureDisplay(int width, int height, int dpi, int bitrateKbps) {
                     markClientActive();
@@ -1002,6 +1069,41 @@ public class Main {
         } else {
             logToFile("releaseDisplay ignored for unknown id=" + displayId, null);
         }
+    }
+
+    private org.json.JSONObject inspectTasks(int displayId, String restorePackage) {
+        org.json.JSONObject result = new org.json.JSONObject();
+        try {
+            Object manager = Class.forName("android.app.ActivityTaskManager").getDeclaredMethod("getService").invoke(null);
+            java.util.List<?> roots = (java.util.List<?>) manager.getClass().getMethod("getAllRootTaskInfos").invoke(manager);
+            org.json.JSONArray rows = new org.json.JSONArray();
+            Integer restoreRoot = null;
+            boolean alreadyThere = false;
+            for (Object root : roots) {
+                int id = root.getClass().getField("displayId").getInt(root);
+                int taskId = root.getClass().getField("taskId").getInt(root);
+                android.content.ComponentName top = (android.content.ComponentName) root.getClass().getField("topActivity").get(root);
+                android.content.ComponentName base = (android.content.ComponentName) root.getClass().getField("baseActivity").get(root);
+                rows.put(new org.json.JSONObject().put("displayId", id).put("taskId", taskId)
+                        .put("top", top == null ? "" : top.flattenToShortString())
+                        .put("base", base == null ? "" : base.flattenToShortString()));
+                boolean matches = restorePackage != null && !restorePackage.isEmpty()
+                        && ((top != null && restorePackage.equals(top.getPackageName()))
+                        || (base != null && restorePackage.equals(base.getPackageName())));
+                if (matches && id == displayId) alreadyThere = true;
+                if (matches && id == 0 && restoreRoot == null) restoreRoot = taskId;
+            }
+            result.put("available", true).put("roots", rows);
+            if (!alreadyThere && restoreRoot != null) {
+                manager.getClass().getMethod("moveRootTaskToDisplay", int.class, int.class)
+                        .invoke(manager, restoreRoot, displayId);
+                result.put("restoredTaskId", restoreRoot);
+                logToFile("Restored existing task " + restoreRoot + " to display " + displayId, null);
+            }
+        } catch (Throwable e) {
+            try { result.put("available", false).put("error", e.toString()); } catch (org.json.JSONException ignored) {}
+        }
+        return result;
     }
 
     private void launchPackageOnVirtualDisplay(String packageName, int displayId) {

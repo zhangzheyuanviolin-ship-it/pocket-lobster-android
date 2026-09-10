@@ -151,6 +151,21 @@ class ShowerController {
         }
     }
 
+    suspend fun syncDisplay(restorePackage: String = ""): org.json.JSONObject = withContext(Dispatchers.IO) {
+        val id = virtualDisplayId ?: error("No selected display")
+        val service = getBinder() ?: error("Video producer is disconnected")
+        var state = org.json.JSONObject(service.syncDisplay(id, restorePackage))
+        if (!state.optBoolean("sinkAlive") || state.optString("deliveryError").isNotEmpty() ||
+            state.optLong("deliveredFrames") < state.optLong("encodedFrames")) {
+            service.setVideoSink(id, videoSink.asBinder())
+            state = org.json.JSONObject(service.syncDisplay(id, ""))
+        }
+        check(state.optBoolean("sinkAlive") && state.optString("deliveryError").isEmpty()) {
+            "Video transport unavailable: ${state.optString("deliveryError")}"
+        }
+        state
+    }
+
     private val videoSink = object : IShowerVideoSink.Stub() {
         override fun onVideoFrame(data: ByteArray) {
             val handlers: List<(ByteArray) -> Unit>

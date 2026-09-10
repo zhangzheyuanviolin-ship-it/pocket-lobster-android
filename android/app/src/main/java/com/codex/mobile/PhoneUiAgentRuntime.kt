@@ -348,6 +348,8 @@ object PhoneUiAgentRuntime {
                 }
                 val task = synchronized(lock) { state.optString("task") }
                 val target = resolveTaskTargetApp(context, task)
+                    ?: resolveTaskTargetApp(context, synchronized(lock) { state.optString("initialTask") })
+                if (target != null) synchronized(lock) { state.put("targetPackage", target.packageName) }
                 awaitRunnable()
                 if (cancelled || pendingInstruction != null) return@runBlocking
                 if (continuing && previousDisplayId == displayId) {
@@ -412,6 +414,10 @@ object PhoneUiAgentRuntime {
                     if (cancelled || pendingInstruction != null) return@runBlocking
                 }
                 updateStep(step, "正在截取当前屏幕")
+                val sourceState = if (mode == PhoneUiScreenMode.VIRTUAL) {
+                    PhoneUiShowerRuntime.controller.syncDisplay(synchronized(lock) { state.optString("targetPackage") })
+                } else JSONObject()
+                if (sourceState.optJSONObject("tasks")?.has("restoredTaskId") == true) delay(650)
                 val screenshot = captureScreenshot(context, mode)
                 if (cancelled || pendingInstruction != null) return@runBlocking
                 if (revision != observationRevision.get()) continue
@@ -426,10 +432,16 @@ object PhoneUiAgentRuntime {
                         .put("step", step).put("displayId", displayId).put("mode", mode.value)
                         .put("capturedAt", Instant.now().toString())
                         .put("width", dimensions.first).put("height", dimensions.second)
+                        .put("source", sourceState)
                         .put("video", if (mode == PhoneUiScreenMode.VIRTUAL) JSONObject(PhoneUiVirtualDisplayCapture.diagnostics()) else JSONObject.NULL)
                         .put("sha256", MessageDigest.getInstance("SHA-256").digest(screenshot)
                             .joinToString("") { "%02x".format(it) }))
                 }
+                val observationFile = PhoneUiObservationJournal.save(context, screenshot, synchronized(lock) {
+                    JSONObject(state.getJSONObject("lastObservation").toString())
+                        .put("taskId", state.optString("id")).put("round", state.optInt("round", 1))
+                        .put("model", config.modelId)
+                })
                 updateStep(step, "模型正在判断下一步操作")
                 val decision = PhoneUiAgentModelClient.decide(
                     config,
@@ -444,6 +456,7 @@ object PhoneUiAgentRuntime {
                     },
                     shouldStop = { cancelled || pendingInstruction != null },
                 )
+                PhoneUiObservationJournal.decision(observationFile, decision.raw)
                 awaitRunnable()
                 if (cancelled || pendingInstruction != null) return@runBlocking
                 if (revision != observationRevision.get()) {
@@ -490,6 +503,10 @@ object PhoneUiAgentRuntime {
                     executeAction(context, decision.action, dimensions.first, dimensions.second)
                 }
                 appendEvent("action", "第${step}步：${decision.action.name}", executionResult)
+                if (normalizedAction == "launch") {
+                    val launchedPackage = resolvePackage(context, decision.action.app.orEmpty())
+                    synchronized(lock) { state.put("targetPackage", launchedPackage) }
+                }
                 identicalActionStreak = if (signature == previousActionSignature) identicalActionStreak + 1 else 1
                 previousActionSignature = signature
                 actionResult = modelActionResult(decision.action, executionResult, identicalActionStreak)

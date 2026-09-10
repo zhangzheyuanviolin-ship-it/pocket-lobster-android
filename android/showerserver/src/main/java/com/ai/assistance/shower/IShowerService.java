@@ -48,6 +48,8 @@ public interface IShowerService extends IInterface {
 
     void setVideoSink(int displayId, IBinder sink) throws RemoteException;
 
+    String syncDisplay(int displayId, String restorePackage) throws RemoteException;
+
     abstract class Stub extends Binder implements IShowerService {
 
         private static final String DESCRIPTOR = "com.ai.assistance.shower.IShowerService";
@@ -64,6 +66,7 @@ public interface IShowerService extends IInterface {
         static final int TRANSACTION_injectKeyWithMeta = IBinder.FIRST_CALL_TRANSACTION + 10;
         static final int TRANSACTION_setVideoSink = IBinder.FIRST_CALL_TRANSACTION + 11;
         static final int TRANSACTION_injectTouchEvent = IBinder.FIRST_CALL_TRANSACTION + 12;
+        static final int TRANSACTION_syncDisplay = IBinder.FIRST_CALL_TRANSACTION + 13;
 
         public Stub() {
             attachInterface(this, DESCRIPTOR);
@@ -88,6 +91,13 @@ public interface IShowerService extends IInterface {
         @Override
         public boolean onTransact(int code, Parcel data, Parcel reply, int flags) throws RemoteException {
             switch (code) {
+                case TRANSACTION_syncDisplay: {
+                    data.enforceInterface(DESCRIPTOR);
+                    String result = syncDisplay(data.readInt(), data.readString());
+                    reply.writeNoException();
+                    reply.writeString(result);
+                    return true;
+                }
                 case INTERFACE_TRANSACTION: {
                     reply.writeString(DESCRIPTOR);
                     return true;
@@ -237,6 +247,25 @@ public interface IShowerService extends IInterface {
         }
 
         private static final class Proxy implements IShowerService {
+
+            @Override
+            public String syncDisplay(int displayId, String restorePackage) throws RemoteException {
+                Parcel data = Parcel.obtain();
+                Parcel reply = Parcel.obtain();
+                try {
+                    data.writeInterfaceToken(DESCRIPTOR);
+                    data.writeInt(displayId);
+                    data.writeString(restorePackage);
+                    if (!remote.transact(TRANSACTION_syncDisplay, data, reply, 0)) {
+                        throw new RemoteException("Shower server does not support display synchronization");
+                    }
+                    reply.readException();
+                    return reply.readString();
+                } finally {
+                    reply.recycle();
+                    data.recycle();
+                }
+            }
 
             private final IBinder remote;
 

@@ -271,7 +271,7 @@ class ShowerVideoRenderer {
         return if (result.isNotEmpty()) result else packet
     }
 
-    suspend fun captureCurrentFramePng(): ByteArray? {
+    suspend fun awaitDecodedFrame(): Pair<Long, Long>? {
         val (generation, requestedPresentationUs) = synchronized(lock) { surfaceGeneration to queuedPresentationUs }
         val fresh = withTimeoutOrNull(4_000L) {
             while (true) {
@@ -297,6 +297,11 @@ class ShowerVideoRenderer {
             ShowerLog.w(TAG, "No decoded video buffer before capture deadline: submittedUs=$submittedPresentationUs requestedUs=$requestedPresentationUs")
             return null
         }
+        return generation to requestedPresentationUs.coerceAtLeast(1L)
+    }
+
+    suspend fun captureCurrentFramePng(): ByteArray? {
+        val (generation, _) = awaitDecodedFrame() ?: return null
         val s: Surface
         val w: Int
         val h: Int
