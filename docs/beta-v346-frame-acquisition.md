@@ -32,11 +32,12 @@ not a valid explanation for that incident.
 
 ## Changes
 
-The model's native H.264 decoder now renders into a CPU-readable ImageReader, not a tiny
+The model's native H.264 decoder now uses CPU-readable MediaCodec output images, not a tiny
 overlay SurfaceView. Capture waits for the actual acquired image timestamp corresponding
 to queued decoder input. Preview visibility, SurfaceView creation/destruction, PixelCopy
 timing and display scaling cannot substitute another preview buffer for that image.
-Image planes honor crop, row stride and pixel stride; buffers are closed as new images arrive.
+Image planes honor crop, row stride and pixel stride; images are copied and closed before
+the decoder output buffer is released. Only the latest bitmap is retained.
 The visible takeover preview still uses its existing renderer.
 
 The server retains only a bounded complete latest GOP for decoder reattachment. An IDR
@@ -71,9 +72,15 @@ against the built APK before accepting the artifact. Cloud build also runs sourc
 and the app's existing JVM tests. Synthetic codec tests do not constitute a measured shopping
 task success rate; only real subsequent usage can establish that rate.
 
-References: Android MediaCodec explicitly supports reading unsecured decoded frames through
-ImageReader; ImageReader requires prompt acquisition/release to avoid producer stalls.
+The initial candidate used an ImageReader surface. The device test on 2026-09-10 rejected
+that candidate: Qualcomm decoder output triggered nativeCreatePlanes JNI abort when reading
+the planes. It is not being delivered. The revised path requests flexible YUV byte-buffer
+decoding and uses MediaCodec.getOutputImage directly; the preview path remains unchanged.
+
+References: Android MediaCodec supports getOutputImage in byte-buffer mode. Android Media3
+also documents that some hardware decoders cannot write CPU-readable ImageReader frames.
 
 - https://developer.android.com/reference/android/media/MediaCodec
 - https://developer.android.com/reference/android/media/ImageReader
+- https://developer.android.com/reference/androidx/media3/test/utils/VideoDecodingWrapper
 - https://developer.android.com/reference/android/os/TransactionTooLargeException

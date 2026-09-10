@@ -3,9 +3,6 @@ package com.ai.assistance.showerclient
 import android.graphics.Bitmap
 import android.graphics.ImageFormat
 import android.media.Image
-import android.media.ImageReader
-import android.os.Handler
-import android.os.HandlerThread
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -15,31 +12,29 @@ import kotlinx.coroutines.withTimeoutOrNull
 /** CPU-readable decoder output, independent of any visible window or preview Surface. */
 class ShowerFrameCapture(width: Int, height: Int) : AutoCloseable {
     private val lock = Any()
-    private val reader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 3)
-    private val thread = HandlerThread("ShowerCaptureImages").apply { start() }
-    private val renderer = ShowerVideoRenderer()
-    private var image: Image? = null
+    private var latestBitmap: Bitmap? = null
+    private var imagePresentationUs = 0L
+    private val renderer = ShowerVideoRenderer { image, presentationUs ->
+        synchronized(lock) {
+            if (!closed) {
+                val next = toBitmap(image)
+                latestBitmap?.recycle()
+                latestBitmap = next
+                imagePresentationUs = presentationUs
+            }
+        }
+    }
     private var closed = false
     private var copiedPresentationUs = 0L
 
     init {
-        reader.setOnImageAvailableListener({ source ->
-            synchronized(lock) {
-                if (!closed) {
-                    runCatching { source.acquireLatestImage() }.getOrNull()?.let { next ->
-                        image?.close()
-                        image = next
-                    }
-                }
-            }
-        }, Handler(thread.looper))
-        renderer.attach(reader.surface, width, height)
+        renderer.attach(null, width, height)
     }
 
     fun onFrame(data: ByteArray) = renderer.onFrame(data)
 
     fun diagnostics(): Map<String, Long> = renderer.diagnostics() + synchronized(lock) {
-        mapOf("imageUs" to (image?.timestamp?.div(1000) ?: 0L), "copiedUs" to copiedPresentationUs)
+        mapOf("imageUs" to imagePresentationUs, "copiedUs" to copiedPresentationUs)
     }
 
     suspend fun capturePng(): ByteArray? = withContext(Dispatchers.IO) {
@@ -48,9 +43,9 @@ class ShowerFrameCapture(width: Int, height: Int) : AutoCloseable {
             while (true) {
                 if (renderer.diagnostics()["generation"] != generation) return@withTimeoutOrNull null
                 val result = synchronized(lock) {
-                    val current = image
-                    if (closed || current == null || current.timestamp / 1000 < expectedUs) null
-                    else toBitmap(current).also { copiedPresentationUs = current.timestamp / 1000 }
+                    val current = latestBitmap
+                    if (closed || current == null || imagePresentationUs < expectedUs) null
+                    else current.copy(Bitmap.Config.ARGB_8888, false).also { copiedPresentationUs = imagePresentationUs }
                 }
                 if (result != null) return@withTimeoutOrNull result
                 delay(10)
@@ -74,12 +69,9 @@ class ShowerFrameCapture(width: Int, height: Int) : AutoCloseable {
         renderer.detach()
         synchronized(lock) {
             closed = true
-            reader.setOnImageAvailableListener(null, null)
-            image?.close()
-            image = null
-            reader.close()
+            latestBitmap?.recycle()
+            latestBitmap = null
         }
-        thread.quitSafely()
     }
 
     private fun toBitmap(source: Image): Bitmap {

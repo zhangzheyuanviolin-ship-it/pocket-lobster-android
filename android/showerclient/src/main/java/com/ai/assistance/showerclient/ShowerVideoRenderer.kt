@@ -2,6 +2,8 @@ package com.ai.assistance.showerclient
 
 import android.graphics.Bitmap
 import android.media.MediaCodec
+import android.media.Image
+import android.media.MediaCodecInfo
 import android.media.MediaCodec.BufferInfo
 import android.media.MediaFormat
 import android.os.Build
@@ -22,7 +24,7 @@ import kotlin.coroutines.resume
  * H.264 decoder that renders the Shower video stream onto a Surface.
  * Each instance handles one video stream for a specific virtual display.
  */
-class ShowerVideoRenderer {
+class ShowerVideoRenderer(private val onDecodedImage: ((Image, Long) -> Unit)? = null) {
 
     companion object {
         private const val TAG = "ShowerVideoRenderer"
@@ -65,7 +67,7 @@ class ShowerVideoRenderer {
             "width" to width.toLong(), "height" to height.toLong())
     }
 
-    fun attach(surface: Surface, videoWidth: Int, videoHeight: Int) {
+    fun attach(surface: Surface?, videoWidth: Int, videoHeight: Int) {
         synchronized(lock) {
             surfaceGeneration++
             this.surface = surface
@@ -114,7 +116,7 @@ class ShowerVideoRenderer {
     /** Called for each H.264 packet. */
     fun onFrame(data: ByteArray) {
         synchronized(lock) {
-            if (surface == null || width <= 0 || height <= 0) {
+            if ((surface == null && onDecodedImage == null) || width <= 0 || height <= 0) {
                 if (!warnedNoSurface) {
                     ShowerLog.w(TAG, "onFrame: no surface or invalid size; dropping frames")
                     warnedNoSurface = true
@@ -235,7 +237,16 @@ class ShowerVideoRenderer {
                 MediaCodec.INFO_TRY_AGAIN_LATER -> return
                 MediaCodec.INFO_OUTPUT_FORMAT_CHANGED, MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> continue
                 else -> if (index >= 0) {
-                    dec.releaseOutputBuffer(index, true)
+                    if (onDecodedImage != null) {
+                        try {
+                            val image = checkNotNull(dec.getOutputImage(index)) { "Decoder returned no CPU-readable image" }
+                            image.use { onDecodedImage.invoke(it, info.presentationTimeUs) }
+                        } finally {
+                            dec.releaseOutputBuffer(index, false)
+                        }
+                    } else {
+                        dec.releaseOutputBuffer(index, true)
+                    }
                     submittedPresentationUs = maxOf(submittedPresentationUs, info.presentationTimeUs)
                 } else return
             }
@@ -355,7 +366,8 @@ class ShowerVideoRenderer {
     }
 
     private fun initDecoderLocked() {
-        val s = surface ?: return
+        val s = surface
+        if (s == null && onDecodedImage == null) return
         val localCsd0 = csd0 ?: return
         val localCsd1 = csd1 ?: return
         if (width <= 0 || height <= 0) return
@@ -366,6 +378,9 @@ class ShowerVideoRenderer {
             val csd1Annexb = maybeAvccToAnnexb(localCsd1)
 
             val format = MediaFormat.createVideoFormat("video/avc", width, height)
+            if (onDecodedImage != null) {
+                format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            }
             format.setByteBuffer("csd-0", ByteBuffer.wrap(csd0Annexb))
             format.setByteBuffer("csd-1", ByteBuffer.wrap(csd1Annexb))
 
