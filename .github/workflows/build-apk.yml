@@ -175,7 +175,7 @@ jobs:
           PACKAGE_LINE="$(echo "$BADGING" | head -n 1)"
           echo "$PACKAGE_LINE"
           echo "$PACKAGE_LINE" | grep -F "name='$EXPECTED_PACKAGE_ID'"
-          echo "$PACKAGE_LINE" | grep -F "versionCode='348'"
+          echo "$PACKAGE_LINE" | grep -F "versionCode='349'"
           test "$(echo "$BADGING" | grep -c '^launchable-activity:')" -eq 1
           echo "$BADGING" | grep -F "launchable-activity: name='com.codex.mobile.MainActivity'"
           if echo "$BADGING" | grep -E "^application-label[^:]*:'Minis'$"; then
