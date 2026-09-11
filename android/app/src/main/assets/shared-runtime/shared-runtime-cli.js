@@ -8,8 +8,33 @@ const path = require('path');
 const mode = process.argv[2] || '';
 const args = process.argv.slice(3);
 const home = process.env.HOME || '';
-const tokenPath = path.resolve(home, '..', 'shared-runtime', 'bridge-token');
+const sharedRuntimeDir = path.resolve(home, '..', 'shared-runtime');
+const tokenPath = process.env.ANYCLAW_SHARED_BRIDGE_TOKEN_FILE || path.join(sharedRuntimeDir, 'bridge-token');
+const portPath = path.join(sharedRuntimeDir, 'bridge-port');
 const agentId = String(process.env.ANYCLAW_AGENT_ID || 'codex').trim().toLowerCase();
+
+function resolveBridgePort() {
+  const configuredUrl = String(process.env.ANYCLAW_MINIS_BRIDGE_URL || '').trim();
+  if (configuredUrl) {
+    const parsed = new URL(configuredUrl);
+    if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') {
+      throw new Error('ANYCLAW_MINIS_BRIDGE_URL must use the local runtime bridge');
+    }
+    const configuredPort = Number(parsed.port || 80);
+    if (Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort <= 65535) {
+      return configuredPort;
+    }
+  }
+  try {
+    const persistedPort = Number(fs.readFileSync(portPath, 'utf8').trim());
+    if (Number.isInteger(persistedPort) && persistedPort > 0 && persistedPort <= 65535) {
+      return persistedPort;
+    }
+  } catch (_) {}
+  return 18927;
+}
+
+const bridgePort = resolveBridgePort();
 
 const BROWSER_ACTIONS = {
   navigate: 'Open a URL. Required: --url.',
@@ -160,7 +185,7 @@ function browserPayload(rawArgs) {
   let result;
   if (mode === 'alpine') {
     const command = args[0] === '--command' ? args.slice(1).join(' ') : args.join(' ');
-    result = await post(18927, '/alpine/exec', { agent_id: agentId, command, timeout: 900 });
+    result = await post(bridgePort, '/alpine/exec', { agent_id: agentId, command, timeout: 900 });
   } else if (mode === 'browser') {
     const browserArgs = [...args];
     const first = String(browserArgs[0] || '').toLowerCase();
@@ -175,7 +200,7 @@ function browserPayload(rawArgs) {
     const jsonIndex = browserArgs.indexOf('--json');
     const jsonOutput = jsonIndex >= 0;
     if (jsonOutput) browserArgs.splice(jsonIndex, 1);
-    result = await post(18927, '/browser/call', { agent_id: agentId, ...browserPayload(browserArgs) });
+    result = await post(bridgePort, '/browser/call', { agent_id: agentId, ...browserPayload(browserArgs) });
     if (jsonOutput) {
       process.stdout.write(JSON.stringify(result, null, 2) + '\n');
       process.exitCode = result.ok === false ? 1 : 0;

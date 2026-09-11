@@ -215,14 +215,26 @@ object SharedMinisRuntime {
 }
 
 object MinisRuntimeBridgeRuntime {
-    const val PORT = 18927
+    private const val PROD_PORT = 18927
+    private const val OPERATOR_PORT = 18937
+    private const val BETA_PORT = 18947
+    private const val STANDALONE_PORT = 18957
     @Volatile private var server: MinisRuntimeBridgeServer? = null
+
+    fun port(context: Context): Int = portForPackage(context.packageName)
+
+    fun portForPackage(packageName: String): Int = when (packageName) {
+        "com.codex.mobile.pocketlobster" -> PROD_PORT
+        "com.codex.mobile.pocketlobster.test" -> OPERATOR_PORT
+        "com.codex.mobile.pocketlobster.beta" -> BETA_PORT
+        else -> STANDALONE_PORT
+    }
 
     @Synchronized
     fun ensureStarted(context: Context): Boolean {
         server?.let { if (it.wasStarted()) return true }
         return runCatching {
-            MinisRuntimeBridgeServer(context.applicationContext).also {
+            MinisRuntimeBridgeServer(context.applicationContext, port(context)).also {
                 it.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
                 server = it
             }
@@ -247,7 +259,8 @@ class MinisRuntimeBridgeService : Service() {
 
 private class MinisRuntimeBridgeServer(
     private val context: Context,
-) : NanoHTTPD("127.0.0.1", MinisRuntimeBridgeRuntime.PORT) {
+    private val bridgePort: Int,
+) : NanoHTTPD("127.0.0.1", bridgePort) {
     private val chatRpcHandler = DebugRPCHandler(context)
 
     override fun serve(session: IHTTPSession): Response {
@@ -278,6 +291,7 @@ private class MinisRuntimeBridgeServer(
             JSONObject()
                 .put("ok", true)
                 .put("bridge", "minis")
+                .put("port", bridgePort)
                 .put("browserTabs", pool.tabs.value.size)
                 .put("alpine", true),
         )

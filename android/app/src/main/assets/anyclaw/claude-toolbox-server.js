@@ -8,9 +8,17 @@ const SERVER_INFO = { name: "anyclaw-toolbox", version: "2.3.0" };
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_STDIO_BYTES = 4 * 1024 * 1024;
 const DEFAULT_SEARCH_LIMIT = 6;
+const SHARED_RUNTIME_DIR = path.resolve(process.env.HOME || "", "..", "shared-runtime");
+const PERSISTED_MINIS_BRIDGE_PORT = (() => {
+  try {
+    const value = Number(fs.readFileSync(path.join(SHARED_RUNTIME_DIR, "bridge-port"), "utf8").trim());
+    if (Number.isInteger(value) && value > 0 && value <= 65535) return value;
+  } catch (_) {}
+  return 18927;
+})();
 const WEB_BRIDGE_URL = process.env.ANYCLAW_WEB_BRIDGE_URL || "http://127.0.0.1:18926/web/call";
-const MINIS_BRIDGE_URL = process.env.ANYCLAW_MINIS_BRIDGE_URL || "http://127.0.0.1:18927";
-const SHARED_BRIDGE_TOKEN_FILE = process.env.ANYCLAW_SHARED_BRIDGE_TOKEN_FILE || path.resolve(process.env.HOME || "", "..", "shared-runtime", "bridge-token");
+const MINIS_BRIDGE_URL = process.env.ANYCLAW_MINIS_BRIDGE_URL || `http://127.0.0.1:${PERSISTED_MINIS_BRIDGE_PORT}`;
+const SHARED_BRIDGE_TOKEN_FILE = process.env.ANYCLAW_SHARED_BRIDGE_TOKEN_FILE || path.join(SHARED_RUNTIME_DIR, "bridge-token");
 const TAVILY_BASE_URL = process.env.ANYCLAW_TAVILY_BASE_URL || "https://api.tavily.com/search";
 const EXA_MCP_URL = process.env.ANYCLAW_EXA_MCP_URL || "https://mcp.exa.ai/mcp";
 const EXA_API_BASE_URL = (process.env.ANYCLAW_EXA_API_BASE_URL || "https://api.exa.ai").replace(/\/$/, "");

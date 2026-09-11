@@ -122,6 +122,16 @@ object SharedRuntimeCliInstaller {
 
     fun ensureInstalled(context: Context) {
         SharedBridgeTokenStore.ensure(context)
+        val portFile = File(context.filesDir, "shared-runtime/bridge-port")
+        portFile.parentFile?.mkdirs()
+        val port = com.openminis.app.integration.MinisRuntimeBridgeRuntime.port(context).toString()
+        if (!portFile.exists() || portFile.readText().trim() != port) {
+            portFile.writeText(port)
+        }
+        portFile.setReadable(false, false)
+        portFile.setWritable(false, false)
+        portFile.setReadable(true, true)
+        portFile.setWritable(true, true)
         val paths = BootstrapInstaller.getPaths(context)
         if (!File(paths.prefixDir, "bin").isDirectory) return
         assetFiles.forEach { (asset, relativeTarget) ->
