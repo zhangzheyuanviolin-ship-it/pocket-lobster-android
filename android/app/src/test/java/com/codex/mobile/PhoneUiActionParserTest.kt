@@ -127,9 +127,9 @@ class PhoneUiActionParserTest {
             assertTrue(!prompt.contains("black screen", ignoreCase = true))
             assertTrue(!prompt.contains("受保护页面"))
         }
-        listOf(nativePrompt, genericPrompt, guiPrompt).forEach { prompt ->
-            assertTrue(prompt.contains("Home") && prompt.contains("恢复动作") || prompt.contains("Home is not a recovery action"))
-        }
+        assertTrue(nativePrompt.contains("Home只有用户任务明确要求进入桌面时才允许使用"))
+        assertTrue(genericPrompt.contains("Home is not a recovery action"))
+        assertTrue(guiPrompt.contains("Home is not a recovery action"))
     }
 
     @Test
