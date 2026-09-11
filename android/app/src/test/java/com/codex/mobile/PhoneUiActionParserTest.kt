@@ -120,10 +120,13 @@ class PhoneUiActionParserTest {
         assertTrue(nativePrompt.contains("不得根据应用名称或历史推测"))
         assertTrue(genericPrompt.contains("Treat the latest image as the only evidence"))
         assertTrue(genericPrompt.contains("Do not invent dialogs, required steps, or page text"))
-        assertTrue(nativePrompt.contains("黑色或无内容画面只代表截图不可用"))
-        assertTrue(nativePrompt.contains("不得按照应用、页面"))
-        assertTrue(genericPrompt.contains("A black or content-free frame is a capture failure"))
-        assertTrue(guiPrompt.contains("A black or content-free frame is a capture failure"))
+        assertTrue(nativePrompt.contains("用户要求的普通操作应直接执行"))
+        assertTrue(genericPrompt.contains("Carry out ordinary user-requested actions directly"))
+        assertTrue(guiPrompt.contains("Carry out ordinary user-requested actions directly"))
+        listOf(nativePrompt, genericPrompt, guiPrompt).forEach { prompt ->
+            assertTrue(!prompt.contains("black screen", ignoreCase = true))
+            assertTrue(!prompt.contains("受保护页面"))
+        }
         listOf(nativePrompt, genericPrompt, guiPrompt).forEach { prompt ->
             assertTrue(prompt.contains("Home") && prompt.contains("恢复动作") || prompt.contains("Home is not a recovery action"))
         }

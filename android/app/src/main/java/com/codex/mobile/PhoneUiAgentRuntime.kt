@@ -396,6 +396,7 @@ object PhoneUiAgentRuntime {
             var previousActionSignature = ""
             var identicalActionStreak = 0
             var executedSteps = 0
+            var minimumVirtualFrameUs = 0L
             while (executedSteps < maxSteps) {
                 val step = executedSteps + 1
                 awaitRunnable()
@@ -432,7 +433,7 @@ object PhoneUiAgentRuntime {
                     PhoneUiShowerRuntime.controller.syncDisplay(synchronized(lock) { state.optString("targetPackage") })
                 } else JSONObject()
                 if (sourceState.optJSONObject("tasks")?.has("restoredTaskId") == true) delay(650)
-                val screenshot = captureScreenshot(context, mode)
+                val screenshot = captureScreenshot(context, mode, minimumVirtualFrameUs)
                 if (cancelled || pendingInstruction != null) return@runBlocking
                 if (revision != observationRevision.get()) continue
                 val priorScreenshot = previousScreenshot
@@ -442,6 +443,12 @@ object PhoneUiAgentRuntime {
                 previousScreenshot = screenshot
                 val dimensions = imageDimensions(screenshot)
                 val frameQuality = PhoneUiFrameQuality.inspect(screenshot)
+                if (mode == PhoneUiScreenMode.VIRTUAL) {
+                    minimumVirtualFrameUs = maxOf(
+                        minimumVirtualFrameUs,
+                        PhoneUiVirtualDisplayCapture.diagnostics()["copiedUs"] ?: 0L,
+                    )
+                }
                 synchronized(lock) {
                     state.put("lastObservation", JSONObject()
                         .put("step", step).put("displayId", displayId).put("mode", mode.value)
@@ -472,6 +479,7 @@ object PhoneUiAgentRuntime {
                     actionResult,
                     step,
                     maxSteps,
+                    screenInfo = currentScreenInfo(sourceState, displayId),
                     onProgress = { progress ->
                         if (!cancelled && !paused && pendingInstruction == null) updateStep(step, progress)
                     },
@@ -539,7 +547,7 @@ object PhoneUiAgentRuntime {
                 conversation.lastActionResult = actionResult
                 synchronized(lock) { conversation.save(state); persistLocked() }
                 updateStep(step, "动作已执行，正在等待页面稳定")
-                delay(650)
+                delay(actionSettleDelayMs(normalizedAction))
             }
             appendEvent("error", "达到最大步数", "任务尚未明确完成，已停止继续操作。")
             updateStatus("step_limit", "已达到最大步数，任务停止")
@@ -554,12 +562,20 @@ object PhoneUiAgentRuntime {
         }
     }
 
-    private suspend fun captureScreenshot(context: Context, mode: PhoneUiScreenMode): ByteArray {
+    private suspend fun captureScreenshot(
+        context: Context,
+        mode: PhoneUiScreenMode,
+        afterPresentationUs: Long = 0L,
+    ): ByteArray {
         if (mode == PhoneUiScreenMode.VIRTUAL) {
-            captureUsableVirtualFrame("virtual-video", attempts = 12)?.let { return it }
+            captureUsableVirtualFrame(
+                "virtual-video",
+                attempts = 12,
+                afterPresentationUs = afterPresentationUs,
+            )?.let { return it }
             appendEvent("status", "正在恢复目标应用画面", "视频流暂未产生包含应用内容的画面，正在重新连接解码器；无内容画面不会发送给模型。")
             PhoneUiVirtualDisplayCapture.attach(context, force = true)
-            captureUsableVirtualFrame("virtual-video-reconnected", attempts = 8)?.let { return it }
+            captureUsableVirtualFrame("virtual-video-reconnected", attempts = 8, 0L)?.let { return it }
             throw IllegalStateException("虚拟屏幕视频流没有产生包含应用内容的有效画面；任务已停止，未向模型发送黑色占位帧；${PhoneUiVirtualDisplayCapture.diagnostics()}")
         }
 
@@ -584,12 +600,24 @@ object PhoneUiAgentRuntime {
         }
     }
 
-    private suspend fun captureUsableVirtualFrame(source: String, attempts: Int): ByteArray? {
+    private suspend fun captureUsableVirtualFrame(
+        source: String,
+        attempts: Int,
+        afterPresentationUs: Long,
+    ): ByteArray? {
+        var frameFloorUs = afterPresentationUs
         repeat(attempts) { attempt ->
-            val frame = validScreenshot(PhoneUiVirtualDisplayCapture.capturePng(4_000), "$source-${attempt + 1}")
+            val frame = validScreenshot(
+                PhoneUiVirtualDisplayCapture.capturePng(4_000, frameFloorUs),
+                "$source-${attempt + 1}",
+            )
             if (frame != null) {
                 val quality = PhoneUiFrameQuality.inspect(frame)
                 if (quality.usable) return frame
+                frameFloorUs = maxOf(
+                    frameFloorUs,
+                    PhoneUiVirtualDisplayCapture.diagnostics()["copiedUs"] ?: 0L,
+                )
                 Log.w(TAG, "Rejected content-free virtual frame: source=$source attempt=${attempt + 1} $quality")
                 synchronized(lock) {
                     state.put("lastRejectedFrame", JSONObject()
@@ -607,6 +635,24 @@ object PhoneUiAgentRuntime {
             delay(if (attempt < 3) 350 else 750)
         }
         return null
+    }
+
+    private fun actionSettleDelayMs(action: String): Long = when (action) {
+        "launch" -> 1_400L
+        "tap", "double tap", "long press", "swipe", "back", "home" -> 900L
+        "type", "type_name" -> 500L
+        else -> 150L
+    }
+
+    internal fun currentScreenInfo(source: JSONObject, displayId: Int): String {
+        val roots = source.optJSONObject("tasks")?.optJSONArray("roots") ?: return ""
+        for (index in 0 until roots.length()) {
+            val root = roots.optJSONObject(index) ?: continue
+            if (root.optInt("displayId", -1) != displayId) continue
+            val top = root.optString("top").trim()
+            if (top.isNotEmpty()) return "当前前台应用：$top"
+        }
+        return ""
     }
 
     private fun captureViaShizuku(): ByteArray? {

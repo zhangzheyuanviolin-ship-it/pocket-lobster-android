@@ -14,13 +14,25 @@ class ShowerFrameCapture(width: Int, height: Int) : AutoCloseable {
     private val lock = Any()
     private var latestBitmap: Bitmap? = null
     private var imagePresentationUs = 0L
+    private var requestedAfterUs: Long? = null
     private val renderer = ShowerVideoRenderer { image, presentationUs ->
-        synchronized(lock) {
-            if (!closed) {
-                val next = toBitmap(image)
-                latestBitmap?.recycle()
-                latestBitmap = next
-                imagePresentationUs = presentationUs
+        val shouldCopy = synchronized(lock) {
+            !closed && requestedAfterUs?.let { presentationUs > it } == true
+        }
+        if (shouldCopy) {
+            // YUV conversion is intentionally demand-driven. Converting every video
+            // frame blocks the Binder delivery thread and makes observations seconds
+            // older than the screen that receives the following input action.
+            val next = toBitmap(image)
+            synchronized(lock) {
+                if (!closed && requestedAfterUs?.let { presentationUs > it } == true) {
+                    requestedAfterUs = null
+                    latestBitmap?.recycle()
+                    latestBitmap = next
+                    imagePresentationUs = presentationUs
+                } else {
+                    next.recycle()
+                }
             }
         }
     }
@@ -37,8 +49,21 @@ class ShowerFrameCapture(width: Int, height: Int) : AutoCloseable {
         mapOf("imageUs" to imagePresentationUs, "copiedUs" to copiedPresentationUs)
     }
 
-    suspend fun capturePng(): ByteArray? = withContext(Dispatchers.IO) {
-        val (generation, expectedUs) = renderer.awaitDecodedFrame() ?: return@withContext null
+    suspend fun capturePng(afterPresentationUs: Long = 0L): ByteArray? = withContext(Dispatchers.IO) {
+        val requestFloorUs = maxOf(
+            afterPresentationUs,
+            renderer.diagnostics()["submittedUs"] ?: 0L,
+        )
+        synchronized(lock) {
+            if (closed) return@withContext null
+            requestedAfterUs = requestFloorUs
+        }
+        val awaited = renderer.awaitDecodedFrame(requestFloorUs)
+        if (awaited == null) {
+            synchronized(lock) { requestedAfterUs = null }
+            return@withContext null
+        }
+        val (generation, expectedUs) = awaited
         val bitmap = withTimeoutOrNull(3_000L) {
             while (true) {
                 if (renderer.diagnostics()["generation"] != generation) return@withTimeoutOrNull null
@@ -52,7 +77,10 @@ class ShowerFrameCapture(width: Int, height: Int) : AutoCloseable {
             }
             @Suppress("UNREACHABLE_CODE")
             null
-        } ?: return@withContext null
+        } ?: run {
+            synchronized(lock) { requestedAfterUs = null }
+            return@withContext null
+        }
         try {
             if (renderer.diagnostics()["generation"] != generation) return@withContext null
             ByteArrayOutputStream().use { bytes ->
@@ -69,6 +97,7 @@ class ShowerFrameCapture(width: Int, height: Int) : AutoCloseable {
         renderer.detach()
         synchronized(lock) {
             closed = true
+            requestedAfterUs = null
             latestBitmap?.recycle()
             latestBitmap = null
         }

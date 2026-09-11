@@ -48,9 +48,11 @@ internal data class PhoneUiFrameQuality(
             }
             val permille = nonBlack * 1_000 / pixels.size
             val average = (lumaSum / pixels.size).toInt()
-            // Reject only content-free black producer frames. Real dark pages still
-            // contain enough text, icons, or controls to exceed this low threshold.
-            val usable = permille >= 3 || average >= 18
+            // Decoder startup frames can contain a pointer overlay or a few bright
+            // pixels while the application area is still empty. Do not let those
+            // sparse frames reach a vision model. Legitimate dark pages still have
+            // materially more visible controls or enough aggregate luminance.
+            val usable = permille >= 100 || average >= 20
             return PhoneUiFrameQuality(usable, pixels.size, permille, average, maxLuma - minLuma)
         }
     }

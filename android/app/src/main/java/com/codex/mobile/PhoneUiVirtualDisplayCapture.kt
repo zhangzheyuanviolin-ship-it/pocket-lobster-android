@@ -38,10 +38,10 @@ object PhoneUiVirtualDisplayCapture {
         }
     }
 
-    suspend fun capturePng(timeoutMs: Long = 5_000L): ByteArray? = mutex.withLock {
+    suspend fun capturePng(timeoutMs: Long = 5_000L, afterPresentationUs: Long = 0L): ByteArray? = mutex.withLock {
         withTimeoutOrNull(timeoutMs) {
             while (true) {
-                capture?.capturePng()?.let { return@withTimeoutOrNull it }
+                capture?.capturePng(afterPresentationUs)?.let { return@withTimeoutOrNull it }
                 delay(125)
             }
             @Suppress("UNREACHABLE_CODE")

@@ -15,9 +15,16 @@ class PhoneUiFrameQualityTest {
     }
 
     @Test
-    fun acceptsDarkPageWithSparseVisibleControls() {
+    fun rejectsSparseDecoderStartupFrame() {
         val pixels = IntArray(20_000) { 0xff000000.toInt() }
-        repeat(100) { pixels[it * 100] = 0xffdddddd.toInt() }
+        repeat(1_280) { pixels[it] = 0xffdddddd.toInt() }
+        assertFalse(PhoneUiFrameQuality.inspectPixels(pixels).usable)
+    }
+
+    @Test
+    fun acceptsDarkPageWithVisibleContent() {
+        val pixels = IntArray(20_000) { 0xff000000.toInt() }
+        repeat(2_100) { pixels[it] = 0xff888888.toInt() }
         assertTrue(PhoneUiFrameQuality.inspectPixels(pixels).usable)
     }
 
@@ -35,5 +42,7 @@ class PhoneUiFrameQualityTest {
             .put(JSONObject().put("displayId", 0).put("top", "com.other/.Main").put("base", "com.other/.Main"))))
         assertTrue(PhoneUiAgentRuntime.taskExistsOnDisplay(source, "com.taobao.taobao", 4))
         assertFalse(PhoneUiAgentRuntime.taskExistsOnDisplay(source, "com.taobao.taobao", 0))
+        assertTrue(PhoneUiAgentRuntime.currentScreenInfo(source, 4).contains("com.taobao.taobao/com.taobao.Main"))
+        assertTrue(PhoneUiAgentRuntime.currentScreenInfo(source, 9).isEmpty())
     }
 }
