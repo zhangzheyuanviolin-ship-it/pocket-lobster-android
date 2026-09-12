@@ -215,20 +215,11 @@ object SharedMinisRuntime {
 }
 
 object MinisRuntimeBridgeRuntime {
-    private const val PROD_PORT = 18927
-    private const val OPERATOR_PORT = 18937
-    private const val BETA_PORT = 18947
-    private const val STANDALONE_PORT = 18957
     @Volatile private var server: MinisRuntimeBridgeServer? = null
 
     fun port(context: Context): Int = portForPackage(context.packageName)
 
-    fun portForPackage(packageName: String): Int = when (packageName) {
-        "com.codex.mobile.pocketlobster" -> PROD_PORT
-        "com.codex.mobile.pocketlobster.test" -> OPERATOR_PORT
-        "com.codex.mobile.pocketlobster.beta" -> BETA_PORT
-        else -> STANDALONE_PORT
-    }
+    fun portForPackage(packageName: String): Int = PocketLobsterPortPolicy.minisBridgePort(packageName)
 
     @Synchronized
     fun ensureStarted(context: Context): Boolean {

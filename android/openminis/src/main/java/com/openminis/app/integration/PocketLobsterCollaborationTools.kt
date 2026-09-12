@@ -1,5 +1,6 @@
 package com.openminis.app.integration
 
+import android.content.Context
 import com.openminis.app.data.model.AgentToolDefinition
 import com.openminis.app.data.model.AgentToolParam
 import com.openminis.app.tools.ToolExecutionResult
@@ -19,8 +20,6 @@ object PocketLobsterCollaborationTools {
     const val CANCEL = "collaboration_cancel"
     const val FINISH = "collaboration_finish"
     val NAMES = setOf(DELEGATE, DELEGATE_MANY, STATUS, WAIT, FOLLOWUP, CANCEL, FINISH)
-
-    private const val HOST_URL = "http://127.0.0.1:18923/collaboration-api/tool"
 
     fun definitions(): List<AgentToolDefinition> = listOf(
         definition(
@@ -85,7 +84,7 @@ object PocketLobsterCollaborationTools {
         ),
     )
 
-    suspend fun execute(name: String, argsJson: String): ToolExecutionResult = withContext(Dispatchers.IO) {
+    suspend fun execute(name: String, argsJson: String, context: Context): ToolExecutionResult = withContext(Dispatchers.IO) {
         if (name !in NAMES) return@withContext ToolExecutionResult("Unknown collaboration tool: $name", false)
         val args = runCatching { JSONObject(argsJson) }.getOrElse {
             return@withContext ToolExecutionResult("Invalid collaboration tool arguments", false)
@@ -100,7 +99,7 @@ object PocketLobsterCollaborationTools {
             .put("callerAgentId", "minis")
             .put("tool", name)
             .put("arguments", forwarded)
-        val response = post(payload)
+        val response = post(context, payload)
         ToolExecutionResult(
             output = response.toString(2),
             success = response.optBoolean("ok", false),
@@ -142,8 +141,9 @@ object PocketLobsterCollaborationTools {
         }
     }
 
-    private fun post(payload: JSONObject): JSONObject {
-        val connection = URL(HOST_URL).openConnection() as HttpURLConnection
+    private fun post(context: Context, payload: JSONObject): JSONObject {
+        val port = PocketLobsterPortPolicy.appServerPort(context.packageName)
+        val connection = URL("http://127.0.0.1:$port/collaboration-api/tool").openConnection() as HttpURLConnection
         return try {
             connection.requestMethod = "POST"
             connection.connectTimeout = 5_000

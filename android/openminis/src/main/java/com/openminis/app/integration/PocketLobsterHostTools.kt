@@ -17,8 +17,6 @@ object PocketLobsterHostTools {
         LOCAL_TOOL,
         UBUNTU_TOOL,
     )
-    private const val HOST_BRIDGE_URL = "http://127.0.0.1:18926"
-
     fun localTerminalDefinition() = AgentToolDefinition(
         name = LOCAL_TOOL,
         description = "Execute a command in Pocket Lobster's app-local Android terminal. Returns merged output, exit_code, timeout state, and explicit bridge errors.",
@@ -77,7 +75,8 @@ object PocketLobsterHostTools {
     private fun post(context: Context, route: String, payload: JSONObject, readTimeoutMs: Int): JSONObject {
         val token = SharedBridgeToken.read(context)
         if (token.isEmpty()) return JSONObject().put("ok", false).put("output", "bridge token unavailable")
-        val connection = URL(HOST_BRIDGE_URL + route).openConnection() as HttpURLConnection
+        val port = PocketLobsterPortPolicy.hostBridgePort(context.packageName)
+        val connection = URL("http://127.0.0.1:$port$route").openConnection() as HttpURLConnection
         return try {
             connection.requestMethod = "POST"
             connection.connectTimeout = 3_000

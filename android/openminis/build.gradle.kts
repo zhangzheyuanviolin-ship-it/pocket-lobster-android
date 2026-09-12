@@ -416,7 +416,7 @@ import android.content.Intent""",
             in com.openminis.app.integration.PocketLobsterHostTools.NAMES ->
                 com.openminis.app.integration.PocketLobsterHostTools.execute(name, argsJson, context)
             in com.openminis.app.integration.PocketLobsterCollaborationTools.NAMES ->
-                com.openminis.app.integration.PocketLobsterCollaborationTools.execute(name, argsJson)
+                com.openminis.app.integration.PocketLobsterCollaborationTools.execute(name, argsJson, context)
             else -> ToolExecutionResult("Unknown tool: ${'$'}name", false)""",
         )
         generatedSources.get().file("com/openminis/app/ui/chat/ChatViewModel.kt").asFile.apply {

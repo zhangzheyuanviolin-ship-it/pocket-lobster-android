@@ -597,12 +597,14 @@ const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
 const COLLABORATION_ENABLED_STORAGE_KEY = 'pocket-lobster.collaboration-enabled.v1'
 const { localePreference, setLocalePreference, t } = useUiI18n()
 const openClawDashboardUrl = computed(() => {
+  const serverPort = Number.parseInt(window.location.port, 10) || 18923
+  const channelOffset = [18923, 18933, 18943, 18953].includes(serverPort) ? serverPort - 18923 : 0
   const params = new URLSearchParams({
-    gatewayUrl: 'ws://127.0.0.1:18789',
+    gatewayUrl: `ws://127.0.0.1:${18789 + channelOffset}`,
     localePref: localePreference.value,
     simple: '1',
   })
-  return `http://127.0.0.1:19001/chat?${params.toString()}`
+  return `http://127.0.0.1:${19001 + channelOffset}/chat?${params.toString()}`
 })
 
 const {

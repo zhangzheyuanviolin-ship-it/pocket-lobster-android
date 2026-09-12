@@ -2238,7 +2238,7 @@ class CliAgentChatActivity : AppCompatActivity() {
             .put("HOME", paths.homeDir)
             .put("PREFIX", paths.prefixDir)
             .put("PATH", "${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin")
-            .put("ANYCLAW_WEB_BRIDGE_URL", "http://127.0.0.1:${ShizukuShellBridgeServer.BRIDGE_PORT}/web/call")
+            .put("ANYCLAW_WEB_BRIDGE_URL", "http://127.0.0.1:${ShizukuBridgeRuntime.port(this)}/web/call")
             .put("ANYCLAW_MINIS_BRIDGE_URL", "http://127.0.0.1:${com.openminis.app.integration.MinisRuntimeBridgeRuntime.port(this)}")
             .put("ANYCLAW_SHARED_BRIDGE_TOKEN_FILE", SharedBridgeTokenStore.tokenFile(this).absolutePath)
             .put("ANYCLAW_TAVILY_BASE_URL", "https://api.tavily.com/search")

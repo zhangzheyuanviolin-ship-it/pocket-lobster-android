@@ -18,7 +18,6 @@ import org.json.JSONObject
 object CollaborationClient {
     private const val PREFS = "pocket_lobster_collaboration"
     private const val KEY_ENABLED = "enabled_minis"
-    private const val SERVER_PORT = 18923
     private const val HOST_SERVICE = "com.codex.mobile.CodexForegroundService"
     private const val COLLABORATION_PROTOCOL_ID = "durable-agent-tools-v2"
 
@@ -96,7 +95,7 @@ object CollaborationClient {
     }
 
     private fun isServerReady(context: Context): Boolean = runCatching {
-        val connection = URL("http://127.0.0.1:$SERVER_PORT/host-api/health")
+        val connection = URL("http://127.0.0.1:${PocketLobsterPortPolicy.appServerPort(context.packageName)}/host-api/health")
             .openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "GET"
@@ -136,7 +135,7 @@ object CollaborationClient {
         var lastError: IOException? = null
         repeat(3) { attempt ->
             try {
-                return startOnce(prompt)
+                return startOnce(context, prompt)
             } catch (error: IOException) {
                 lastError = error
                 ensureHostService(context)
@@ -146,9 +145,9 @@ object CollaborationClient {
         throw lastError ?: IOException("协作服务连接失败")
     }
 
-    private fun startOnce(prompt: String): JSONObject {
+    private fun startOnce(context: Context, prompt: String): JSONObject {
         val body = JSONObject().put("leader", "minis").put("prompt", prompt.trim()).toString()
-        val connection = URL("http://127.0.0.1:$SERVER_PORT/collaboration-api/start")
+        val connection = URL("http://127.0.0.1:${PocketLobsterPortPolicy.appServerPort(context.packageName)}/collaboration-api/start")
             .openConnection() as HttpURLConnection
         return try {
             connection.requestMethod = "POST"

@@ -131,7 +131,7 @@ const COLLABORATION_SHARED_ROOT = normalizeText(process.env.POCKET_LOBSTER_COLLA
 const SHARED_BRIDGE_TOKEN_PATH = homeDir
   ? join(dirname(homeDir), 'shared-runtime', 'bridge-token')
   : ''
-const MINIS_BRIDGE_URL = 'http://127.0.0.1:18927'
+const MINIS_BRIDGE_URL = normalizeText(process.env.ANYCLAW_MINIS_BRIDGE_URL) || 'http://127.0.0.1:18927'
 const COLLABORATION_TIMEOUT_MS = 6 * 60 * 60_000
 const COLLABORATION_COORDINATOR_TIMEOUT_MS = COLLABORATION_TIMEOUT_MS
 const COLLABORATION_MAX_TASKS_PER_TURN = 12
