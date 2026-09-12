@@ -38,6 +38,10 @@ android {
     namespace = "com.codex.mobile"
     compileSdk = 36
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "com.codex.mobile.pocketlobster"
         minSdk = 26

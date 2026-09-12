@@ -11,6 +11,7 @@ const hostRuntime = read('android/app/src/main/java/com/codex/mobile/ShizukuBrid
 const proxy = read('android/app/src/main/assets/proxy.js')
 const server = read('src/server/codexAppServerBridge.ts')
 const app = read('src/App.vue')
+const gradle = read('android/app/build.gradle.kts')
 
 for (const service of [
   'appServerPort',
@@ -35,6 +36,7 @@ assert.match(hostRuntime, /PocketLobsterPortPolicy\.hostBridgePort\(context\.pac
 assert.match(proxy, /process\.env\.POCKET_LOBSTER_PROXY_PORT/)
 assert.match(server, /process\.env\.ANYCLAW_MINIS_BRIDGE_URL/)
 assert.match(app, /serverPort - 18923/)
+assert.match(gradle, /buildConfig = true/)
 
 assert.doesNotMatch(nativeMinisClient, /SERVER_PORT = 18923/)
 assert.doesNotMatch(minisCollaborationTools, /HOST_URL = "http:\/\/127\.0\.0\.1:18923/)
