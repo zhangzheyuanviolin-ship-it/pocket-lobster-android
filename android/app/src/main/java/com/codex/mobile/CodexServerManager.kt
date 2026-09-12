@@ -4462,6 +4462,7 @@ EOF
         toolboxServerFile.setExecutable(true, true)
 
         val configFile = File(mcpRoot, "collaboration-mcp.json")
+        val workerConfigFile = File(mcpRoot, "collaboration-worker-mcp.json")
         val nodePath = File(paths.prefixDir, "bin/node").absolutePath
         val runtimePath = "${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin"
         val collaborationServer = JSONObject()
@@ -4491,6 +4492,7 @@ EOF
             .put("ANYCLAW_UBUNTU_BIN", "${paths.homeDir}/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh")
             .put("ANYCLAW_ALLOW_SHARED_STORAGE", "1")
             .put("ANYCLAW_MCP_CONFIG_PATH", configFile.absolutePath)
+            .put("ANYCLAW_AGENT_ID", "claude")
         val systemShellPath = File(paths.prefixDir, "bin/system-shell")
         if (systemShellPath.exists()) {
             toolboxEnv.put("ANYCLAW_SYSTEM_SHELL_BIN", systemShellPath.absolutePath)
@@ -4519,8 +4521,18 @@ EOF
                     .put("pocket_collaboration", collaborationServer),
             )
             .toString(2) + "\n"
+        val workerDesired = JSONObject()
+            .put(
+                "mcpServers",
+                JSONObject()
+                    .put("anyclaw_toolbox", toolboxServer),
+            )
+            .toString(2) + "\n"
         if (!configFile.exists() || configFile.readText() != desired) {
             configFile.writeText(desired)
+        }
+        if (!workerConfigFile.exists() || workerConfigFile.readText() != workerDesired) {
+            workerConfigFile.writeText(workerDesired)
         }
         check(File(nodePath).isFile) { "Claude collaboration Node runtime is missing" }
         check(collaborationServerFile.isFile && collaborationServerFile.length() > 0L) {
@@ -4531,6 +4543,9 @@ EOF
         }
         check(configFile.isFile && configFile.readText() == desired) {
             "Claude collaboration MCP config verification failed"
+        }
+        check(workerConfigFile.isFile && workerConfigFile.readText() == workerDesired) {
+            "Claude collaboration worker MCP config verification failed"
         }
         if (collaborationServerChanged || toolboxServerChanged) {
             Log.i(TAG, "Installed/updated Claude collaboration MCP servers at $mcpRoot")

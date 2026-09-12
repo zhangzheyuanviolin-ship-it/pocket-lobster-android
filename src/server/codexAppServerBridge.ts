@@ -112,6 +112,9 @@ const CLAUDE_RUNS_STATE_PATH = homeDir
 const CLAUDE_COLLABORATION_MCP_CONFIG_PATH = homeDir
   ? join(homeDir, '.pocketlobster', 'mcp', 'collaboration-mcp.json')
   : ''
+const CLAUDE_COLLABORATION_WORKER_MCP_CONFIG_PATH = homeDir
+  ? join(homeDir, '.pocketlobster', 'mcp', 'collaboration-worker-mcp.json')
+  : ''
 const CLAUDE_UPLOAD_DIR = homeDir
   ? join(homeDir, '.pocketlobster', 'claude-web', 'uploads')
   : join(process.cwd(), '.pocketlobster', 'claude-web', 'uploads')
@@ -152,12 +155,17 @@ const SERVER_BUNDLE_ID = (() => {
   return normalizeText(process.env.POCKET_LOBSTER_SERVER_BUNDLE_ID)
 })()
 
-function isClaudeCollaborationMcpReady(): boolean {
-  if (!CLAUDE_COLLABORATION_MCP_CONFIG_PATH) return false
+function isClaudeMcpConfigReady(
+  configPath: string,
+  requiredServers: string[],
+  forbiddenServers: string[] = [],
+): boolean {
+  if (!configPath) return false
   try {
-    const root = asRecord(JSON.parse(readFileSync(CLAUDE_COLLABORATION_MCP_CONFIG_PATH, 'utf8')))
+    const root = asRecord(JSON.parse(readFileSync(configPath, 'utf8')))
     const servers = asRecord(root?.mcpServers)
-    for (const key of ['anyclaw_toolbox', 'pocket_collaboration']) {
+    if (forbiddenServers.some((key) => servers?.[key] !== undefined)) return false
+    for (const key of requiredServers) {
       const server = asRecord(servers?.[key])
       const command = normalizeText(server?.command)
       const args = Array.isArray(server?.args) ? server.args.map(normalizeText).filter(Boolean) : []
@@ -169,6 +177,21 @@ function isClaudeCollaborationMcpReady(): boolean {
   } catch {
     return false
   }
+}
+
+function isClaudeCollaborationMcpReady(): boolean {
+  return isClaudeMcpConfigReady(
+    CLAUDE_COLLABORATION_MCP_CONFIG_PATH,
+    ['anyclaw_toolbox', 'pocket_collaboration'],
+  )
+}
+
+function isClaudeCollaborationWorkerMcpReady(): boolean {
+  return isClaudeMcpConfigReady(
+    CLAUDE_COLLABORATION_WORKER_MCP_CONFIG_PATH,
+    ['anyclaw_toolbox'],
+    ['pocket_collaboration'],
+  )
 }
 
 type JsonRpcCall = {
@@ -3233,6 +3256,7 @@ async function sendClaudeMessage(payload: Record<string, unknown>): Promise<{ ru
 
   const allowSharedStorage = payload.allowSharedStorage === true
   const dangerousMode = payload.dangerousMode === true
+  const enableAnyClawTools = payload.enableAnyClawTools === true
   const collaborationRunId = normalizeText(payload.collaborationRunId)
 
   const state = await readClaudeState()
@@ -3258,14 +3282,19 @@ async function sendClaudeMessage(payload: Record<string, unknown>): Promise<{ ru
   const baseEnv = model.baseUrl ? `ANTHROPIC_BASE_URL=${shellQuote(model.baseUrl)} ` : ''
   const keyEnv = `ANTHROPIC_API_KEY=${shellQuote(model.apiKey)} `
   const dangerArg = dangerousMode ? '--dangerously-skip-permissions ' : ''
-  let collaborationMcpArg = ''
+  let claudeMcpArg = ''
   if (collaborationRunId) {
     if (!isClaudeCollaborationMcpReady()) {
       throw new Error('Claude collaboration MCP config is unavailable')
     }
-    collaborationMcpArg = `--mcp-config ${shellQuote(CLAUDE_COLLABORATION_MCP_CONFIG_PATH)} --strict-mcp-config `
+    claudeMcpArg = `--mcp-config ${shellQuote(CLAUDE_COLLABORATION_MCP_CONFIG_PATH)} --strict-mcp-config `
+  } else if (enableAnyClawTools) {
+    if (!isClaudeCollaborationWorkerMcpReady()) {
+      throw new Error('Claude collaboration worker MCP config is unavailable')
+    }
+    claudeMcpArg = `--mcp-config ${shellQuote(CLAUDE_COLLABORATION_WORKER_MCP_CONFIG_PATH)} --strict-mcp-config `
   }
-  const cmd = `${baseEnv}${keyEnv}claude -p ${dangerArg}${collaborationMcpArg}${addDirArg} ${modelArg}${shellQuote(prompt)} < /dev/null 2>&1`
+  const cmd = `${baseEnv}${keyEnv}ANYCLAW_AGENT_ID=claude claude -p ${dangerArg}${claudeMcpArg}${addDirArg} ${modelArg}${shellQuote(prompt)} < /dev/null 2>&1`
 
   const runId = `claude_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   const run: ClaudeRunContext = {
@@ -5536,6 +5565,7 @@ async function runClaudeCollaborationTurn(
     message: prompt,
     allowSharedStorage: true,
     dangerousMode: true,
+    enableAnyClawTools: true,
     ...(enableCollaborationTools ? { collaborationRunId: run.id } : {}),
   })
   if (rebuiltMissingHistory) {
@@ -6159,6 +6189,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           bundleId: SERVER_BUNDLE_ID,
           collaborationProtocol: COLLABORATION_PROTOCOL_ID,
           claudeCollaborationReady: isClaudeCollaborationMcpReady(),
+          claudeCollaborationWorkerReady: isClaudeCollaborationWorkerMcpReady(),
         })
         return
       }
@@ -6226,7 +6257,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
         const leader = normalizeCollaborationAgent(payload?.leader)
-        if (leader === 'claude' && !isClaudeCollaborationMcpReady()) {
+        if (!isClaudeCollaborationWorkerMcpReady() || (leader === 'claude' && !isClaudeCollaborationMcpReady())) {
           setJson(res, 503, {
             ok: false,
             error: 'Claude协作工具运行时尚未就绪，请等待宿主完成部署后重试',
