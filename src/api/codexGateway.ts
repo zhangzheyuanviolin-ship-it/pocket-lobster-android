@@ -163,6 +163,9 @@ async function getThreadGroupsV2(): Promise<UiProjectGroup[]> {
       cursor,
       limit: 100,
       sortKey: 'updated_at',
+      // The app-server otherwise defaults to the currently selected provider,
+      // which makes the same persisted thread disappear after a route switch.
+      modelProviders: [],
     })
     rows.push(...payload.data)
     const nextCursor: string | null = payload.nextCursor?.trim() || null
