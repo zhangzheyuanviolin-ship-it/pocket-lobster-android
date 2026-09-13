@@ -2,6 +2,12 @@ import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname } from 'node:path'
+import {
+  createProviderResponseContext,
+  prepareProviderRequest,
+  sanitizeProviderResponse,
+  type ProviderResponseContext,
+} from './codexProviderProtocol.mjs'
 
 type ProviderConfig = {
   id: string
@@ -147,13 +153,13 @@ export function sanitizeResponsesHistory(value: unknown): unknown {
   return value
 }
 
-function sanitizeResponseLine(line: string): string {
+function sanitizeResponseLine(line: string, context: ProviderResponseContext): string {
   const normalized = line.trim()
   if (!normalized.startsWith('data:')) return line
   const data = normalized.slice(5).trim()
   if (!data || data === '[DONE]') return line
   try {
-    return `data: ${JSON.stringify(sanitizeResponsesHistory(JSON.parse(data) as unknown))}`
+    return `data: ${JSON.stringify(sanitizeProviderResponse(JSON.parse(data) as unknown, context))}`
   } catch {
     return line
   }
@@ -187,10 +193,12 @@ async function proxyResponses(
   const requestedModel = text(request.model) || provider.modelId
   const localRequestId = `resp_${randomUUID().replace(/-/gu, '')}`
   const observed = { model: '', error: '', requestId: '' }
+  const prepared = prepareProviderRequest(sanitizeResponsesHistory(payload))
+  const responseContext = createProviderResponseContext(prepared.customToolNames)
   const upstream = await fetch(`${provider.baseUrl}/responses`, {
     method: 'POST',
     headers: { Authorization: authorization, 'Content-Type': 'application/json' },
-    body: JSON.stringify(sanitizeResponsesHistory(payload)),
+    body: JSON.stringify(prepared.payload),
   })
 
   if (!upstream.ok || !upstream.body) {
@@ -232,7 +240,7 @@ async function proxyResponses(
         let lineEnd = lineBuffer.indexOf('\n')
         while (lineEnd >= 0) {
           const originalLine = lineBuffer.slice(0, lineEnd)
-          const sanitizedLine = sanitizeResponseLine(originalLine)
+          const sanitizedLine = sanitizeResponseLine(originalLine, responseContext)
           inspectResponseLine(sanitizedLine, observed)
           res.write(`${sanitizedLine}\n`)
           lineBuffer = lineBuffer.slice(lineEnd + 1)
@@ -246,13 +254,13 @@ async function proxyResponses(
     if (isEventStream) lineBuffer += decodedTail
     else jsonBuffer += decodedTail
     if (lineBuffer) {
-      const sanitizedLine = sanitizeResponseLine(lineBuffer)
+      const sanitizedLine = sanitizeResponseLine(lineBuffer, responseContext)
       inspectResponseLine(sanitizedLine, observed)
       res.write(sanitizedLine)
     }
     if (!isEventStream && jsonBuffer.trim()) {
       try {
-        const parsed = sanitizeResponsesHistory(JSON.parse(jsonBuffer) as unknown)
+        const parsed = sanitizeProviderResponse(JSON.parse(jsonBuffer) as unknown, responseContext)
         observed.model = responseModel(parsed)
         observed.error = responseError(parsed)
         const record = asRecord(parsed)

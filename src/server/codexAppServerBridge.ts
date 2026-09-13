@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, dirname, extname } from 'node:path'
 import { handleCodexProviderAdapterRequest } from './codexProviderAdapter.js'
+import { repairResponseItemIds } from './codexProviderProtocol.mjs'
 import { normalizeThreadMessagesV2 } from '../api/normalizers/v2.js'
 import type { ThreadReadResponse } from '../api/appServerDtos.js'
 import {
@@ -670,11 +671,13 @@ type PersistedThreadRouteMigration = {
   changed: boolean
   sanitizedReasoningItems: number
   removedCompactionItems: number
+  repairedResponseItemIds: number
 }
 
 async function migratePersistedThreadRoute(
   threadId: string,
   providerId: string,
+  stripForeignProviderState = true,
 ): Promise<PersistedThreadRouteMigration> {
   const path = await findThreadRolloutPath(codexSessionsPath, threadId)
   if (!path) throw new Error(`Persisted thread not found: ${threadId}`)
@@ -683,6 +686,8 @@ async function migratePersistedThreadRoute(
   let changed = false
   let sanitizedReasoningItems = 0
   let removedCompactionItems = 0
+  let repairedResponseItemIds = 0
+  const itemIdAliases = new Map<string, string>()
   const lines = raw.split('\n').flatMap((line) => {
     if (!line.trim()) return line
     try {
@@ -698,15 +703,21 @@ async function migratePersistedThreadRoute(
           lineChanged = true
         }
       }
-      if (row.type === 'response_item' && normalizeText(payload?.type) === 'reasoning') {
+      if (stripForeignProviderState && row.type === 'response_item' && normalizeText(payload?.type) === 'reasoning') {
         sanitizedReasoningItems += 1
         changed = true
         return []
       }
-      if (row.type === 'response_item' && normalizeText(payload?.type) === 'compaction') {
+      if (stripForeignProviderState && row.type === 'response_item' && normalizeText(payload?.type) === 'compaction') {
         removedCompactionItems += 1
         changed = true
         return []
+      }
+      const repair = repairResponseItemIds(row, itemIdAliases)
+      if (repair.repairedResponseItemIds > 0) {
+        repairedResponseItemIds += repair.repairedResponseItemIds
+        changed = true
+        lineChanged = true
       }
       return lineChanged ? JSON.stringify(row) : line
     } catch {
@@ -715,7 +726,14 @@ async function migratePersistedThreadRoute(
   })
   if (!providerMetadataFound) throw new Error(`Thread provider metadata not found: ${threadId}`)
   if (changed) await writeTextFileAtomic(path, lines.join('\n'))
-  return { path, original: raw, changed, sanitizedReasoningItems, removedCompactionItems }
+  return {
+    path,
+    original: raw,
+    changed,
+    sanitizedReasoningItems,
+    removedCompactionItems,
+    repairedResponseItemIds,
+  }
 }
 
 async function restorePersistedThreadRoute(migration: PersistedThreadRouteMigration): Promise<void> {
@@ -4356,10 +4374,11 @@ async function switchCodexThreadRoute(
   }
 
   let migration: PersistedThreadRouteMigration | null = null
-  if (previousProvider && previousProvider !== providerId) {
+  const providerChanged = Boolean(previousProvider && previousProvider !== providerId)
+  if (providerChanged || providerId === 'openai') {
     appServer.dispose()
     await appServer.waitUntilStopped()
-    migration = await migratePersistedThreadRoute(threadId, providerId)
+    migration = await migratePersistedThreadRoute(threadId, providerId, providerChanged)
   }
 
   try {
@@ -4382,6 +4401,7 @@ async function switchCodexThreadRoute(
       previousProvider,
       sanitizedReasoningItems: migration?.sanitizedReasoningItems ?? 0,
       removedCompactionItems: migration?.removedCompactionItems ?? 0,
+      repairedResponseItemIds: migration?.repairedResponseItemIds ?? 0,
     })
     return {
       ok: true,
@@ -4390,6 +4410,7 @@ async function switchCodexThreadRoute(
       previousProvider,
       sanitizedReasoningItems: migration?.sanitizedReasoningItems ?? 0,
       removedCompactionItems: migration?.removedCompactionItems ?? 0,
+      repairedResponseItemIds: migration?.repairedResponseItemIds ?? 0,
       thread: { ...asRecord(resumed?.thread), modelProvider: actualProvider || providerId },
     }
   } catch (error) {

@@ -76,6 +76,7 @@ class CodexForegroundService : Service() {
                     reportState("bootstrap_missing")
                     return@Thread
                 }
+                serverManager.ensureShizukuBridgeScripts()
                 serverManager.ensureCollaborationRuntimeAssets()
                 val bundleReady = serverManager.installServerBundle { progress ->
                     Log.i("CodexForegroundService", progress)
