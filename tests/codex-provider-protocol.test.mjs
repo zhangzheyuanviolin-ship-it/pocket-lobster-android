@@ -60,6 +60,103 @@ test('maps Codex custom tools through function-only compatible providers', () =>
   assert.equal(done.input, 'text("TOOLS_OK")')
 })
 
+test('restores Codex local tools when the request already declares them as functions', () => {
+  const prepared = prepareProviderRequest({
+    model: 'third-party-model',
+    tools: [
+      {
+        type: 'function',
+        name: 'exec',
+        description: 'Run JavaScript',
+        parameters: {
+          type: 'object',
+          properties: { input: { type: 'string' } },
+          required: ['input'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'apply_patch',
+        description: 'Apply a patch',
+        parameters: {
+          type: 'object',
+          properties: { input: { type: 'string' } },
+          required: ['input'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'list_mcp_resources',
+        description: 'List resources',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    ],
+  })
+
+  assert.deepEqual(prepared.customToolNames, ['exec', 'apply_patch'])
+  assert.equal(prepared.payload.tools[0].type, 'function')
+  assert.equal(prepared.payload.tools[1].type, 'function')
+  assert.equal(prepared.payload.tools[2].type, 'function')
+
+  const context = createProviderResponseContext(prepared.customToolNames)
+  const execAdded = sanitizeProviderResponse({
+    type: 'response.output_item.added',
+    item: {
+      type: 'function_call',
+      id: 'foreign_exec_fc',
+      call_id: 'call_exec',
+      name: 'exec',
+      arguments: '',
+      status: 'in_progress',
+    },
+  }, context)
+  assert.equal(execAdded.item.type, 'custom_tool_call')
+  assert.match(execAdded.item.id, /^ctc_/)
+
+  sanitizeProviderResponse({
+    type: 'response.function_call_arguments.delta',
+    item_id: 'foreign_exec_fc',
+    delta: '{"input":"text(\\"TOOLS_OK\\")"}',
+  }, context)
+  const execDone = sanitizeProviderResponse({
+    type: 'response.function_call_arguments.done',
+    item_id: 'foreign_exec_fc',
+  }, context)
+  assert.equal(execDone.type, 'response.custom_tool_call_input.done')
+  assert.equal(execDone.item_id, execAdded.item.id)
+  assert.equal(execDone.input, 'text("TOOLS_OK")')
+
+  const patchDone = sanitizeProviderResponse({
+    type: 'response.output_item.done',
+    item: {
+      type: 'function_call',
+      id: 'foreign_patch_fc',
+      call_id: 'call_patch',
+      name: 'apply_patch',
+      arguments: '{"input":"*** Begin Patch"}',
+      status: 'completed',
+    },
+  }, context)
+  assert.equal(patchDone.item.type, 'custom_tool_call')
+  assert.equal(patchDone.item.input, '*** Begin Patch')
+
+  const mcpDone = sanitizeProviderResponse({
+    type: 'response.output_item.done',
+    item: {
+      type: 'function_call',
+      id: 'foreign_mcp_fc',
+      call_id: 'call_mcp',
+      name: 'list_mcp_resources',
+      arguments: '{}',
+      status: 'completed',
+    },
+  }, context)
+  assert.equal(mcpDone.item.type, 'function_call')
+  assert.equal(mcpDone.item.name, 'list_mcp_resources')
+})
+
 test('buffers function argument deltas until complete custom input is available', () => {
   const context = createProviderResponseContext(['exec'])
   sanitizeProviderResponse({

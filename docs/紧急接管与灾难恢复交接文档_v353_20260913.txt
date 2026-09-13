@@ -310,3 +310,26 @@ v351 当前通讯版的签名证书 SHA256 与 v353 完全一致，因此满足�
 最终归档 APK 路径将在本文件复制到共享存储前再次核验。智能体没有安装 v353 通讯版，安装动作留给用户明确决定。
 
 文档结束。
+
+第十七部分：v353 安装后真实回归与 v354 修复
+
+用户于 2026 年 9 月 13 日自行覆盖安装 v353 通讯版。设备核验确认包名为 com.codex.mobile.pocketlobster.test，versionCode 为 353，主进程与 :minis 进程均正常运行，Shizuku、system-shell、本地链路、Ubuntu、Alpine、浏览器、Codex 官方模型和 Claude 健康检查均正常。v353 已成功恢复此前被第三方提供商过滤掉的历史线程，切回 OpenAI 官方模型后也不再出现 invalid_id_prefix 错误。
+
+但是用户在找回的线程 01a0066a-83a5-7da0-80d4-692b06334a17 中再次进行 OpenAI 与 MiniMax-M3 往返切换后，确认第三方本地工具问题仍未解决。该线程原始 JSONL 位于：
+/data/user/0/com.codex.mobile.pocketlobster.test/files/home/.codex/sessions/2026/08/15/rollout-2026-08-15T17-13-58-01a0066a-83a5-7da0-80d4-692b06334a17.jsonl
+
+原始记录给出了比模型文字汇报更可靠的证据。MiniMax-M3 实际发出了四次名为 exec 的 function_call 和一次名为 apply_patch 的 function_call，Codex 分别返回 unsupported call: exec 和 unsupported call: apply_patch。与此同时，MiniMax 发出的 list_mcp_resources 普通 function_call 可以正常执行。这证明并非第三方模型没有收到任何工具，也不是 Shizuku 或 shell 服务离线，而是本地自由格式工具在第三方 Responses 兼容端点返回后仍保持 function_call，未被适配器还原为 Codex 执行器要求的 custom_tool_call。
+
+全线程统计进一步确认：OpenAI 官方模型在该线程累计以 custom_tool_call 成功调用 exec 约五千九百次；全设备 Codex 会话内的自由格式 custom_tool_call 名称只有 exec 和 apply_patch。MiniMax 返回的这两个名称均错误保留为 function_call，而普通 MCP 函数保持 function_call 是正确行为。
+
+v352 和 v353 的旧适配逻辑只在请求工具定义的 type 明确等于 custom 时记录反向转换名称。Codex CLI 0.153.4 在部分第三方提供商请求路径中会把 exec 和 apply_patch 预先表示为 function 工具，因此旧逻辑得到空的 customToolNames 集合。MiniMax 随后返回 function_call 时，响应清洗器无法识别其实际属于 Codex 本地自由格式工具，最终触发 unsupported call。这就是上一版单元测试通过但真机仍失败的根因：测试只覆盖了请求 type 为 custom 的理想样本，没有覆盖请求已经是 function 的真实样本。
+
+v354 的修复严格限定在 src/server/codexProviderProtocol.mjs：除了原有 type 为 custom 的工具外，将 Codex 已验证的两个本地自由格式工具名 exec 和 apply_patch 也纳入反向转换上下文。MiniMax 返回这两个 function_call 时会还原为 custom_tool_call，并继续使用现有流式参数缓存将 arguments 中的 input 还原为自由格式输入。list_mcp_resources 等 MCP 普通函数、网络工具和其他 function 工具不会被转换。
+
+tests/codex-provider-protocol.test.mjs 新增真实回归样本，覆盖请求已经把 exec 与 apply_patch 声明为 function、MiniMax 首个 output_item 的 arguments 为空、后续 arguments.delta 补齐 input、完成事件反向还原为 custom_tool_call，以及 list_mcp_resources 必须继续保持 function_call。协议定向测试六项全部通过。
+
+本机 node 扩展测试共有三十四项通过，五项因本地缺少 esbuild、tsup 和完整 OpenMinis 子仓库无法执行，与此前环境基线一致；npm run build:cli 同样因本地没有 tsup 无法执行。以上属于本机依赖缺口，不是源码断言失败。v354 必须由 GitHub Actions 在 npm ci 和递归子仓库齐全的环境中完成全部源码测试、前端、服务端、Android、OpenMinis、Shower、包身份与签名验证。
+
+v354 版本目标为 versionCode 354，基础 versionName 为 1.0.113-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-local-tool-recovery-v354。继续按用户此前要求只构建 release_channel=test 的通讯版，包名必须为 com.codex.mobile.pocketlobster.test，不得自动安装。最终云端运行号、Release、APK 路径、文件大小、SHA256、bundleId 和签名结果应在构建完成后继续追加到本文件。
+
+文档继续更新中。

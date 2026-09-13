@@ -8,6 +8,8 @@ const RESPONSE_ITEM_PREFIXES = new Map([
   ['custom_tool_call', 'ctc'],
 ])
 
+const CODEX_CUSTOM_TOOL_NAMES = new Set(['exec', 'apply_patch'])
+
 function asRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null
 }
@@ -122,7 +124,9 @@ export function prepareProviderRequest(value) {
   if (!root) return { payload: value, customToolNames: [] }
   const customToolNames = (Array.isArray(root.tools) ? root.tools : [])
     .map(asRecord)
-    .filter((tool) => tool?.type === 'custom' && typeof tool.name === 'string')
+    .filter((tool) => typeof tool?.name === 'string' && (
+      tool.type === 'custom' || CODEX_CUSTOM_TOOL_NAMES.has(tool.name)
+    ))
     .map((tool) => tool.name)
   const payload = convertRequestNode(value, new Map())
   const convertedRoot = asRecord(payload)
