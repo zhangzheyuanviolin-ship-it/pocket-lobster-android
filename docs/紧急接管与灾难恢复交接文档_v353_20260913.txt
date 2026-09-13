@@ -259,4 +259,54 @@ GitHub 凭据变量名通常为 GITHUB_TOKEN 或 GH_TOKEN。只能检查是否�
 
 向用户交付时必须再次明确：通讯版尚未由智能体安装；用户可以自行覆盖；如果更新后仍失联，新线程只需让新智能体读取本交接文件即可恢复全部关键上下文。
 
+第十六部分：v353 通讯版最终构建结果
+
+GitHub Actions 工作流运行号：381。
+
+GitHub Actions 运行 ID：34736692491。
+
+构建提交：
+59d7750bc3bf2abaa6e8e840584c2141370a8bd4
+
+Release 标签：
+v381-test
+
+Release 资产名：
+pocket-lobster-test.apk
+
+Release 资产 ID：
+560520156
+
+APK 文件大小：
+183387107 字节
+
+APK SHA256：
+938978a994ebb1192b547e3d85748a3b567addaadfdc1ef247c3423427a4242e
+
+经 aapt 离线读取的包名：
+com.codex.mobile.pocketlobster.test
+
+经 aapt 离线读取的 versionCode：
+353
+
+经 aapt 离线读取的 versionName：
+1.0.112-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-history-recovery-v353
+
+APK 内嵌 bundleId：
+1.0.112-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-history-recovery-v353:667ecd78d970bac00ffbb0b425c102bae1d3741fbb61c3ae4d9a0bf23bd95186
+
+签名证书名称：
+CN=AnyClaw Beta Release, OU=Mobile, O=AnyClaw, L=AnyClaw, ST=AnyClaw, C=CN
+
+签名证书 SHA256：
+e4c798531ebbf7b023a29c02d5d42fabe7ca3917d9857eabd97f0d5e6c24afc8
+
+v351 当前通讯版的签名证书 SHA256 与 v353 完全一致，因此满足覆盖安装的签名条件。
+
+完整 ZIP 校验结果为没有压缩数据错误。
+
+云端完整工作流结论为 success，已经通过源码契约测试、前端类型检查、服务端编译、内嵌服务身份、Shower 构建、OpenMinis Alpine 运行时、Android 单元测试、通讯版 APK 组装、包身份、进程隔离、共享运行时载荷和 APK 签名验证。
+
+最终归档 APK 路径将在本文件复制到共享存储前再次核验。智能体没有安装 v353 通讯版，安装动作留给用户明确决定。
+
 文档结束。
