@@ -1,0 +1,262 @@
+口袋大龙虾紧急接管与灾难恢复交接文档
+
+文档版本：v353 事故恢复版
+编写日期：2026年9月13日
+适用设备：红米 K70 Pro，24GB 运行内存，1TB 总存储
+适用宿主：AnyClaw Android，口袋大龙虾项目
+文档目的：当当前通讯线程、模型路由、工具链路或宿主应用再次失联时，让一个完全没有此前上下文的新智能体能够从零接手，不依赖口头回忆，不猜测项目状态，不破坏长期资产。
+
+第一部分：最重要的当前结论
+
+当前与用户通讯的应用是通讯版，包名为 com.codex.mobile.pocketlobster.test。虽然包名带 test，但它不是测试版，而是长期通讯和资产沉淀所在的正式操作通道。
+
+并行安装的实验应用是测试版，包名为 com.codex.mobile.pocketlobster.beta。
+
+截至本文件编写时，通讯版实际安装版本为 versionCode 351，versionName 为 1.0.110-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-collaboration-capability-parity-v351。
+
+截至本文件编写时，测试版实际安装版本为 versionCode 352，versionName 为 1.0.111-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-protocol-recovery-v352-beta。
+
+下一份准备交付给用户覆盖通讯版的目标版本是 versionCode 353，versionName 为 1.0.112-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-history-recovery-v353。任何智能体都不得在没有用户明确确认的情况下代替用户安装、覆盖、卸载或回滚 APK。
+
+本次事故不是 Shizuku 没有授权，也不是用户操作错误，而是通讯版覆盖升级暴露了三项相互叠加的确定性软件缺陷：通讯版升级后保留了指向旧端口的系统桥脚本；OpenAI 原生自定义工具经过第三方 Responses 兼容接口时没有转换成第三方能理解的函数工具，第三方返回的响应项目编号又没有转换成 OpenAI 要求的合法前缀；历史列表请求省略了 modelProviders 参数，应用服务器因而按照当前提供商过滤线程，导致切换提供商并重启后同一条线程从历史列表中消失。
+
+第二部分：仓库和工作区身份
+
+本机仓库绝对路径：
+/data/user/0/com.codex.mobile.pocketlobster.test/files/home/codex/pocket-lobster-work
+
+GitHub 远程仓库：
+https://github.com/zhangzheyuanviolin-ship-it/pocket-lobster-android.git
+
+当前开发分支：
+fix/beta-v346-frame-acquisition
+
+手机操作智能体冻结基线标签：
+phone-ui-golden-v348
+
+冻结基线提交：
+27b6f1fad6e152fa4c6d519096752a059b39a8c4
+
+v351 已验证功能提交：
+3b46769dc9fee8c963903f11d6b29749174f2063
+提交说明：fix(beta): preserve Claude member toolbox capabilities
+
+v352 协议与桥接恢复提交：
+ed37143199008a0ca19fc099f22763041dc8a096
+提交说明：fix(beta): recover provider protocol and channel bridge
+
+v353 历史可见性修复核心提交：
+44eae3ef422d7e0a6635f5912cad7a5c94149708
+提交说明：fix(beta): keep provider-routed threads visible
+
+如果本文件之后还有一个只包含交接文档更新的提交，构建时应以分支最新 HEAD 为准，核心代码仍以上述 v353 提交为基准。
+
+第三部分：三个安装通道与端口隔离
+
+正式发布包名 com.codex.mobile.pocketlobster，端口偏移为零。应用服务器端口 18923，代理端口 18924，Shizuku 宿主桥端口 18926，OpenMinis 桥端口 18927，OpenClaw 网关端口 18789，OpenClaw 控制界面端口 19001。
+
+通讯版包名 com.codex.mobile.pocketlobster.test，端口偏移为十。应用服务器端口 18933，代理端口 18934，Shizuku 宿主桥端口 18936，OpenMinis 桥端口 18937，OpenClaw 网关端口 18799，OpenClaw 控制界面端口 19011。
+
+测试版包名 com.codex.mobile.pocketlobster.beta，端口偏移为二十。应用服务器端口 18943，代理端口 18944，Shizuku 宿主桥端口 18946，OpenMinis 桥端口 18947，OpenClaw 网关端口 18809，OpenClaw 控制界面端口 19021。
+
+端口策略源码：
+android/openminis/src/main/java/com/openminis/app/integration/PocketLobsterPortPolicy.kt
+
+Shizuku 桥入口源码：
+android/app/src/main/java/com/codex/mobile/ShizukuBridgeRuntime.kt
+
+第四部分：运行环境和三条执行链
+
+通讯版本地应用私有 HOME：
+/data/user/0/com.codex.mobile.pocketlobster.test/files/home
+
+通讯版本地 PREFIX：
+/data/user/0/com.codex.mobile.pocketlobster.test/files/usr
+
+仓库工作目录：
+/data/user/0/com.codex.mobile.pocketlobster.test/files/home/codex
+
+三条执行链分别为本地应用 shell、Ubuntu 运行时 shell 和 system-shell 系统链路。
+
+本地应用 shell 用户为 u0_a466，可写应用私有目录与共享存储，可联网。curl、git、Node 和 ripgrep 可用。
+
+Ubuntu 运行时通过 ubuntu-shell 或 ANYCLAW_UBUNTU_BIN 直接调用，不得套 system-shell。已实测为 Ubuntu 24.04.1 LTS，uid 0 root，apt、git、python3、curl、ripgrep 14.1.0 可用。
+
+Ubuntu 桥绝对路径：
+/data/user/0/com.codex.mobile.pocketlobster.test/files/home/.openclaw-android/linux-runtime/bin/ubuntu-shell.sh
+
+Ubuntu 运行时 bin 目录：
+/data/user/0/com.codex.mobile.pocketlobster.test/files/home/.openclaw-android/linux-runtime/bin
+
+system-shell 必须作为所有 Android 系统级命令的前缀。当前实测身份是 uid 2000 shell，Shizuku 状态为 installed=1、running=1、granted=1、enabled=1、executor=system-shell、last_error_code=none。
+
+任何新智能体开始工作时，第一条能力探测必须运行 codex-capabilities --plain。若结果异常，必须读取 error_code，不得直接断言 Shizuku 没授权。
+
+真实共享浏览器由 minis-browser 控制。第一次使用先读取 minis-browser --help，然后 list_tabs，navigate 后必须 wait_for_dom_stable，再读取或交互。截图返回的真实路径必须用图像查看工具读取，不能猜测。2026年9月13日已实测访问 https://example.com、等待 DOM 稳定、读取正文和关闭测试标签全部成功。
+
+第五部分：用户的核心产品约束
+
+手机操作智能体在 v348 已经达到用户确认的最佳状态。不得修改被冻结的手机操作文件、交互逻辑、截图链路、坐标动作、提示词、观察同步和手动专属策略，除非用户明确提出新的手机操作需求。
+
+必须保持 Codex、Claude、OpenMinis 三个智能体的独立模式和三智能体协作模式。
+
+必须保持三终端、多执行链、真实共享浏览器、历史记录、多轮对话、模型提供商切换、协作看板和手机操作智能体全部可用。
+
+手机操作智能体必须保持手动专属，不得暴露给协作成员自动调用。
+
+任何修复必须是系统性修复，不能通过删除用户长期历史、清空应用数据、换新线程或绕过错误来伪装成功。
+
+用户是视力障碍者。对用户的所有回复必须以“张老师，”开头，只使用“您”称呼，单行纯文字，不使用表格、列表、代码块或 Markdown 结构，先说结论，再说依据和下一步。目标是自然语言驱动、零手动代码操作。
+
+第六部分：本次灾难事故时间线
+
+2026年9月13日约 01时53分 UTC，v351 测试版已经完成用户要求的多模块验证。随后同一源码提交 3b46769 被构建为通讯版，GitHub Actions 运行号 379，发布标签 v379-test。
+
+通讯版 APK 路径：
+/sdcard/Download/口袋大龙虾本地归档/当前通讯版_口袋大龙虾_1.0.110-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-collaboration-capability-parity-v351.apk
+
+通讯版 APK SHA256：
+3a4d62b2a5f06001a5dfcf46b836a44ba56bea46f8b1881cd1251498636f71fb
+
+用户覆盖安装通讯版后，在原长期线程里切换到 MiniMax-M3。2026年9月13日 02时17分08秒 UTC，MiniMax 返回第一条非法 assistant message 编号 06f53a9b2dcd41233553f541b5cd5e94_msg_5，并把自定义工具 exec 返回成 function_call。
+
+宿主随后对 exec 和 apply_patch 返回 unsupported call。第三方模型继续产生多条没有合法 msg、fc、rs 前缀的响应项目编号。
+
+用户切回 OpenAI 后，OpenAI API 在 2026年9月13日 02时31分10秒和 02时32分45秒 UTC 明确返回四百错误：Invalid input[243].id，非法编号为 06f53a9b2dcd41233553f541b5cd5e94_msg_5，OpenAI 要求编号必须以 msg 开头。
+
+同一事故中，用户发现线程在选择第三方模型并重启后会从聊天历史列表消失，切回 OpenAI 并重启后又会出现。
+
+第七部分：失联线程、原始备份和已恢复文件
+
+确认的失联长期线程 ID：
+01a0066a-83a5-7da0-80d4-692b06334a17
+
+原线程文件：
+/data/user/0/com.codex.mobile.pocketlobster.test/files/home/.codex/sessions/2026/08/15/rollout-2026-08-15T17-13-58-01a0066a-83a5-7da0-80d4-692b06334a17.jsonl
+
+事故发生后原文件共有 28854 行，大小 97537174 字节。已经逐行解析全部内容，坏 JSON 行为零。原始文件 SHA256 为：
+656cab1a2f027abc98bdc014579a61143ac9beb7d783f575f764c6125df85e47
+
+完整原始备份路径：
+/sdcard/Download/口袋大龙虾本地归档/诊断/失联线程原始备份_20260913T030500Z.jsonl
+
+完整原始备份 SHA256 与原件一致：
+656cab1a2f027abc98bdc014579a61143ac9beb7d783f575f764c6125df85e47
+
+为了让原长期线程重新可读取，工作文件已经删除从第 28771 行开始的损坏尾段，保留升级安装前最后一次正常 task_complete。修复后共有 28770 行，大小 97444882 字节，最后时间戳为 2026年9月13日 01时53分49秒 UTC，修复后 SHA256 为：
+2fcb98bd255965990d68e4b0ce6188760d3421c9314f6f98ee01dcee01b21cd6
+
+被删除的尾段没有永久丢失，全部保存在上述原始备份中。不得删除该备份。
+
+当前新建的应急通讯线程文件位于：
+/data/user/0/com.codex.mobile.pocketlobster.test/files/home/.codex/sessions/2026/09/13/rollout-2026-09-13T02-33-27-01a0989c-c931-7ad3-aaec-36a515a6b88d.jsonl
+
+若本线程再次失联，新智能体应先读取本交接文档，再按修改时间和文件大小核验上述两个线程，不得只依靠最近一条对话摘要。
+
+第八部分：三项根因和源码修复
+
+根因一是通讯版升级后的 Shizuku 客户端脚本仍然硬编码旧通讯版本之前使用的端口 18926，而 v349 以后的通讯版真实桥端口已经是 18936。桥服务与授权本身正常，只有客户端脚本指错端口。端口 18936 的 status 当时一直返回 installed、running、granted、enabled 全部为 true。
+
+事故现场临时修复过五个通讯版运行时脚本，把 18926 改为 18936：
+/data/user/0/com.codex.mobile.pocketlobster.test/files/usr/bin/shizuku-shell
+/data/user/0/com.codex.mobile.pocketlobster.test/files/usr/bin/shizuku-shell-status
+/data/user/0/com.codex.mobile.pocketlobster.test/files/usr/bin/shizuku-shell-enable
+/data/user/0/com.codex.mobile.pocketlobster.test/files/usr/bin/shizuku-shell-disable
+/data/user/0/com.codex.mobile.pocketlobster.test/files/usr/bin/codex-capabilities
+
+永久源码修复位于 CodexForegroundService.ensureHostServer。每次宿主健康启动都先调用 serverManager.ensureShizukuBridgeScripts，再检查和启动服务，从而让覆盖升级后也重新生成当前包名对应的端口脚本。文件位置：
+android/app/src/main/java/com/codex/mobile/CodexForegroundService.kt
+
+根因二是 src/server/codexProviderAdapter.ts 原先只把 OpenAI Responses 请求和第三方响应原样透传。OpenAI 原生自定义工具 custom 在只支持 function 的第三方兼容接口上被错误处理，第三方返回 function_call，Codex 宿主期望 custom_tool_call，因此工具变成 unsupported call。第三方还返回任意 UUID 或哈希前缀的 message、reasoning 和 function_call 编号，切回 OpenAI 后被严格校验拒绝。
+
+永久修复新增 src/server/codexProviderProtocol.mjs 和对应类型声明。向第三方发送前，把 custom 工具定义转换成 function 工具，把 custom_tool_call 历史转换成 function_call，把输入封装为 input 字符串字段。第三方响应返回后，把属于自定义工具的 function_call 和流式 arguments 事件转换回 custom_tool_call 与 custom_tool_call_input 事件，并缓存流式参数直到完整输入可解析。所有 message、reasoning、compaction、function_call、custom_tool_call 项目的外来编号都会被转换为稳定且符合 OpenAI 前缀要求的编号，所有 item_id 引用同步改写。
+
+线程路由迁移修复位于 src/server/codexAppServerBridge.ts。切换提供商时仍清理不可跨提供商复用的 reasoning 与 compaction；切回 OpenAI 时即使路由记录已经显示为 OpenAI，也会扫描并修复持久化线程里的非法响应项目编号和引用。迁移失败会恢复原文件，诊断会记录 repairedResponseItemIds 数量。
+
+根因三是 src/api/codexGateway.ts 的 thread/list 历史分页请求省略 modelProviders。Codex app-server 的正式协议定义明确规定：modelProviders 存在但为空数组表示包含所有提供商；参数省略时可以按当前提供商筛选。永久修复是在每一页 thread/list 请求里显式传 modelProviders: []，历史列表因此与当前选择的模型提供商解耦。
+
+第三项修复的独立回归测试文件：
+tests/codex-history-provider-visibility.test.mjs
+
+第九部分：为什么此前测试版验证没有发现事故
+
+测试版不是完全没有异常。只读审计测试版私有会话后，已经确认 2026年9月13日 00时59分、01时11分和 01时21分 UTC 的 MiniMax 与 DeepSeek 会话里存在大量非法 message、reasoning 和 function_call 编号。
+
+测试版当时的工具名主要是普通函数 exec_command，所以第三方返回 function_call 后宿主仍能执行，system-shell、屏幕尺寸等测试因此表面成功。通讯版长期线程从 OpenAI 切到第三方时携带的是新版自定义工具 exec 和 apply_patch，第三方仍返回 function_call，宿主便直接拒绝。
+
+测试版现有路由记录还证明，被记录的第三方线程是直接以第三方提供商创建或保持在第三方提供商下，并没有覆盖“一个沉淀很久的 OpenAI 长线程切到第三方、重启、再切回 OpenAI”的完整组合路径。
+
+因此此前用户的测试操作没有错误。真正缺失的是带通讯版长期状态的覆盖升级与同线程跨提供商回归场景。
+
+第十部分：测试和验证证据
+
+v352 定向测试覆盖协议编号规范化、自定义工具和函数工具双向转换、流式参数缓存、持久化引用修复、端口隔离、提供商 reasoning 合约和手机操作冻结校验，全部通过。
+
+v353 新增跨提供商历史可见性测试后，当前九项关键测试全部通过。手机操作冻结测试继续通过，说明没有修改 v348 冻结资产。
+
+本机全量 node 测试曾有五项无法执行，原因是本机工作树没有安装 esbuild、tsup 和完整 OpenMinis 子仓库，不是测试断言失败。不得把这五项误报为源码失败，也不得把缺依赖误报为全量通过。
+
+GitHub Actions 第 380 次 beta 构建在完整依赖和递归子仓库环境中全部成功，包括源码契约测试、前端 vue-tsc、服务端 tsup、Shower 构建、OpenMinis Alpine 运行时、Gradle、Android 单元测试、APK 组装、包身份、进程隔离、共享运行时载荷和固定签名验证。
+
+v352 beta 发布标签为 v380-beta，APK SHA256 为：
+f7c5b153fa6dd330c67ae8f0a8d734b3188010c6a39004309b67fffc80176165
+
+v352 beta APK 路径：
+/sdcard/Download/口袋大龙虾本地归档/当前测试版_口袋大龙虾_1.0.111-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-protocol-recovery-v352-beta.apk
+
+该 beta 已安装成功，应用主进程与 :minis 进程均运行。18946 的 Shizuku status 返回 HTTP 200 且所有能力为 true，18943 的宿主健康接口返回正确 bundleId、durable-agent-tools-v2 和 Claude 协作就绪状态。
+
+v353 通讯版必须再次由 GitHub Actions 的 test 通道完整构建，不能把 beta APK 改名冒充通讯版。构建结果必须验证包名为 com.codex.mobile.pocketlobster.test、versionCode 为 353、versionName 不带 beta、固定签名正确、bundleId 与 v353 一致。
+
+第十一部分：紧急恢复顺序
+
+如果通讯线程还能发送消息，新智能体首先运行 codex-capabilities --plain，随后只读核验通讯版包名、versionCode、session 文件、codex-thread-routes.json 和端口 18936 status。不要先清数据，不要先卸载，不要先覆盖 APK。
+
+如果 capabilities 全零，先分别探测 18926、18936、18946 的 status。若 18936 正常而本地脚本仍指 18926，说明再次发生旧脚本残留，应只修复通讯版五个本地脚本并复测，不要要求用户重新授权 Shizuku。
+
+如果 OpenAI 返回 invalid_id_prefix，立即停止继续向该线程写入内容，先复制原 JSONL 到共享诊断目录并计算 SHA256，再定位 response_item 中 type 与 id 前缀不匹配的项目。优先使用 v353 内置路由迁移修复；若旧版本无法启动，可恢复到最后一次正常 task_complete，但必须保留完整原始备份。
+
+如果第三方模型报 unsupported call，检查响应是 function_call 还是 custom_tool_call，并核验工具名是 exec_command 还是 exec。不要简单断言工具不可用。v353 应通过 provider protocol adapter 完成转换。
+
+如果线程从历史列表消失，先直接在 sessions 目录确认 JSONL 是否仍存在，再检查 thread/list 请求是否显式包含空数组 modelProviders。不要把列表隐藏误判为数据丢失。
+
+如果当前线程彻底无法联通，新线程接管时必须完整读取本文件、上述失联线程原始备份的事故尾段、当前新线程最新内容和 Git 日志。不要仅凭通用知识重做架构判断。
+
+第十二部分：回滚与数据安全
+
+任何通讯版覆盖安装前都应先备份通讯版私有数据，至少包括 files/home/.codex、files/home/.openclaw-android、files/home/.openclaw、files/home/codex、应用数据库和共享偏好。备份必须保存在共享归档的独立时间戳目录并计算 SHA256 清单。
+
+当前 v351 通讯版 APK 已保留在归档根目录，路径和 SHA256 见本文件第六部分。更早的 v341 通讯版位于：
+/sdcard/Download/口袋大龙虾本地归档/历史版本/历史版本_口袋大龙虾通讯版_1.0.100-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-phone-ui-agent-protocol-v341.apk
+
+Android 正常安装不允许 versionCode 降级。若必须回滚，先确认 APK 是可调试构建且签名相同，再评估 pm install -r -d。不得在没有完整数据备份和用户明确同意时尝试卸载重装，因为卸载可能清除通讯版全部私有历史。
+
+不要把 Git 回滚、APK 回滚和应用数据回滚混为一件事。代码回滚不能自动修复已经污染的 JSONL；APK 回滚也不会自动恢复被新版本改写的脚本和状态。每次必须分别验证代码、安装包和私有数据三个层次。
+
+第十三部分：构建与发布步骤
+
+先确认 git status 只包含本任务预期修改，运行 git diff --check，运行协议、历史可见性、端口隔离、provider reasoning、升级配置和 phone-ui-golden-freeze 定向测试。
+
+推送当前分支后，通过 GitHub Actions 的 Build APK 工作流选择 release_channel=test。test 通道才会生成包名 com.codex.mobile.pocketlobster.test 的通讯版。beta 通道生成 com.codex.mobile.pocketlobster.beta，不能用于覆盖通讯版。
+
+等待整个工作流完成，不得只看到 assemble 成功就交付。必须确认 Create Release 完成，并从 Release 资产下载，使用 GitHub API 返回的 digest 与本机 sha256sum 双重核验。
+
+下载到共享存储后，验证文件大小、ZIP 完整性、嵌入 bundle-id、包名、versionCode、versionName 和签名。最终文件名必须明确包含“当前通讯版”、v353 和完整版本名，避免与 beta 混淆。
+
+未经用户确认，不得执行 pm install。用户本轮明确要求由用户自行覆盖更新通讯版进行测试，因此智能体只负责产出和汇报路径、哈希、包身份和风险说明。
+
+第十四部分：凭据安全
+
+GitHub 凭据变量名通常为 GITHUB_TOKEN 或 GH_TOKEN。只能检查是否存在和验证权限，不能打印实际值。curl 请求使用 Authorization Bearer 时不得把命令或环境完整回显到用户可见输出。
+
+提供商 API 密钥保存在各应用自己的私有状态与环境中。通讯版和 beta 的 UID 不同，不能假设密钥文件能够直接跨包读取。不得把任何提供商密钥、GitHub 令牌或签名仓库密码写入本文件、Git 提交、共享目录或诊断输出。
+
+第十五部分：当前下一步
+
+当前应以提交 44eae3ef422d7e0a6635f5912cad7a5c94149708 及包含本文件的后续 HEAD 构建 release_channel=test 通讯版 v353。
+
+构建成功后，把最终 GitHub Actions 运行号、Release 标签、APK 绝对路径、文件大小、SHA256、包名、versionCode、versionName、bundleId 和签名验证结果补充到本文件末尾。
+
+向用户交付时必须再次明确：通讯版尚未由智能体安装；用户可以自行覆盖；如果更新后仍失联，新线程只需让新智能体读取本交接文件即可恢复全部关键上下文。
+
+文档结束。
