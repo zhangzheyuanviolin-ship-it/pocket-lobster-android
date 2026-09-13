@@ -332,4 +332,58 @@ tests/codex-provider-protocol.test.mjs 新增真实回归样本，覆盖请求�
 
 v354 版本目标为 versionCode 354，基础 versionName 为 1.0.113-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-local-tool-recovery-v354。继续按用户此前要求只构建 release_channel=test 的通讯版，包名必须为 com.codex.mobile.pocketlobster.test，不得自动安装。最终云端运行号、Release、APK 路径、文件大小、SHA256、bundleId 和签名结果应在构建完成后继续追加到本文件。
 
-文档继续更新中。
+第十八部分：v354 通讯版最终构建与归档结果
+
+GitHub Actions 工作流运行号：382。
+
+GitHub Actions 运行 ID：34755554572。
+
+构建提交：
+a1f5b57f0ffe8620ae1b146b189b519c2edd7bb3
+
+Release 标签：
+v382-test
+
+Release 资产名：
+pocket-lobster-test.apk
+
+Release 资产 ID：
+561141136
+
+APK 文件大小：
+183387283 字节
+
+GitHub Release digest 与本地 SHA256 均为：
+0d6b8d32d404fb730d9e73efaa8fffd0538e815d778f5af7000b00c2551d4c84
+
+经 aapt 离线读取的包名：
+com.codex.mobile.pocketlobster.test
+
+经 aapt 离线读取的 versionCode：
+354
+
+经 aapt 离线读取的 versionName：
+1.0.113-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-local-tool-recovery-v354
+
+APK 内嵌 bundleId：
+1.0.113-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-local-tool-recovery-v354:f1151c3961400da59dc83fc42492ed33451e077d65e514372d1b3cf58eaa373a
+
+APK 内嵌服务已直接检出 CODEX_CUSTOM_TOOL_NAMES 为 exec 和 apply_patch，并检出 function 工具名称纳入反向转换上下文的判断逻辑。完整 ZIP 校验无压缩数据错误。
+
+签名验证通过 APK Signature Scheme v2。签名证书名称：
+CN=AnyClaw Beta Release, OU=Mobile, O=AnyClaw, L=AnyClaw, ST=AnyClaw, C=CN
+
+签名证书 SHA256：
+e4c798531ebbf7b023a29c02d5d42fabe7ca3917d9857eabd97f0d5e6c24afc8
+
+该证书与已安装 v353 通讯版完全一致，满足 Android 覆盖更新的签名条件。云端完整工作流结论为 success，已经通过全部源码契约测试、前端类型检查、服务端编译、内嵌服务身份、Shower 构建、OpenMinis Alpine 运行时、Android 构建、通讯版包身份、进程隔离、共享运行时载荷和固定签名验证。
+
+最终当前通讯版 APK 路径：
+/sdcard/Download/口袋大龙虾本地归档/当前通讯版_口袋大龙虾_1.0.113-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-local-tool-recovery-v354.apk
+
+原 v353 通讯版未删除，已可恢复地移动到：
+/sdcard/Download/口袋大龙虾本地归档/历史版本/历史版本_口袋大龙虾通讯版_1.0.112-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-history-recovery-v353.apk
+
+归档根目录只保留一个当前通讯版 APK。智能体没有安装 v354，手机仍运行用户此前自行安装的 v353。必须由用户明确决定并自行覆盖安装 v354；安装后应在找回的旧线程中切到 MiniMax-M3，要求执行 codex-capabilities --plain、system-shell id 和一次只读文件查询，再切回 OpenAI 官方模型复核线程连续性及非法编号错误没有复发。
+
+文档结束。
