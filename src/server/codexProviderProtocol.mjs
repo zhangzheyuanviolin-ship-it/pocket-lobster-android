@@ -6,6 +6,7 @@ const RESPONSE_ITEM_PREFIXES = new Map([
   ['compaction', 'cmp'],
   ['function_call', 'fc'],
   ['custom_tool_call', 'ctc'],
+  ['web_search_call', 'ws'],
 ])
 
 const CODEX_CUSTOM_TOOL_NAMES = new Set(['exec', 'apply_patch'])
@@ -108,6 +109,9 @@ function convertRequestNode(value, itemIds) {
   } else if (converted.type === 'custom_tool_call_output') {
     converted.type = 'function_call_output'
   }
+  if (converted.type === 'additional_tools' && Array.isArray(converted.tools)) {
+    converted.tools = converted.tools.map(convertCustomToolDefinition)
+  }
   const originalId = stringValue(converted.id)
   const normalizedId = normalizeResponseItemId(converted.type, originalId)
   if (originalId && normalizedId !== originalId) {
@@ -119,15 +123,34 @@ function convertRequestNode(value, itemIds) {
   return converted
 }
 
+function collectProviderToolDefinitions(root) {
+  const definitions = Array.isArray(root.tools) ? [...root.tools] : []
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit)
+      return
+    }
+    const row = asRecord(value)
+    if (!row) return
+    if (row.type === 'additional_tools' && Array.isArray(row.tools)) {
+      definitions.push(...row.tools)
+    }
+    Object.values(row).forEach(visit)
+  }
+  visit(root.input)
+  return definitions
+}
+
 export function prepareProviderRequest(value) {
   const root = asRecord(value)
   if (!root) return { payload: value, customToolNames: [] }
-  const customToolNames = (Array.isArray(root.tools) ? root.tools : [])
+  const customToolNames = collectProviderToolDefinitions(root)
     .map(asRecord)
     .filter((tool) => typeof tool?.name === 'string' && (
       tool.type === 'custom' || CODEX_CUSTOM_TOOL_NAMES.has(tool.name)
     ))
     .map((tool) => tool.name)
+    .filter((name, index, names) => names.indexOf(name) === index)
   const payload = convertRequestNode(value, new Map())
   const convertedRoot = asRecord(payload)
   if (convertedRoot && Array.isArray(root.tools)) {

@@ -14,6 +14,51 @@ test('normalizes foreign response item ids with stable Codex prefixes', () => {
   assert.equal(first, normalizeResponseItemId('message', 'foreign_msg_5'))
   assert.equal(normalizeResponseItemId('message', 'msg_valid'), 'msg_valid')
   assert.match(normalizeResponseItemId('function_call', 'foreign_fc_0'), /^fc_/)
+  assert.match(normalizeResponseItemId('web_search_call', 'call_foreign_search'), /^ws_/)
+})
+
+test('restores Codex local tools declared through Responses Lite additional_tools', () => {
+  const prepared = prepareProviderRequest({
+    model: 'MiniMax-M3',
+    tools: null,
+    input: [{
+      type: 'additional_tools',
+      role: 'developer',
+      tools: [
+        { type: 'custom', name: 'exec', description: 'Run JavaScript' },
+        {
+          type: 'function',
+          name: 'apply_patch',
+          description: 'Apply a patch',
+          parameters: { type: 'object', properties: { input: { type: 'string' } } },
+        },
+        {
+          type: 'function',
+          name: 'list_mcp_resources',
+          description: 'List resources',
+          parameters: { type: 'object', properties: {} },
+        },
+      ],
+    }],
+  })
+
+  assert.deepEqual(prepared.customToolNames, ['exec', 'apply_patch'])
+  assert.equal(prepared.payload.input[0].tools[0].type, 'function')
+  assert.equal(prepared.payload.input[0].tools[1].type, 'function')
+  assert.equal(prepared.payload.input[0].tools[2].type, 'function')
+
+  const execDone = sanitizeProviderResponse({
+    type: 'response.output_item.done',
+    item: {
+      type: 'function_call',
+      id: 'foreign_exec',
+      call_id: 'call_exec',
+      name: 'exec',
+      arguments: '{"input":"text(true)"}',
+    },
+  }, createProviderResponseContext(prepared.customToolNames))
+  assert.equal(execDone.item.type, 'custom_tool_call')
+  assert.equal(execDone.item.input, 'text(true)')
 })
 
 test('maps Codex custom tools through function-only compatible providers', () => {
@@ -194,14 +239,40 @@ test('normalizes message ids and all streamed item references', () => {
   assert.equal(delta.item_id, added.item.id)
 })
 
+test('normalizes third-party web search ids and streamed references', () => {
+  const context = createProviderResponseContext()
+  const added = sanitizeProviderResponse({
+    type: 'response.output_item.added',
+    item: { type: 'web_search_call', id: 'call_foreign_search', status: 'in_progress' },
+  }, context)
+  const completed = sanitizeProviderResponse({
+    type: 'response.web_search_call.completed',
+    item_id: 'call_foreign_search',
+    output_index: 0,
+  }, context)
+  assert.match(added.item.id, /^ws_/)
+  assert.equal(completed.item_id, added.item.id)
+})
+
 test('repairs persisted response item ids and later references across JSONL rows', () => {
   const aliases = new Map()
   const item = { type: 'response_item', payload: { type: 'message', id: 'foreign_msg_5' } }
   const repairedItem = repairResponseItemIds(item, aliases)
   const event = { type: 'event_msg', payload: { type: 'response.output_text.delta', item_id: 'foreign_msg_5' } }
   const repairedEvent = repairResponseItemIds(event, aliases)
+  const webSearch = { type: 'response_item', payload: { type: 'web_search_call', id: 'call_foreign_search' } }
+  const repairedWebSearch = repairResponseItemIds(webSearch, aliases)
+  const webSearchEvent = {
+    type: 'event_msg',
+    payload: { type: 'response.web_search_call.completed', item_id: 'call_foreign_search' },
+  }
+  const repairedWebSearchEvent = repairResponseItemIds(webSearchEvent, aliases)
   assert.equal(repairedItem.repairedResponseItemIds, 1)
   assert.match(item.payload.id, /^msg_/)
   assert.equal(repairedEvent.repairedResponseItemIds, 1)
   assert.equal(event.payload.item_id, item.payload.id)
+  assert.equal(repairedWebSearch.repairedResponseItemIds, 1)
+  assert.match(webSearch.payload.id, /^ws_/)
+  assert.equal(repairedWebSearchEvent.repairedResponseItemIds, 1)
+  assert.equal(webSearchEvent.payload.item_id, webSearch.payload.id)
 })
