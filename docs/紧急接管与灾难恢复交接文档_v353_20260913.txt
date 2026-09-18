@@ -328,9 +328,7 @@ v354 的修复严格限定在 src/server/codexProviderProtocol.mjs：除了原�
 
 tests/codex-provider-protocol.test.mjs 新增真实回归样本，覆盖请求已经把 exec 与 apply_patch 声明为 function、MiniMax 首个 output_item 的 arguments 为空、后续 arguments.delta 补齐 input、完成事件反向还原为 custom_tool_call，以及 list_mcp_resources 必须继续保持 function_call。协议定向测试六项全部通过。
 
-本机 node 扩展测试共有三十四项通过，五项因本地缺少 esbuild、tsup 和完整 OpenMinis 子仓库无法执行，与此前环境基线一致；npm run build:cli 同样因本地没有 tsup 无法执行。以上属于本机依赖缺口，不是源码断言失败。v354 必须由 GitHub Actions 在 npm ci 和递归子仓库齐全的环境中完成全部源码测试、前端、服务端、Android、OpenMinis、Shower、包身份与签名验证。
-
-v354 版本目标为 versionCode 354，基础 versionName 为 1.0.113-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-local-tool-recovery-v354。继续按用户此前要求只构建 release_channel=test 的通讯版，包名必须为 com.codex.mobile.pocketlobster.test，不得自动安装。最终云端运行号、Release、APK 路径、文件大小、SHA256、bundleId 和签名结果应在构建完成后继续追加到本文件。
+本机 node 扩展测试共有三十四项通过，五项因本地缺少 esbuild、tsup 和完整 OpenMinis 子仓库无法执行，与此前环境基线一致；npm run build:cli 同样因本地没有 tsup 无法执行。以上属于本机依赖缺口，不是源码断言失败。云端运行 382 已在 npm ci 和递归子仓库齐全的环境中完成全部源码测试、前端、服务端、Android、OpenMinis、Shower、包身份与签名验证。
 
 第十八部分：v354 通讯版最终构建与归档结果
 
@@ -385,5 +383,35 @@ e4c798531ebbf7b023a29c02d5d42fabe7ca3917d9857eabd97f0d5e6c24afc8
 /sdcard/Download/口袋大龙虾本地归档/历史版本/历史版本_口袋大龙虾通讯版_1.0.112-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-history-recovery-v353.apk
 
 归档根目录只保留一个当前通讯版 APK。智能体没有安装 v354，手机仍运行用户此前自行安装的 v353。必须由用户明确决定并自行覆盖安装 v354；安装后应在找回的旧线程中切到 MiniMax-M3，要求执行 codex-capabilities --plain、system-shell id 和一次只读文件查询，再切回 OpenAI 官方模型复核线程连续性及非法编号错误没有复发。
+
+文档结束。
+
+第十九部分：2026年9月18日 v354 真机复发与新增事故证据
+
+用户已在通讯版真实覆盖安装 v354。2026年9月18日设备查询确认包名仍为 com.codex.mobile.pocketlobster.test，实际安装 versionCode 为 354，versionName 为 1.0.113-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-local-tool-recovery-v354。交接文档此前写的“v354 未安装”已经过期，后续接管必须以本节为准。
+
+截至事故发生时，与项目直接相关且最近的两条会话已经逐行读取完毕。当前接管线程 ID 为 01a0b41e-563b-7ca3-8015-961ed2f41431，对应文件为 /data/user/0/com.codex.mobile.pocketlobster.test/files/home/.codex/sessions/2026/09/18/rollout-2026-09-18T10-44-42-01a0b41e-563b-7ca3-8015-961ed2f41431.jsonl。直接发生 MiniMax 往返事故的上一线程 ID 为 01a0989c-c931-7ad3-aaec-36a515a6b88d，对应文件为 /data/user/0/com.codex.mobile.pocketlobster.test/files/home/.codex/sessions/2026/09/13/rollout-2026-09-13T02-33-27-01a0989c-c931-7ad3-aaec-36a515a6b88d.jsonl。两份文件均逐行解析为有效 JSON，没有坏行。
+
+用户在上一线程切换到 MiniMax-M3 后，原始会话记录确认 MiniMax 实际运行并返回了工具调用。普通 function 工具可以执行，但 exec 仍以 function_call 返回，Codex 执行器因此报告 unsupported call: exec。v354 的 prepareProviderRequest 只扫描请求最外层 root.tools；真机使用的 Responses Lite 请求把工具放在 input 内 type 为 additional_tools 的嵌套 tools 数组中，导致 customToolNames 为空。真实形状最小复现得到请求内 exec 保持 custom、第三方返回 exec 保持 function_call，直接证明 v354 的反向转换上下文没有建立。
+
+用户随后切回 OpenAI 官方 gpt-5.6-sol。2026年9月18日10时40分16秒 UTC，OpenAI 返回新的四百错误：input[81].id 的值 call_01a0b4152cb170739e9d789f 前缀非法，该位置要求 ws 前缀。原始会话证明这个编号属于 web_search_call，不是 function_call 的 call_id。上一线程共有四个 web_search_call 被第三方写成 call_ 前缀。切回 OpenAI 的迁移诊断记录 repairedResponseItemIds 为零，证明 v354 的 RESPONSE_ITEM_PREFIXES 没有 web_search_call 到 ws 的映射，旧修复没有覆盖该类型。
+
+第二十部分：v355 修复、验证、构建与归档结果
+
+v355 核心修复提交为 c1dceedb283ce669954f24b815d3167b81a0e718，提交说明为 fix(operator): recover provider round trips。src/server/codexProviderProtocol.mjs 现在递归读取 input 内所有 additional_tools 的 tools 定义，收集 exec 和 apply_patch 作为 Codex 本地自由格式工具，并把嵌套 custom 定义转换为第三方兼容的 function 定义；第三方返回这两个名称的 function_call 后会恢复成 custom_tool_call。普通 MCP 和其他函数工具保持 function_call，不扩大转换范围。
+
+同一修复把 web_search_call 加入响应项目编号映射，非法外来编号稳定转换为 ws 前缀，并同步修复后续 item_id 引用。用新代码只读扫描真实故障会话时，共识别四个非法 web_search_call，修复编号及引用共六处；具体报错编号 call_01a0b4152cb170739e9d789f 会稳定转换为 ws_49142a068f6a51456169a5dc037804e6。
+
+tests/codex-provider-protocol.test.mjs 已新增真机形状回归：顶层 tools 为 null、工具位于 nested additional_tools、exec 为 custom、apply_patch 已是 function、普通 list_mcp_resources 保持 function、MiniMax function_call 反向恢复、web_search_call 实时流编号修复、持久化编号与引用修复。完整本机源码测试四十五项全部通过，前端 vue-tsc 与 Vite 构建通过，服务端 tsup 在 Ubuntu Node 22 环境编译通过，OpenMinis 1.12 提交基线与手机操作黄金冻结测试继续通过。
+
+GitHub Actions 第383次构建在源码测试、前端、服务端和内嵌服务身份全部通过后，因 android-actions/setup-android v3 默认请求 Google 已下架的 tools 包而失败。该失败不是源码或 Android 项目断言失败。工作流修复提交为 cebfd670f9e46fdb71c1f3656211bce0a4963e90，升级为 setup-android v4 并显式只请求 platform-tools。
+
+GitHub Actions 第384次 test 通道完整构建成功，运行 ID 为 35337432210，Release 标签为 v384-test，Release ID 为 391409404，资产名为 pocket-lobster-test.apk，资产 ID 为 572453152，构建提交为 cebfd670f9e46fdb71c1f3656211bce0a4963e90。
+
+最终通讯版 APK 大小为 183388075 字节。GitHub Release digest 与本机 SHA256 均为 58b777632ae05a831371d374256910481c38ee41c6010e7550bf7cafe307f50a。经 aapt 读取，包名为 com.codex.mobile.pocketlobster.test，versionCode 为 355，versionName 为 1.0.114-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-roundtrip-recovery-v355。APK 内嵌 bundleId 为 1.0.114-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-roundtrip-recovery-v355:9f9733b0e36f20a138d4ea7aee290371fcc691e43ebf82c168908dfb89a502fe。完整 ZIP 校验无压缩数据错误。
+
+签名验证通过 APK Signature Scheme v2，签名证书 SHA256 为 e4c798531ebbf7b023a29c02d5d42fabe7ca3917d9857eabd97f0d5e6c24afc8，与已安装 v354 通讯版归档 APK 完全一致。最终当前通讯版 APK 路径为 /sdcard/Download/口袋大龙虾本地归档/当前通讯版_口袋大龙虾_1.0.114-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-roundtrip-recovery-v355.apk。旧 v354 已可恢复地移动到 /sdcard/Download/口袋大龙虾本地归档/历史版本/历史版本_口袋大龙虾通讯版_1.0.113-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-local-tool-recovery-v354.apk。
+
+智能体没有安装 v355，设备当前仍运行 v354。用户覆盖安装 v355 后，必须在可恢复的会话中先切到 MiniMax-M3，要求执行 codex-capabilities --plain、system-shell id、只读文件查询和一次网络或搜索工具，再切回 OpenAI 官方 gpt-5.6-sol，确认 exec 不再 unsupported、普通 function 工具不受影响、历史线程仍可见、web_search_call 不再以 call 前缀污染输入，并且不再出现 Expected an ID that begins with ws 的四百错误。
 
 文档结束。
