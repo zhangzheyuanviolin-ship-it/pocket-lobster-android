@@ -437,3 +437,17 @@ GitHub Actions 第384次 test 通道完整构建成功，运行 ID 为 353374322
 本地修复为每条乐观用户消息和实时助手消息分配同一条单调递增的客户端顺序，合并显示时按真实到达顺序排列；实时助手消息同时绑定 turnId，刷新快照时只要同一回合的持久化助手消息已经出现，或者持久化历史已经进入更晚回合，就删除旧实时副本。新增回归测试真实复现“较早实时助手回复残留后用户又发送新消息”的场景，并断言最新用户消息仍位于页面最下方。v356 版本号为 356，版本名为 1.0.115-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-history-order-recovery-v356；构建、归档与安装状态将在完成后继续写入下一节。
 
 文档结束。
+
+第二十二部分：v356 最终构建、校验与归档结果
+
+v356 核心提交为 a8c998cf4c6acd4493e0961bebf037460872bb00，提交说明为 fix(operator): recover history projection and message order，已经推送到 fix/beta-v346-frame-acquisition。完整本机源码测试四十九项全部通过，前端 vue-tsc 与 Vite 构建通过，Ubuntu Node 22 的 tsup 服务端构建通过，OpenMinis 1.12 基线、手机操作黄金冻结测试与 git diff 校验全部通过。
+
+GitHub Actions 第385次 test 通道完整构建成功，运行 ID 为35521182837，构建任务 ID 为106105429487，构建提交为 a8c998cf4c6acd4493e0961bebf037460872bb00。Release 标签为 v385-test，Release ID 为392488431，资产名为 pocket-lobster-test.apk，资产 ID 为577107436。源码测试、前端构建、服务端构建、内嵌服务身份、Android 构建、包身份、进程隔离、共享运行时、OpenMinis 载荷与 APK 签名步骤全部成功。
+
+最终通讯版 APK 大小为183393783字节，GitHub Release digest 与本机 SHA256 均为 e689d8589269f6f413720ea3637cbe92283a7a8697802471d8fa12ecd40ca044。经 aapt 读取，包名为 com.codex.mobile.pocketlobster.test，versionCode 为356，versionName 为1.0.115-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-history-order-recovery-v356。APK 内嵌 bundleId 为1.0.115-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-history-order-recovery-v356:8377e8adb10f4f4bcf0737b07e1d032d1bbc977d0bcb89833302d2afa56bacc8，内嵌服务代码包含 thread_projection_recovered 和 thread_history_projection_state 恢复逻辑，完整 ZIP 校验无压缩数据错误。
+
+签名验证通过 APK Signature Scheme v2，签名证书 SHA256 为 e4c798531ebbf7b023a29c02d5d42fabe7ca3917d9857eabd97f0d5e6c24afc8，与 v355 当前通讯版完全一致，可以直接覆盖安装。最终当前通讯版 APK 路径为 /sdcard/Download/口袋大龙虾本地归档/当前通讯版_口袋大龙虾_1.0.115-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-history-order-recovery-v356.apk。旧 v355 已可恢复地移动到 /sdcard/Download/口袋大龙虾本地归档/历史版本/历史版本_口袋大龙虾通讯版_1.0.114-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-roundtrip-recovery-v355.apk。
+
+截至本节写入时，设备实际安装版本仍是 versionCode 355；智能体没有擅自覆盖安装 v356。用户覆盖安装后，首次读取当前线程会自动停止 Codex app-server、连续化原始 JSONL ordinal、清除该线程旧物化派生记录并重新读取；随后应确认重启前的 MiniMax 两轮对话恢复、最新消息稳定显示在页面最下方，再进行 MiniMax 到 OpenAI 的真实往返测试。
+
+文档结束。
