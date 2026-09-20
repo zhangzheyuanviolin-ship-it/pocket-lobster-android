@@ -281,6 +281,7 @@ function areMessageFieldsEqual(first: UiMessage, second: UiMessage): boolean {
     first.messageType === second.messageType &&
     first.turnId === second.turnId &&
     first.turnIndex === second.turnIndex &&
+    first.clientOrder === second.clientOrder &&
     first.rawPayload === second.rawPayload &&
     first.isUnhandled === second.isUnhandled
   )
@@ -343,11 +344,9 @@ function mergeDisplayMessages(
 ): UiMessage[] {
   const rows: UiMessage[] = []
   const seenIds = new Set<string>()
-  for (const message of [
-    ...persisted,
-    ...optimisticUsers.map((row) => row.message),
-    ...liveAgent,
-  ]) {
+  const transient = [...optimisticUsers.map((row) => row.message), ...liveAgent]
+    .sort((first, second) => (first.clientOrder ?? Number.MAX_SAFE_INTEGER) - (second.clientOrder ?? Number.MAX_SAFE_INTEGER))
+  for (const message of [...persisted, ...transient]) {
     if (!message.id || seenIds.has(message.id)) continue
     seenIds.add(message.id)
     rows.push(message)
@@ -363,13 +362,31 @@ function removeRedundantLiveAgentMessages(previous: UiMessage[], incoming: UiMes
       .map((message) => normalizeMessageText(message.text))
       .filter((text) => text.length > 0),
   )
+  const incomingTurnIndexes = new Map<string, number>()
+  let latestIncomingTurnIndex = -1
+  for (const message of incoming) {
+    if (typeof message.turnIndex === 'number') {
+      latestIncomingTurnIndex = Math.max(latestIncomingTurnIndex, message.turnIndex)
+      if (message.turnId) incomingTurnIndexes.set(message.turnId, message.turnIndex)
+    }
+  }
+  const incomingAssistantTurnIds = new Set(
+    incoming
+      .filter((message) => message.role === 'assistant' && Boolean(message.turnId))
+      .map((message) => message.turnId as string),
+  )
 
   const next = previous.filter((message) => {
     if (incomingIds.has(message.id)) return false
     if (message.messageType !== 'agentMessage.live') return true
     const normalized = normalizeMessageText(message.text)
     if (normalized.length === 0) return false
-    return !incomingAssistantTexts.has(normalized)
+    if (incomingAssistantTexts.has(normalized)) return false
+    if (message.turnId && incomingAssistantTurnIds.has(message.turnId)) return false
+    const persistedTurnIndex = message.turnId ? incomingTurnIndexes.get(message.turnId) : undefined
+    if (persistedTurnIndex !== undefined && latestIncomingTurnIndex > persistedTurnIndex) return false
+    if (typeof message.turnIndex === 'number' && latestIncomingTurnIndex > message.turnIndex) return false
+    return true
   })
 
   return next.length === previous.length ? previous : next
@@ -655,6 +672,7 @@ export function useDesktopState() {
   const lastSnapshotTurnIdByThreadId = new Map<string, string>()
   let threadLoadRevision = 0
   let optimisticMessageSequence = 0
+  let clientMessageSequence = 0
   let statusSyncInFlight = false
   let notificationSyncInFlight = false
 
@@ -1132,6 +1150,7 @@ export function useDesktopState() {
         role: 'user',
         text,
         messageType: 'userMessage.optimistic',
+        clientOrder: ++clientMessageSequence,
       },
       normalizedText,
       baselineUserMatches: persisted.filter(
@@ -1207,7 +1226,19 @@ export function useDesktopState() {
 
   function upsertLiveAgentMessage(threadId: string, nextMessage: UiMessage): void {
     const previous = liveAgentMessagesByThreadId.value[threadId] ?? []
-    const next = upsertMessage(previous, nextMessage)
+    const existing = previous.find((message) => message.id === nextMessage.id)
+    const persisted = persistedMessagesByThreadId.value[threadId] ?? []
+    const latestPersistedTurnIndex = persisted.reduce(
+      (latest, message) => typeof message.turnIndex === 'number' ? Math.max(latest, message.turnIndex) : latest,
+      -1,
+    )
+    const orderedMessage = {
+      ...nextMessage,
+      turnId: nextMessage.turnId || existing?.turnId || activeTurnIdByThreadId.value[threadId],
+      turnIndex: nextMessage.turnIndex ?? existing?.turnIndex ?? latestPersistedTurnIndex + 1,
+      clientOrder: existing?.clientOrder ?? nextMessage.clientOrder ?? ++clientMessageSequence,
+    }
+    const next = upsertMessage(previous, orderedMessage)
     setLiveAgentMessagesForThread(threadId, next)
   }
 
@@ -1226,6 +1257,7 @@ export function useDesktopState() {
           role: 'assistant',
           text: `${existing?.text ?? ''}${delta}`,
           messageType: 'agentMessage.live',
+          turnId: existing?.turnId || activeTurnIdByThreadId.value[threadId],
         })
       }
     }
@@ -1648,6 +1680,7 @@ export function useDesktopState() {
         role: 'assistant',
         text,
         messageType: 'agentMessage.live',
+        turnId: readString(params.turnId) || readString(asRecord(params.turn)?.id),
       }
     }
 

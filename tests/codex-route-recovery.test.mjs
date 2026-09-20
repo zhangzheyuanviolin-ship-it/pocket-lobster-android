@@ -39,6 +39,7 @@ test('live resume route wins over stale thread metadata in both directions', asy
       appendCodexDiagnostic: async () => {}, validateCodexProviderModel: async () => {},
       ensureCodexProviderDefinitions: async () => {}, asRecord: value => value,
       normalizeText: value => typeof value === 'string' ? value.trim() : '',
+      readCodexThreadWithProjectionRecovery: async (engine) => engine.rpc('thread/read', {}),
       rememberedCodexThreadRoute: async () => null,
       migratePersistedThreadRoute: async () => { events.push('migrate'); return {} },
       restorePersistedThreadRoute: async () => {}, buildInjectedDeveloperInstructions: async () => '',
@@ -65,6 +66,7 @@ test('real route mismatch is not hidden and rolls back migration', async () => {
   const switchRoute = await loadFunction('src/server/codexAppServerBridge.ts', 'async function switchCodexThreadRoute(', '\nfunction normalizeCollaborationAgent(', {
     appendCodexDiagnostic: async () => {}, validateCodexProviderModel: async () => {}, ensureCodexProviderDefinitions: async () => {},
     asRecord: value => value, normalizeText: value => typeof value === 'string' ? value : '',
+    readCodexThreadWithProjectionRecovery: async (engine) => engine.rpc('thread/read', {}),
     rememberedCodexThreadRoute: async () => null, migratePersistedThreadRoute: async () => ({}),
     restorePersistedThreadRoute: async () => { restored = true }, buildInjectedDeveloperInstructions: async () => '',
     rememberCodexThreadRoute: async () => assert.fail('must not persist an unverified provider'), getErrorMessage: e => e.message,

@@ -310,7 +310,7 @@ v351 当前通讯版的签名证书 SHA256 与 v353 完全一致，因此满足�
 最终归档 APK 路径将在本文件复制到共享存储前再次核验。智能体没有安装 v353 通讯版，安装动作留给用户明确决定。
 
 文档结束。
-
++
 第十七部分：v353 安装后真实回归与 v354 修复
 
 用户于 2026 年 9 月 13 日自行覆盖安装 v353 通讯版。设备核验确认包名为 com.codex.mobile.pocketlobster.test，versionCode 为 353，主进程与 :minis 进程均正常运行，Shizuku、system-shell、本地链路、Ubuntu、Alpine、浏览器、Codex 官方模型和 Claude 健康检查均正常。v353 已成功恢复此前被第三方提供商过滤掉的历史线程，切回 OpenAI 官方模型后也不再出现 invalid_id_prefix 错误。
@@ -413,5 +413,27 @@ GitHub Actions 第384次 test 通道完整构建成功，运行 ID 为 353374322
 签名验证通过 APK Signature Scheme v2，签名证书 SHA256 为 e4c798531ebbf7b023a29c02d5d42fabe7ca3917d9857eabd97f0d5e6c24afc8，与已安装 v354 通讯版归档 APK 完全一致。最终当前通讯版 APK 路径为 /sdcard/Download/口袋大龙虾本地归档/当前通讯版_口袋大龙虾_1.0.114-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-roundtrip-recovery-v355.apk。旧 v354 已可恢复地移动到 /sdcard/Download/口袋大龙虾本地归档/历史版本/历史版本_口袋大龙虾通讯版_1.0.113-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-local-tool-recovery-v354.apk。
 
 智能体没有安装 v355，设备当前仍运行 v354。用户覆盖安装 v355 后，必须在可恢复的会话中先切到 MiniMax-M3，要求执行 codex-capabilities --plain、system-shell id、只读文件查询和一次网络或搜索工具，再切回 OpenAI 官方 gpt-5.6-sol，确认 exec 不再 unsupported、普通 function 工具不受影响、历史线程仍可见、web_search_call 不再以 call 前缀污染输入，并且不再出现 Expected an ID that begins with ws 的四百错误。
+
+文档结束。
+
+第二十一部分：2026年9月20日 MiniMax 对话重启后消失的真实根因与本地修复
+
+用户报告在当前线程切换到 MiniMax-M3 完成工具测试后，关闭并重启应用，页面只显示到切换前的 OpenAI 回复。只读核验确认 MiniMax 对话没有从原始会话文件丢失。当前线程 ID 仍为 01a0b41e-563b-7ca3-8015-961ed2f41431，原始 JSONL 中完整保留了 2026年9月18日12时11分和12时38分 UTC 的两个 MiniMax 回合、用户消息、模型回复、函数调用、函数结果和 task_complete。
+
+第一轮 MiniMax 原始记录共有十次 exec_command、一次 apply_patch 和一次 list_mcp_resources 调用。八次真正启动的 CommandExecution 退出码全部为零；另外两次 exec_command 在执行前分别被参数校验和删除安全策略拒绝。apply_patch 明确返回 unsupported call: apply_patch。list_mcp_resources 调用本身成功，但返回空资源数组。第二轮 MiniMax 原始记录共有五次 exec_command 和一次 list_mcp_resources，五次 CommandExecution 退出码全部为零，没有 unsupported call。由此只能确认本地 shell、Ubuntu、system-shell、网络和普通函数工具可用；不能宣称 apply_patch 已修复，也不能把空资源数组误报为 MCP 调用失败。
+
+页面消失的确定根因不是提供商历史过滤，也不是原始 JSONL 丢失，而是 Codex CLI 0.153.4 的分页历史物化数据库与被重写的 JSONL 字节位置失去同步。2026年9月18日12时11分切换到 MiniMax 时，route_switch_success 记录 sanitizedReasoningItems 为八十二。旧 migratePersistedThreadRoute 直接从 JSONL 删除这些 reasoning 行并原子重写整份文件，却没有重新编号 ordinal，也没有清除 thread_history_1.sqlite 中该线程的物化游标。
+
+事故现场的 thread_history_projection_state 仍记录 next_rollout_byte_offset 为 5258998、next_rollout_ordinal 为634。重写后，ordinal 634 的真实起点已经移动到字节 5065234；旧字节位置 5258998 落在 ordinal 745 行内部第1205个字节。Codex 日志因此反复报告 trailing characters at line 1 column 6，以及 expected ordinal 634, got 746; 1 rejected rollout lines cannot cover that gap。thread/read 只能返回已经物化的前三个回合，最新回合停在 ordinal 633，所以页面最后只显示12时09分的 OpenAI 回复。
+
+本地工作树已经加入系统性修复但尚未提交、构建或安装。迁移删除外来 reasoning 和 compaction 后会重新连续编号全部剩余 ordinal；只要会话文件发生改写，就在 app-server 停止期间事务性删除该线程在 thread_items、thread_realtime_items、thread_turns 和 thread_history_projection_state 中的派生记录，让 Codex 从原始 JSONL 重新物化。thread/read 前还会检查游标是否落在合法行首以及 ordinal 是否匹配；发现旧版本遗留的序号缺口或字节游标失效时，会自动重新编号、清除该线程派生索引并重试读取，因此不要求用户再次切换模型才能恢复页面。
+
+新增和修改的源码包括 src/server/codexProviderProtocol.mjs、src/server/codexProviderProtocol.d.mts、src/server/codexThreadProjection.mjs、src/server/codexThreadProjection.d.mts 和 src/server/codexAppServerBridge.ts。新增或更新的回归测试包括 tests/codex-provider-protocol.test.mjs、tests/codex-thread-projection-recovery.test.mjs、tests/codex-route-recovery.test.mjs 与 tests/provider-reasoning-contract.test.mjs。
+
+真实故障会话只读验证显示当前游标匹配结果为 false，ordinalRepairNeeded 为 true；用新算法处理其副本后，所有 ordinal 连续，缺口数为零。完整本机源码测试四十八项全部通过，Ubuntu Node 22 的 npm run build:cli 编译通过，git diff --check 通过。当前手机仍安装 v355，以上修复尚未进入 APK，也没有改写当前原始会话或安装应用。
+
+用户随后补充报告聊天页面偶发消息乱序：刚发送的用户消息会跑到较早位置，而此前的助手回复出现在最下方。原始 JSONL 逐行核验显示 ordinal 1296 的上一条用户催办、ordinal 1313 的本轮用户补充和 ordinal 1318 的助手回复均严格按时间与序号递增，证明原始会话落盘顺序没有颠倒。前端真实缺陷位于 useDesktopState 的临时消息合并：它固定把所有乐观用户消息放在所有实时助手消息之前，因此较早但尚未被快照去重的助手实时副本会被错误追加到较新的用户消息下方。
+
+本地修复为每条乐观用户消息和实时助手消息分配同一条单调递增的客户端顺序，合并显示时按真实到达顺序排列；实时助手消息同时绑定 turnId，刷新快照时只要同一回合的持久化助手消息已经出现，或者持久化历史已经进入更晚回合，就删除旧实时副本。新增回归测试真实复现“较早实时助手回复残留后用户又发送新消息”的场景，并断言最新用户消息仍位于页面最下方。v356 版本号为 356，版本名为 1.0.115-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-history-order-recovery-v356；构建、归档与安装状态将在完成后继续写入下一节。
 
 文档结束。

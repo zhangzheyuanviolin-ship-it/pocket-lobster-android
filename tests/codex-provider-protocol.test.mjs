@@ -2,11 +2,50 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   createProviderResponseContext,
+  migratePersistedThreadText,
+  normalizePersistedThreadOrdinals,
   normalizeResponseItemId,
   prepareProviderRequest,
   repairResponseItemIds,
   sanitizeProviderResponse,
 } from '../src/server/codexProviderProtocol.mjs'
+
+test('normalizes ordinal gaps without changing other rollout content', () => {
+  const raw = [
+    JSON.stringify({ ordinal: 10, type: 'session_meta', payload: {} }),
+    JSON.stringify({ ordinal: 12, type: 'event_msg', payload: { type: 'task_started' } }),
+    '',
+  ].join('\n')
+  const normalized = normalizePersistedThreadOrdinals(raw)
+  const rows = normalized.text.trim().split('\n').map(JSON.parse)
+  assert.equal(normalized.changed, true)
+  assert.deepEqual(rows.map((row) => row.ordinal), [10, 11])
+  assert.equal(rows[1].payload.type, 'task_started')
+})
+
+test('renumbers persisted rollout ordinals after foreign provider state is removed', () => {
+  const rows = [
+    { ordinal: 0, type: 'session_meta', payload: { model_provider: 'openai' } },
+    { ordinal: 1, type: 'response_item', payload: { type: 'reasoning', id: 'rs_openai' } },
+    { ordinal: 2, type: 'response_item', payload: { type: 'compaction', id: 'cmp_openai' } },
+    { ordinal: 3, type: 'response_item', payload: { type: 'web_search_call', id: 'call_foreign_search' } },
+    { ordinal: 4, type: 'event_msg', payload: { type: 'response.web_search_call.completed', item_id: 'call_foreign_search' } },
+  ]
+  const migrated = migratePersistedThreadText(
+    `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`,
+    'pocket_provider_minimax',
+    true,
+  )
+  const output = migrated.text.trim().split('\n').map((line) => JSON.parse(line))
+  assert.equal(migrated.providerMetadataFound, true)
+  assert.equal(migrated.sanitizedReasoningItems, 1)
+  assert.equal(migrated.removedCompactionItems, 1)
+  assert.equal(migrated.repairedResponseItemIds, 2)
+  assert.deepEqual(output.map((row) => row.ordinal), [0, 1, 2])
+  assert.equal(output[0].payload.model_provider, 'pocket_provider_minimax')
+  assert.match(output[1].payload.id, /^ws_/)
+  assert.equal(output[2].payload.item_id, output[1].payload.id)
+})
 
 test('normalizes foreign response item ids with stable Codex prefixes', () => {
   const first = normalizeResponseItemId('message', 'foreign_msg_5')

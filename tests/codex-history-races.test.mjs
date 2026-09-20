@@ -30,6 +30,56 @@ function setup() {
   return useDesktopState()
 }
 
+test('a newly sent user message stays below an older live assistant overlay', async () => {
+  const state = setup()
+  let notification
+  let currentSnapshot = {
+    messages: [
+      { id: 'user-0', role: 'user', text: 'old user', turnId: 'turn-0', turnIndex: 0 },
+      { id: 'assistant-0', role: 'assistant', text: 'old assistant', turnId: 'turn-0', turnIndex: 0 },
+    ],
+    latestTurnId: 'turn-0',
+    latestTurnStatus: 'completed',
+    latestTurnError: '',
+  }
+  __historyGateway.subscribeCodexNotifications = callback => {
+    notification = callback
+    return () => undefined
+  }
+  __historyGateway.getThreadSnapshot = async () => currentSnapshot
+  __historyGateway.switchThreadRoute = async () => ({ providerId: 'openai', model: '' })
+  __historyGateway.startThreadTurn = async () => undefined
+  await state.selectThread('A')
+  state.startPolling()
+  notification({
+    method: 'turn/started',
+    params: { threadId: 'A', turn: { id: 'turn-old-live' } },
+  })
+  notification({
+    method: 'item/completed',
+    params: {
+      threadId: 'A',
+      turnId: 'turn-old-live',
+      item: { id: 'old-live', type: 'agentMessage', text: 'older live reply' },
+    },
+  })
+  await state.sendMessageToSelectedThread('new user')
+  assert.equal(state.messages.value.at(-1)?.text, 'new user')
+  currentSnapshot = {
+    messages: [
+      ...currentSnapshot.messages,
+      { id: 'new-user-persisted', role: 'user', text: 'new user', turnId: 'turn-2', turnIndex: 2 },
+    ],
+    latestTurnId: 'turn-2',
+    latestTurnStatus: 'inProgress',
+    latestTurnError: '',
+  }
+  await state.refreshAll()
+  assert.equal(state.messages.value.some(message => message.id === 'old-live'), false)
+  assert.equal(state.messages.value.at(-1)?.text, 'new user')
+  state.stopPolling()
+})
+
 test('foreground load and silent refresh cannot strand loading or discard the only snapshot', async () => {
   const state = setup()
   __historyGateway.getThreadSnapshot = async id => snapshot(id)

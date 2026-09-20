@@ -74,6 +74,86 @@ export function repairResponseItemIds(value, itemIds = new Map()) {
   return { value, repairedResponseItemIds, itemIds }
 }
 
+export function normalizePersistedThreadOrdinals(raw) {
+  let changed = false
+  let nextOrdinal = null
+  const lines = stringValue(raw).split('\n').map((line) => {
+    if (!line.trim()) return line
+    let row
+    try {
+      row = asRecord(JSON.parse(line))
+    } catch {
+      return line
+    }
+    if (!row || !Number.isInteger(row.ordinal)) return line
+    if (nextOrdinal === null) nextOrdinal = row.ordinal
+    if (row.ordinal === nextOrdinal) {
+      nextOrdinal += 1
+      return line
+    }
+    row.ordinal = nextOrdinal
+    nextOrdinal += 1
+    changed = true
+    return JSON.stringify(row)
+  })
+  return { text: lines.join('\n'), changed }
+}
+
+export function migratePersistedThreadText(raw, providerId, stripForeignProviderState = true) {
+  let providerMetadataFound = false
+  let changed = false
+  let sanitizedReasoningItems = 0
+  let removedCompactionItems = 0
+  let repairedResponseItemIds = 0
+  const itemIdAliases = new Map()
+  const lines = stringValue(raw).split('\n').flatMap((line) => {
+    if (!line.trim()) return line
+    let row
+    try {
+      row = asRecord(JSON.parse(line))
+    } catch {
+      return line
+    }
+    if (!row) return line
+    const payload = asRecord(row.payload)
+    let lineChanged = false
+    if (row.type === 'session_meta' && payload) {
+      providerMetadataFound = true
+      if (stringValue(payload.model_provider) !== providerId) {
+        payload.model_provider = providerId
+        changed = true
+        lineChanged = true
+      }
+    }
+    if (stripForeignProviderState && row.type === 'response_item' && stringValue(payload?.type) === 'reasoning') {
+      sanitizedReasoningItems += 1
+      changed = true
+      return []
+    }
+    if (stripForeignProviderState && row.type === 'response_item' && stringValue(payload?.type) === 'compaction') {
+      removedCompactionItems += 1
+      changed = true
+      return []
+    }
+    const repair = repairResponseItemIds(row, itemIdAliases)
+    if (repair.repairedResponseItemIds > 0) {
+      repairedResponseItemIds += repair.repairedResponseItemIds
+      changed = true
+      lineChanged = true
+    }
+    return lineChanged ? JSON.stringify(row) : line
+  })
+  const normalized = normalizePersistedThreadOrdinals(lines.join('\n'))
+  return {
+    text: normalized.text,
+    changed: changed || normalized.changed,
+    providerMetadataFound,
+    sanitizedReasoningItems,
+    removedCompactionItems,
+    repairedResponseItemIds,
+  }
+}
+
 function convertCustomToolDefinition(value) {
   const row = asRecord(value)
   if (!row || row.type !== 'custom' || typeof row.name !== 'string') return value

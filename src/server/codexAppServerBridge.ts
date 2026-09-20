@@ -6,7 +6,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, dirname, extname } from 'node:path'
 import { handleCodexProviderAdapterRequest } from './codexProviderAdapter.js'
-import { repairResponseItemIds } from './codexProviderProtocol.mjs'
+import { migratePersistedThreadText, normalizePersistedThreadOrdinals } from './codexProviderProtocol.mjs'
+import {
+  invalidateThreadHistoryProjection,
+  readThreadHistoryProjection,
+  threadHistoryProjectionMatchesRollout,
+} from './codexThreadProjection.mjs'
 import { normalizeThreadMessagesV2 } from '../api/normalizers/v2.js'
 import type { ThreadReadResponse } from '../api/appServerDtos.js'
 import {
@@ -35,8 +40,10 @@ const codexProviderRuntimeStatusPath = homeDir
   ? join(homeDir, '.openclaw-android', 'state', 'codex-provider-runtime-status.json')
   : ''
 const codexSessionsPath = homeDir ? join(homeDir, '.codex', 'sessions') : ''
+const codexThreadHistoryPath = codexSessionsPath ? join(dirname(codexSessionsPath), 'thread_history_1.sqlite') : ''
 const codexThreadRoutesPath = homeDir ? join(homeDir, '.openclaw-android', 'state', 'codex-thread-routes.json') : ''
 let codexThreadRouteWriteChain: Promise<void> = Promise.resolve()
+const codexProjectionRecoveryByThread = new Map<string, Promise<void>>()
 
 async function rememberCodexThreadRoute(threadId: string, providerId: string, model: string): Promise<void> {
   const write = codexThreadRouteWriteChain.catch(() => undefined).then(async () => {
@@ -666,12 +673,14 @@ async function findThreadRolloutPath(directory: string, threadId: string): Promi
 }
 
 type PersistedThreadRouteMigration = {
+  threadId: string
   path: string
   original: string
   changed: boolean
   sanitizedReasoningItems: number
   removedCompactionItems: number
   repairedResponseItemIds: number
+  invalidatedProjectionRows: number
 }
 
 async function migratePersistedThreadRoute(
@@ -682,62 +691,68 @@ async function migratePersistedThreadRoute(
   const path = await findThreadRolloutPath(codexSessionsPath, threadId)
   if (!path) throw new Error(`Persisted thread not found: ${threadId}`)
   const raw = await readFile(path, 'utf8')
-  let providerMetadataFound = false
-  let changed = false
-  let sanitizedReasoningItems = 0
-  let removedCompactionItems = 0
-  let repairedResponseItemIds = 0
-  const itemIdAliases = new Map<string, string>()
-  const lines = raw.split('\n').flatMap((line) => {
-    if (!line.trim()) return line
-    try {
-      const row = asRecord(JSON.parse(line) as unknown)
-      if (!row) return line
-      const payload = asRecord(row.payload)
-      let lineChanged = false
-      if (row.type === 'session_meta' && payload) {
-        providerMetadataFound = true
-        if (normalizeText(payload.model_provider) !== providerId) {
-          payload.model_provider = providerId
-          changed = true
-          lineChanged = true
-        }
-      }
-      if (stripForeignProviderState && row.type === 'response_item' && normalizeText(payload?.type) === 'reasoning') {
-        sanitizedReasoningItems += 1
-        changed = true
-        return []
-      }
-      if (stripForeignProviderState && row.type === 'response_item' && normalizeText(payload?.type) === 'compaction') {
-        removedCompactionItems += 1
-        changed = true
-        return []
-      }
-      const repair = repairResponseItemIds(row, itemIdAliases)
-      if (repair.repairedResponseItemIds > 0) {
-        repairedResponseItemIds += repair.repairedResponseItemIds
-        changed = true
-        lineChanged = true
-      }
-      return lineChanged ? JSON.stringify(row) : line
-    } catch {
-      return line
-    }
-  })
-  if (!providerMetadataFound) throw new Error(`Thread provider metadata not found: ${threadId}`)
-  if (changed) await writeTextFileAtomic(path, lines.join('\n'))
+  const migrated = migratePersistedThreadText(raw, providerId, stripForeignProviderState)
+  if (!migrated.providerMetadataFound) throw new Error(`Thread provider metadata not found: ${threadId}`)
+  let invalidatedProjectionRows = 0
+  if (migrated.changed) {
+    await writeTextFileAtomic(path, migrated.text)
+    invalidatedProjectionRows = (await invalidateThreadHistoryProjection(codexThreadHistoryPath, threadId)).deletedRows
+  }
   return {
+    threadId,
     path,
     original: raw,
-    changed,
-    sanitizedReasoningItems,
-    removedCompactionItems,
-    repairedResponseItemIds,
+    changed: migrated.changed,
+    sanitizedReasoningItems: migrated.sanitizedReasoningItems,
+    removedCompactionItems: migrated.removedCompactionItems,
+    repairedResponseItemIds: migrated.repairedResponseItemIds,
+    invalidatedProjectionRows,
   }
 }
 
 async function restorePersistedThreadRoute(migration: PersistedThreadRouteMigration): Promise<void> {
-  if (migration.changed) await writeTextFileAtomic(migration.path, migration.original)
+  if (!migration.changed) return
+  await writeTextFileAtomic(migration.path, migration.original)
+  await invalidateThreadHistoryProjection(codexThreadHistoryPath, migration.threadId)
+}
+
+async function recoverPersistedThreadProjection(appServer: AppServerProcess, threadId: string): Promise<void> {
+  const pending = codexProjectionRecoveryByThread.get(threadId)
+  if (pending) return await pending
+  const recovery = (async () => {
+    const path = await findThreadRolloutPath(codexSessionsPath, threadId)
+    if (!path) return
+    const raw = await readFile(path, 'utf8')
+    const normalized = normalizePersistedThreadOrdinals(raw)
+    const projection = await readThreadHistoryProjection(codexThreadHistoryPath, threadId)
+    if (!normalized.changed && threadHistoryProjectionMatchesRollout(raw, projection)) return
+    appServer.dispose()
+    await appServer.waitUntilStopped()
+    if (normalized.changed) await writeTextFileAtomic(path, normalized.text)
+    const invalidated = await invalidateThreadHistoryProjection(codexThreadHistoryPath, threadId)
+    await appendCodexDiagnostic('thread_projection_recovered', {
+      threadId,
+      renumberedOrdinals: normalized.changed,
+      invalidatedProjectionRows: invalidated.deletedRows,
+    })
+  })()
+  codexProjectionRecoveryByThread.set(threadId, recovery)
+  try {
+    await recovery
+  } finally {
+    if (codexProjectionRecoveryByThread.get(threadId) === recovery) {
+      codexProjectionRecoveryByThread.delete(threadId)
+    }
+  }
+}
+
+async function readCodexThreadWithProjectionRecovery(
+  appServer: AppServerProcess,
+  threadId: string,
+  includeTurns: boolean,
+): Promise<unknown> {
+  await recoverPersistedThreadProjection(appServer, threadId)
+  return await appServer.rpc('thread/read', { threadId, includeTurns })
 }
 
 async function readPersistedThreadModel(threadId: string): Promise<string> {
@@ -4361,7 +4376,7 @@ async function switchCodexThreadRoute(
   await ensureCodexProviderDefinitions(appServer)
   let previousProvider = ''
   try {
-    const read = asRecord(await appServer.rpc('thread/read', { threadId, includeTurns: false }))
+    const read = asRecord(await readCodexThreadWithProjectionRecovery(appServer, threadId, false))
     const remembered = await rememberedCodexThreadRoute(threadId)
     previousProvider = normalizeText(remembered?.providerId) || normalizeText(asRecord(read?.thread)?.modelProvider)
   } catch {
@@ -4402,6 +4417,7 @@ async function switchCodexThreadRoute(
       sanitizedReasoningItems: migration?.sanitizedReasoningItems ?? 0,
       removedCompactionItems: migration?.removedCompactionItems ?? 0,
       repairedResponseItemIds: migration?.repairedResponseItemIds ?? 0,
+      invalidatedProjectionRows: migration?.invalidatedProjectionRows ?? 0,
     })
     return {
       ok: true,
@@ -4411,6 +4427,7 @@ async function switchCodexThreadRoute(
       sanitizedReasoningItems: migration?.sanitizedReasoningItems ?? 0,
       removedCompactionItems: migration?.removedCompactionItems ?? 0,
       repairedResponseItemIds: migration?.repairedResponseItemIds ?? 0,
+      invalidatedProjectionRows: migration?.invalidatedProjectionRows ?? 0,
       thread: { ...asRecord(resumed?.thread), modelProvider: actualProvider || providerId },
     }
   } catch (error) {
@@ -6505,7 +6522,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         }
         await appendCodexDiagnostic('rpc_request', diagnosticRpcFields('thread/read', { threadId, includeTurns: true }))
         try {
-          const read = await appServer.rpc('thread/read', { threadId, includeTurns: true }) as ThreadReadResponse
+          const read = await readCodexThreadWithProjectionRecovery(appServer, threadId, true) as ThreadReadResponse
           const turns = Array.isArray(read.thread?.turns) ? read.thread.turns : []
           const latestTurn = turns.at(-1)
           const result = {
@@ -6558,7 +6575,14 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
             }
           }
 
-          const result = await appServer.rpc(body.method, nextParams)
+          const readParams = asRecord(nextParams)
+          const result = body.method === 'thread/read' && normalizeText(readParams?.threadId)
+            ? await readCodexThreadWithProjectionRecovery(
+              appServer,
+              normalizeText(readParams?.threadId),
+              readParams?.includeTurns === true,
+            )
+            : await appServer.rpc(body.method, nextParams)
           if (trackedRpc) await appendCodexDiagnostic('rpc_success', diagnosticRpcFields(body.method, body.params, result))
           setJson(res, 200, { result })
         } catch (error) {
@@ -6628,7 +6652,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           setJson(res, 400, { error: 'Missing threadId' })
           return
         }
-        const read = asRecord(await appServer.rpc('thread/read', { threadId, includeTurns: false }))
+        const read = asRecord(await readCodexThreadWithProjectionRecovery(appServer, threadId, false))
         const remembered = await rememberedCodexThreadRoute(threadId)
         const providerId = normalizeText(remembered?.providerId) || normalizeText(asRecord(read?.thread)?.modelProvider) || 'openai'
         const model = normalizeText(remembered?.model) || await readPersistedThreadModel(threadId)
