@@ -463,3 +463,11 @@ GitHub Actions 第385次 test 通道完整构建成功，运行 ID 为3552118283
 v357把Node运行要求提升到22.5以上，把tsup目标提升到Node 22并显式外置node:sqlite，同时通过运行时常量动态加载内置SQLite以阻止esbuild再次降格。服务器打包脚本和GitHub Actions嵌入载荷验证新增双向硬门禁：必须检出node:sqlite，发现裸import("sqlite")立即失败。升级契约测试同步覆盖这些约束。版本为357，版本名为1.0.116-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-history-runtime-recovery-v357。
 
 第一次只修改构建目标和外部模块声明时，Ubuntu真实重建仍产生裸sqlite，因此没有被误报成功；加入运行时模块标识常量后，第二次重建只保留node:sqlite，裸sqlite为零，生成服务可正常启动和关闭。完整源码四十九项测试、前端类型检查与Vite构建、OpenMinis 1.12冻结基线和git diff校验均通过。此节写入时尚未提交、推送、云构建或安装；后续构建身份、哈希、签名和归档结果必须继续追加。
+
+第二十四部分：v357最终构建、校验与归档结果
+
+v357核心修复提交为25e00b0a5099a6fefb6c7672ef411b4a882b4809，提交说明为fix(operator): restore bundled history runtime。GitHub Actions第386次test通讯通道构建完整成功，运行ID35559556794，任务ID106209677724，Release标签v386-test，Release ID392690518，资产ID578199566。源码、前端、服务端、SQLite载荷门禁、Android、包身份、进程隔离、共享运行时、OpenMinis载荷、固定签名和Release全部成功。
+
+最终APK大小183393871字节，GitHub摘要与本机SHA256均为a7e3ae70346685920e6a27b564baba4199968f5bd11e90fbfa9f438f9b7bb02d。包名com.codex.mobile.pocketlobster.test，versionCode357，versionName为1.0.116-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-history-runtime-recovery-v357。ZIP无压缩错误，内嵌bundleId为1.0.116-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-history-runtime-recovery-v357:effa845e4beea56c71a679e1cc55858af17c87e27d6f9279abca625ba90d82a0，载荷存在node:sqlite且不存在裸import("sqlite")。
+
+签名通过APK Signature Scheme v2，证书SHA256为e4c798531ebbf7b023a29c02d5d42fabe7ca3917d9857eabd97f0d5e6c24afc8，与v356和v355一致。最终当前通讯版路径为/sdcard/Download/口袋大龙虾本地归档/当前通讯版_口袋大龙虾_1.0.116-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-history-runtime-recovery-v357.apk。旧v356已移入历史版本。用户安装v357后若仍失败，回退目标是历史版本中的v355，SHA256为58b777632ae05a831371d374256910481c38ee41c6010e7550bf7cafe307f50a。设备仍运行v356，智能体没有安装、回退或改写会话数据。
