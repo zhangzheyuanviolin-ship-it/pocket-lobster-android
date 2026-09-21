@@ -1,6 +1,8 @@
 import { existsSync } from 'node:fs'
 
-export async function invalidateThreadHistoryProjection(databasePath, threadId, loadSqlite = () => import('node:sqlite')) {
+const NODE_SQLITE_MODULE = 'node:sqlite'
+
+export async function invalidateThreadHistoryProjection(databasePath, threadId, loadSqlite = () => import(NODE_SQLITE_MODULE)) {
   if (!databasePath || !threadId) throw new Error('Missing thread history database path or thread id')
   if (!existsSync(databasePath)) return { deletedRows: 0 }
   const { DatabaseSync } = await loadSqlite()
@@ -27,7 +29,7 @@ export async function invalidateThreadHistoryProjection(databasePath, threadId, 
   }
 }
 
-export async function readThreadHistoryProjection(databasePath, threadId, loadSqlite = () => import('node:sqlite')) {
+export async function readThreadHistoryProjection(databasePath, threadId, loadSqlite = () => import(NODE_SQLITE_MODULE)) {
   if (!databasePath || !threadId || !existsSync(databasePath)) return null
   const { DatabaseSync } = await loadSqlite()
   const database = new DatabaseSync(databasePath, { readOnly: true })

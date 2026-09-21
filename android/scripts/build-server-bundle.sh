@@ -35,6 +35,15 @@ npm run build:frontend
 echo "Building CLI server..."
 npm run build:cli
 
+if grep -Fq 'import("sqlite")' "$PROJECT_ROOT/dist-cli/index.js"; then
+    echo "CLI bundle rewrote node:sqlite to the missing sqlite package" >&2
+    exit 1
+fi
+if ! grep -Fq 'node:sqlite' "$PROJECT_ROOT/dist-cli/index.js"; then
+    echo "CLI bundle is missing the required node:sqlite runtime import" >&2
+    exit 1
+fi
+
 # Copy the built artifacts into assets
 echo "Copying build artifacts to Android assets..."
 rm -rf "$ASSETS_DIR"

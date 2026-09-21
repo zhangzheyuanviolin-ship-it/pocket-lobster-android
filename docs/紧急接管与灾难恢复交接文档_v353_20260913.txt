@@ -451,3 +451,15 @@ GitHub Actions 第385次 test 通道完整构建成功，运行 ID 为3552118283
 截至本节写入时，设备实际安装版本仍是 versionCode 355；智能体没有擅自覆盖安装 v356。用户覆盖安装后，首次读取当前线程会自动停止 Codex app-server、连续化原始 JSONL ordinal、清除该线程旧物化派生记录并重新读取；随后应确认重启前的 MiniMax 两轮对话恢复、最新消息稳定显示在页面最下方，再进行 MiniMax 到 OpenAI 的真实往返测试。
 
 文档结束。
+
+第二十三部分：2026年9月21日 v356 全历史加载失败与 v357 修复
+
+用户覆盖安装v356后，打开任意历史会话都会显示Cannot find package 'sqlite' imported from通讯版私有PREFIX中的codex-web-local/dist-cli/index.js。设备实测已安装versionCode356，当前通讯版的直接上一通讯版本是归档中的v355；若v357经用户测试仍失败，回退目标必须是v355，而不是更早的v351或v353。未经用户明确授权不得安装、卸载或回退。
+
+本轮完整逐行读取了本文档以及最近三条相关会话。v356主迭代线程共有1787行、13233222字节、无坏JSON；v353至v355接管线程共有2380行、23601285字节、无坏JSON。会话、Git提交、安装载荷和共享实时恢复日志相互印证：v356原本修复的是JSONL重写后的ordinal连续化、thread_history_1.sqlite派生索引重建、损坏游标自动恢复和前端临时消息顺序，不是历史原始数据丢失。
+
+本次灾难回归根因已经在安装载荷和Ubuntu真实重建中重复复现。源码src/server/codexThreadProjection.mjs正确写的是动态导入node:sqlite，但tsup目标仍为node18；esbuild把Node 22才提供的内置模块标识降格成裸import("sqlite")。运行时package.json没有sqlite依赖，APK也没有sqlite包，因此任何历史thread/read触发投影检查时都会在进入历史读取逻辑前抛出模块不存在。此前四十九项源码测试执行未打包源码并允许注入SQLite加载器，云端嵌入检查又没有检查模块标识，所以源码、编译、APK与签名步骤全部通过仍交付了错误载荷。
+
+v357把Node运行要求提升到22.5以上，把tsup目标提升到Node 22并显式外置node:sqlite，同时通过运行时常量动态加载内置SQLite以阻止esbuild再次降格。服务器打包脚本和GitHub Actions嵌入载荷验证新增双向硬门禁：必须检出node:sqlite，发现裸import("sqlite")立即失败。升级契约测试同步覆盖这些约束。版本为357，版本名为1.0.116-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-history-runtime-recovery-v357。
+
+第一次只修改构建目标和外部模块声明时，Ubuntu真实重建仍产生裸sqlite，因此没有被误报成功；加入运行时模块标识常量后，第二次重建只保留node:sqlite，裸sqlite为零，生成服务可正常启动和关闭。完整源码四十九项测试、前端类型检查与Vite构建、OpenMinis 1.12冻结基线和git diff校验均通过。此节写入时尚未提交、推送、云构建或安装；后续构建身份、哈希、签名和归档结果必须继续追加。
