@@ -740,6 +740,15 @@ async function restorePersistedThreadRoute(migration: PersistedThreadRouteMigrat
   if (migration.changed) await writeTextFileAtomic(migration.path, migration.original)
 }
 
+async function readThreadRecovered(appServer: AppServerProcess, threadId: string, includeTurns: boolean): Promise<unknown> {
+  const first = await appServer.rpc("thread/read", { threadId, includeTurns })
+  const turns = asRecord(asRecord(first)?.thread)?.turns
+  if (!includeTurns || (Array.isArray(turns) && turns.length > 0)) return first
+  if (!await findThreadRolloutPath(codexSessionsPath, threadId)) return first
+  await appServer.rpc("thread/resume", { threadId })
+  return await appServer.rpc("thread/read", { threadId, includeTurns: true })
+}
+
 async function readPersistedThreadModel(threadId: string): Promise<string> {
   const path = await findThreadRolloutPath(codexSessionsPath, threadId)
   if (!path) return ''
@@ -6505,7 +6514,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         }
         await appendCodexDiagnostic('rpc_request', diagnosticRpcFields('thread/read', { threadId, includeTurns: true }))
         try {
-          const read = await appServer.rpc('thread/read', { threadId, includeTurns: true }) as ThreadReadResponse
+          const read = await readThreadRecovered(appServer, threadId, true) as ThreadReadResponse
           const turns = Array.isArray(read.thread?.turns) ? read.thread.turns : []
           const latestTurn = turns.at(-1)
           const result = {
@@ -6558,7 +6567,10 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
             }
           }
 
-          const result = await appServer.rpc(body.method, nextParams)
+          const readParams = asRecord(nextParams)
+          const result = body.method === 'thread/read' && normalizeText(readParams?.threadId)
+            ? await readThreadRecovered(appServer, normalizeText(readParams?.threadId), readParams?.includeTurns === true)
+            : await appServer.rpc(body.method, nextParams)
           if (trackedRpc) await appendCodexDiagnostic('rpc_success', diagnosticRpcFields(body.method, body.params, result))
           setJson(res, 200, { result })
         } catch (error) {
