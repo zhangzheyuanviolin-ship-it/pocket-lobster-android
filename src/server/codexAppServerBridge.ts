@@ -6,7 +6,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, dirname, extname } from 'node:path'
 import { handleCodexProviderAdapterRequest } from './codexProviderAdapter.js'
-import { repairResponseItemIds } from './codexProviderProtocol.mjs'
+import { migratePersistedThreadText } from './codexProviderProtocol.mjs'
+import { invalidateThreadHistoryProjection } from './codexThreadProjection.mjs'
 import { normalizeThreadMessagesV2 } from '../api/normalizers/v2.js'
 import type { ThreadReadResponse } from '../api/appServerDtos.js'
 import {
@@ -35,6 +36,10 @@ const codexProviderRuntimeStatusPath = homeDir
   ? join(homeDir, '.openclaw-android', 'state', 'codex-provider-runtime-status.json')
   : ''
 const codexSessionsPath = homeDir ? join(homeDir, '.codex', 'sessions') : ''
+const codexThreadHistoryPath = homeDir ? join(homeDir, '.codex', 'thread_history_1.sqlite') : ''
+const codexProviderStateArchiveDir = homeDir
+  ? join(homeDir, '.openclaw-android', 'state', 'provider-route-archives')
+  : ''
 const codexThreadRoutesPath = homeDir ? join(homeDir, '.openclaw-android', 'state', 'codex-thread-routes.json') : ''
 let codexThreadRouteWriteChain: Promise<void> = Promise.resolve()
 
@@ -666,12 +671,34 @@ async function findThreadRolloutPath(directory: string, threadId: string): Promi
 }
 
 type PersistedThreadRouteMigration = {
+  threadId: string
   path: string
   original: string
   changed: boolean
   sanitizedReasoningItems: number
   removedCompactionItems: number
   repairedResponseItemIds: number
+  archivedProviderStateItems: number
+  invalidatedProjectionRows: number
+}
+
+async function archivePersistedProviderState(
+  threadId: string,
+  providerId: string,
+  lines: string[],
+): Promise<number> {
+  if (!codexProviderStateArchiveDir || lines.length === 0) return 0
+  await mkdir(codexProviderStateArchiveDir, { recursive: true, mode: 0o700 })
+  const archivePath = join(codexProviderStateArchiveDir, `${threadId}.jsonl`)
+  const archivedAt = new Date().toISOString()
+  const output = lines.map((sourceLine) => JSON.stringify({
+    archivedAt,
+    threadId,
+    targetProviderId: providerId,
+    sourceLine,
+  })).join('\n') + '\n'
+  await appendFile(archivePath, output, { encoding: 'utf8', mode: 0o600 })
+  return lines.length
 }
 
 async function migratePersistedThreadRoute(
@@ -682,62 +709,45 @@ async function migratePersistedThreadRoute(
   const path = await findThreadRolloutPath(codexSessionsPath, threadId)
   if (!path) throw new Error(`Persisted thread not found: ${threadId}`)
   const raw = await readFile(path, 'utf8')
-  let providerMetadataFound = false
-  let changed = false
-  let sanitizedReasoningItems = 0
-  let removedCompactionItems = 0
-  let repairedResponseItemIds = 0
-  const itemIdAliases = new Map<string, string>()
-  const lines = raw.split('\n').flatMap((line) => {
-    if (!line.trim()) return line
+  const migrated = migratePersistedThreadText(raw, providerId, stripForeignProviderState)
+  if (!migrated.providerMetadataFound) throw new Error(`Thread provider metadata not found: ${threadId}`)
+  let archivedProviderStateItems = 0
+  let invalidatedProjectionRows = 0
+  if (migrated.changed) {
+    let wroteMigratedText = false
     try {
-      const row = asRecord(JSON.parse(line) as unknown)
-      if (!row) return line
-      const payload = asRecord(row.payload)
-      let lineChanged = false
-      if (row.type === 'session_meta' && payload) {
-        providerMetadataFound = true
-        if (normalizeText(payload.model_provider) !== providerId) {
-          payload.model_provider = providerId
-          changed = true
-          lineChanged = true
-        }
-      }
-      if (stripForeignProviderState && row.type === 'response_item' && normalizeText(payload?.type) === 'reasoning') {
-        sanitizedReasoningItems += 1
-        changed = true
-        return []
-      }
-      if (stripForeignProviderState && row.type === 'response_item' && normalizeText(payload?.type) === 'compaction') {
-        removedCompactionItems += 1
-        changed = true
-        return []
-      }
-      const repair = repairResponseItemIds(row, itemIdAliases)
-      if (repair.repairedResponseItemIds > 0) {
-        repairedResponseItemIds += repair.repairedResponseItemIds
-        changed = true
-        lineChanged = true
-      }
-      return lineChanged ? JSON.stringify(row) : line
-    } catch {
-      return line
+      archivedProviderStateItems = await archivePersistedProviderState(
+        threadId,
+        providerId,
+        migrated.archivedProviderStateLines,
+      )
+      await writeTextFileAtomic(path, migrated.text)
+      wroteMigratedText = true
+      invalidatedProjectionRows = (
+        await invalidateThreadHistoryProjection(codexThreadHistoryPath, threadId)
+      ).deletedRows
+    } catch (error) {
+      if (wroteMigratedText) await writeTextFileAtomic(path, raw)
+      throw error
     }
-  })
-  if (!providerMetadataFound) throw new Error(`Thread provider metadata not found: ${threadId}`)
-  if (changed) await writeTextFileAtomic(path, lines.join('\n'))
+  }
   return {
+    threadId,
     path,
     original: raw,
-    changed,
-    sanitizedReasoningItems,
-    removedCompactionItems,
-    repairedResponseItemIds,
+    changed: migrated.changed,
+    sanitizedReasoningItems: migrated.sanitizedReasoningItems,
+    removedCompactionItems: migrated.removedCompactionItems,
+    repairedResponseItemIds: migrated.repairedResponseItemIds,
+    archivedProviderStateItems,
+    invalidatedProjectionRows,
   }
 }
 
 async function restorePersistedThreadRoute(migration: PersistedThreadRouteMigration): Promise<void> {
-  if (migration.changed) await writeTextFileAtomic(migration.path, migration.original)
+  if (!migration.changed) return
+  await writeTextFileAtomic(migration.path, migration.original)
+  await invalidateThreadHistoryProjection(codexThreadHistoryPath, migration.threadId)
 }
 
 async function readThreadRecovered(appServer: AppServerProcess, threadId: string, includeTurns: boolean): Promise<unknown> {
@@ -4411,6 +4421,8 @@ async function switchCodexThreadRoute(
       sanitizedReasoningItems: migration?.sanitizedReasoningItems ?? 0,
       removedCompactionItems: migration?.removedCompactionItems ?? 0,
       repairedResponseItemIds: migration?.repairedResponseItemIds ?? 0,
+      archivedProviderStateItems: migration?.archivedProviderStateItems ?? 0,
+      invalidatedProjectionRows: migration?.invalidatedProjectionRows ?? 0,
     })
     return {
       ok: true,
@@ -4420,6 +4432,8 @@ async function switchCodexThreadRoute(
       sanitizedReasoningItems: migration?.sanitizedReasoningItems ?? 0,
       removedCompactionItems: migration?.removedCompactionItems ?? 0,
       repairedResponseItemIds: migration?.repairedResponseItemIds ?? 0,
+      archivedProviderStateItems: migration?.archivedProviderStateItems ?? 0,
+      invalidatedProjectionRows: migration?.invalidatedProjectionRows ?? 0,
       thread: { ...asRecord(resumed?.thread), modelProvider: actualProvider || providerId },
     }
   } catch (error) {

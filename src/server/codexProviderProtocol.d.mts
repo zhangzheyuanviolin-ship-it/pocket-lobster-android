@@ -11,6 +11,16 @@ export function repairResponseItemIds(value: unknown, itemIds?: Map<string, stri
   repairedResponseItemIds: number
   itemIds: Map<string, string>
 }
+export function normalizePersistedThreadOrdinals(raw: unknown): { text: string; changed: boolean }
+export function migratePersistedThreadText(raw: unknown, providerId: unknown, stripForeignProviderState?: boolean): {
+  text: string
+  changed: boolean
+  providerMetadataFound: boolean
+  sanitizedReasoningItems: number
+  removedCompactionItems: number
+  repairedResponseItemIds: number
+  archivedProviderStateLines: string[]
+}
 export function prepareProviderRequest(value: unknown): { payload: unknown; customToolNames: string[] }
 export function createProviderResponseContext(customToolNames?: string[]): ProviderResponseContext
 export function sanitizeProviderResponse(value: unknown, context: ProviderResponseContext): unknown

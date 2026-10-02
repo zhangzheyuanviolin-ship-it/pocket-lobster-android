@@ -74,6 +74,90 @@ export function repairResponseItemIds(value, itemIds = new Map()) {
   return { value, repairedResponseItemIds, itemIds }
 }
 
+export function normalizePersistedThreadOrdinals(raw) {
+  let changed = false
+  let nextOrdinal = null
+  const lines = stringValue(raw).split('\n').map((line) => {
+    if (!line.trim()) return line
+    let row
+    try {
+      row = asRecord(JSON.parse(line))
+    } catch {
+      return line
+    }
+    if (!row || !Number.isInteger(row.ordinal)) return line
+    if (nextOrdinal === null) nextOrdinal = row.ordinal
+    if (row.ordinal === nextOrdinal) {
+      nextOrdinal += 1
+      return line
+    }
+    row.ordinal = nextOrdinal
+    nextOrdinal += 1
+    changed = true
+    return JSON.stringify(row)
+  })
+  return { text: lines.join('\n'), changed }
+}
+
+export function migratePersistedThreadText(raw, providerId, stripForeignProviderState = true) {
+  let providerMetadataFound = false
+  let changed = false
+  let sanitizedReasoningItems = 0
+  let removedCompactionItems = 0
+  let repairedResponseItemIds = 0
+  const archivedProviderStateLines = []
+  const itemIdAliases = new Map()
+  const lines = stringValue(raw).split('\n').flatMap((line) => {
+    if (!line.trim()) return line
+    let row
+    try {
+      row = asRecord(JSON.parse(line))
+    } catch {
+      return line
+    }
+    if (!row) return line
+    const payload = asRecord(row.payload)
+    let lineChanged = false
+    if (row.type === 'session_meta' && payload) {
+      providerMetadataFound = true
+      if (stringValue(payload.model_provider) !== providerId) {
+        payload.model_provider = providerId
+        changed = true
+        lineChanged = true
+      }
+    }
+    if (stripForeignProviderState && row.type === 'response_item' && stringValue(payload?.type) === 'reasoning') {
+      archivedProviderStateLines.push(line)
+      sanitizedReasoningItems += 1
+      changed = true
+      return []
+    }
+    if (stripForeignProviderState && row.type === 'response_item' && stringValue(payload?.type) === 'compaction') {
+      archivedProviderStateLines.push(line)
+      removedCompactionItems += 1
+      changed = true
+      return []
+    }
+    const repair = repairResponseItemIds(row, itemIdAliases)
+    if (repair.repairedResponseItemIds > 0) {
+      repairedResponseItemIds += repair.repairedResponseItemIds
+      changed = true
+      lineChanged = true
+    }
+    return lineChanged ? JSON.stringify(row) : line
+  })
+  const normalized = normalizePersistedThreadOrdinals(lines.join('\n'))
+  return {
+    text: normalized.text,
+    changed: changed || normalized.changed,
+    providerMetadataFound,
+    sanitizedReasoningItems,
+    removedCompactionItems,
+    repairedResponseItemIds,
+    archivedProviderStateLines,
+  }
+}
+
 function convertCustomToolDefinition(value) {
   const row = asRecord(value)
   if (!row || row.type !== 'custom' || typeof row.name !== 'string') return value
@@ -102,7 +186,9 @@ function convertRequestNode(value, itemIds) {
   const converted = Object.fromEntries(
     Object.entries(row).map(([key, child]) => [key, convertRequestNode(child, itemIds)]),
   )
-  if (converted.type === 'custom_tool_call') {
+  if (converted.type === 'custom' && typeof converted.name === 'string') {
+    return convertCustomToolDefinition(converted)
+  } else if (converted.type === 'custom_tool_call') {
     converted.type = 'function_call'
     converted.arguments = functionArgumentsFromCustomInput(converted.input)
     delete converted.input
@@ -144,13 +230,13 @@ function collectProviderToolDefinitions(root) {
 export function prepareProviderRequest(value) {
   const root = asRecord(value)
   if (!root) return { payload: value, customToolNames: [] }
-  const customToolNames = collectProviderToolDefinitions(root)
+  const declaredCustomToolNames = collectProviderToolDefinitions(root)
     .map(asRecord)
     .filter((tool) => typeof tool?.name === 'string' && (
       tool.type === 'custom' || CODEX_CUSTOM_TOOL_NAMES.has(tool.name)
     ))
     .map((tool) => tool.name)
-    .filter((name, index, names) => names.indexOf(name) === index)
+  const customToolNames = [...new Set([...CODEX_CUSTOM_TOOL_NAMES, ...declaredCustomToolNames])]
   const payload = convertRequestNode(value, new Map())
   const convertedRoot = asRecord(payload)
   if (convertedRoot && Array.isArray(root.tools)) {

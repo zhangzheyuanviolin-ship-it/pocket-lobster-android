@@ -2,11 +2,39 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   createProviderResponseContext,
+  migratePersistedThreadText,
+  normalizePersistedThreadOrdinals,
   normalizeResponseItemId,
   prepareProviderRequest,
   repairResponseItemIds,
   sanitizeProviderResponse,
 } from '../src/server/codexProviderProtocol.mjs'
+
+test('normalizes ordinal gaps after provider state is removed and preserves removed lines for archival', () => {
+  const raw = [
+    JSON.stringify({ ordinal: 0, type: 'session_meta', payload: { model_provider: 'openai' } }),
+    JSON.stringify({ ordinal: 1, type: 'response_item', payload: { type: 'reasoning', id: 'rs_openai' } }),
+    JSON.stringify({ ordinal: 2, type: 'response_item', payload: { type: 'compaction', id: 'cmp_openai' } }),
+    JSON.stringify({ ordinal: 3, type: 'response_item', payload: { type: 'message', id: 'foreign_message' } }),
+    '',
+  ].join('\n')
+  const migrated = migratePersistedThreadText(raw, 'pocket_provider_minimax', true)
+  const rows = migrated.text.trim().split('\n').map(JSON.parse)
+  assert.deepEqual(rows.map((row) => row.ordinal), [0, 1])
+  assert.equal(rows[0].payload.model_provider, 'pocket_provider_minimax')
+  assert.match(rows[1].payload.id, /^msg_/)
+  assert.equal(migrated.sanitizedReasoningItems, 1)
+  assert.equal(migrated.removedCompactionItems, 1)
+  assert.equal(migrated.archivedProviderStateLines.length, 2)
+  assert.equal(JSON.parse(migrated.archivedProviderStateLines[0]).payload.id, 'rs_openai')
+
+  const normalized = normalizePersistedThreadOrdinals([
+    JSON.stringify({ ordinal: 83, type: 'event_msg', payload: { type: 'task_started' } }),
+    JSON.stringify({ ordinal: 83, type: 'response_item', payload: { type: 'message' } }),
+    JSON.stringify({ ordinal: 87, type: 'event_msg', payload: { type: 'task_complete' } }),
+  ].join('\n'))
+  assert.deepEqual(normalized.text.split('\n').map(JSON.parse).map((row) => row.ordinal), [83, 84, 85])
+})
 
 test('normalizes foreign response item ids with stable Codex prefixes', () => {
   const first = normalizeResponseItemId('message', 'foreign_msg_5')
@@ -61,6 +89,32 @@ test('restores Codex local tools declared through Responses Lite additional_tool
   assert.equal(execDone.item.input, 'text(true)')
 })
 
+test('restores Codex local freeform tools even when a compatible provider request omits tool declarations', () => {
+  const prepared = prepareProviderRequest({ model: 'MiniMax-M3', input: [{ role: 'user', content: 'run it' }] })
+  assert.deepEqual(prepared.customToolNames, ['exec', 'apply_patch'])
+  const restored = sanitizeProviderResponse({
+    type: 'response.output_item.done',
+    item: {
+      type: 'function_call',
+      id: 'foreign_exec_without_definition',
+      call_id: 'call_exec',
+      name: 'exec',
+      arguments: '{"input":"text(true)"}',
+    },
+  }, createProviderResponseContext(prepared.customToolNames))
+  assert.equal(restored.item.type, 'custom_tool_call')
+  assert.equal(restored.item.input, 'text(true)')
+})
+
+test('converts custom tool definitions in arbitrary nested request wrappers', () => {
+  const prepared = prepareProviderRequest({
+    model: 'MiniMax-M3',
+    input: [{ type: 'wrapper', payload: { tools: [{ type: 'custom', name: 'exec', description: 'Run code' }] } }],
+  })
+  assert.equal(prepared.payload.input[0].payload.tools[0].type, 'function')
+  assert.equal(prepared.payload.input[0].payload.tools[0].name, 'exec')
+})
+
 test('maps Codex custom tools through function-only compatible providers', () => {
   const prepared = prepareProviderRequest({
     model: 'third-party-model',
@@ -70,7 +124,7 @@ test('maps Codex custom tools through function-only compatible providers', () =>
       { type: 'custom_tool_call_output', call_id: 'call_previous', output: 'true' },
     ],
   })
-  assert.deepEqual(prepared.customToolNames, ['exec'])
+  assert.deepEqual(prepared.customToolNames, ['exec', 'apply_patch'])
   assert.equal(prepared.payload.tools[0].type, 'function')
   assert.equal(prepared.payload.input[0].type, 'function_call')
   assert.match(prepared.payload.input[0].id, /^fc_/)

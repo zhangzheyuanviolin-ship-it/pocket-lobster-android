@@ -21,7 +21,7 @@
     "cli"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22.5.0"
   },
   "bin": {
     "codex-web-local": "dist-cli/index.js"
