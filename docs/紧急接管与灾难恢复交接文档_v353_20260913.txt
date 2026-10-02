@@ -311,6 +311,22 @@ v351 当前通讯版的签名证书 SHA256 与 v353 完全一致，因此满足�
 
 文档结束。
 
+第二十八部分：2026年10月2日跨提供商部分历史连续性修复与双安装包交付
+
+本轮重新读取共享归档中的完整紧急交接文档，并从真实持久化数据找回关键复发线程01a0c301-9b1c-7a00-bb1d-c4301cd36896。原始JSONL完整保留OpenAI、MiniMax和再次切回OpenAI的全部阶段，但存在ordinal间隙和重复；SQLite投影只物化3个回合、22个项目，游标停在偏移373852和ordinal84。根因因此确定为跨provider路由迁移改写JSONL后没有连续重排ordinal、没有使目标线程旧投影失效，旧游标永久停在中段；这不是原始聊天丢失，也不是单纯前端或provider过滤。v359只能恢复零回合线程，不能修复已有部分投影的线程。
+
+正常修复分支fix/v360-provider-history-continuity基于v359稳定提交d58b8d33b6830040e21b494c0df14d24a74f82ec，提交93b40fd384b69e9a89e503dd05b13b56a7ae2239。修复只在目标线程取消订阅且app-server安全停止后的路由迁移阶段执行：先将被移除的provider专属reasoning和compaction原始行保存到应用私有provider-route-archives，再连续重排保留记录ordinal，并用node:sqlite事务只清除该目标线程派生投影。失败会恢复原JSONL。正常thread/read严格保留v359零回合resume逻辑，并有回归测试禁止读取路径停服、等待、改写或清投影，避免重演v356和v357事故。exec与apply_patch固定作为Codex自定义工具识别，嵌套工具定义递归转换。
+
+源码50项测试、前端类型检查和生产构建、CLI构建、OpenMinis 1.12冻结基线、手机操作智能体黄金冻结、git差异检查全部通过。关键线程副本迁移后8条用户消息、23条助手消息、37次工具调用、37次工具结果、6个完成状态全部保留；独立Codex 0.153.4 app-server从真实JSONL和仅3回合旧投影恢复为8回合、105个项目、23条助手消息和26次命令执行，重启后仍完整。测试只使用临时副本，没有修改正式历史。
+
+正常修复版versionCode360，versionName为1.0.119-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-history-continuity-recovery-v360。GitHub Actions test通道第396次构建成功，运行ID36978369922，Release标签v396-test，Release ID401616502，资产ID605072107。APK大小183392151字节，SHA256为907cae12d99a4e4c39d109dc4622d0ca3e0136f677bd12e5541abc2b79e5f40c，bundleId后缀为28ba76208827c6009f3c30cb5d095432782aa960d41bc46d12a0d305bb47019e。
+
+紧急回滚分支rescue/v2000000000-v359-stable严格从v359稳定提交d58b8d33b6830040e21b494c0df14d24a74f82ec建立，提交bcd044f6bc5e0ae733026e2a49704d8d63c66f14。与v359逐文件审计只有工作流、Android版本配置、OpenMinis基线校验脚本和升级契约测试四个身份或守卫文件不同，所有业务源码和运行资产无差异。紧急版versionCode2000000000，versionName为1.0.118-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-history-materialization-recovery-v359-emergency-rollback-r2000000000。独立test通道第397次构建成功，运行ID36978481154，Release标签v397-test，Release ID401617864，资产ID605076248。APK大小183388523字节，SHA256为7fa6d92ded485f822a3cdca855899bed9c82dcde9748f37a3db52a27791a2010，bundleId后缀为b63445c7326cc4f53ad3e6350e6f2eee7e8444781cb45af85bba535d5d3d2128。
+
+两包包名均为com.codex.mobile.pocketlobster.test，ZIP完整，APK Signature Scheme v2验证通过，证书SHA256均为e4c798531ebbf7b023a29c02d5d42fabe7ca3917d9857eabd97f0d5e6c24afc8。归档根目录只保留正常版和紧急版。正常版路径为/sdcard/Download/口袋大龙虾本地归档/当前通讯版_口袋大龙虾_1.0.119-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-history-continuity-recovery-v360.apk。紧急版路径为/sdcard/Download/口袋大龙虾本地归档/紧急回滚版_口袋大龙虾_v359稳定基线_r2000000000_1.0.118-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-history-materialization-recovery.apk。旧v359原样移入历史版本。所有正常通讯版versionCode必须严格小于2000000000；接近该值前必须先基于新的用户已验证稳定版制作更高救援包。用户保留安装决定，本轮未安装任何APK，设备继续运行v359。
+
+文档结束。
+
 第十七部分：v353 安装后真实回归与 v354 修复
 
 用户于 2026 年 9 月 13 日自行覆盖安装 v353 通讯版。设备核验确认包名为 com.codex.mobile.pocketlobster.test，versionCode 为 353，主进程与 :minis 进程均正常运行，Shizuku、system-shell、本地链路、Ubuntu、Alpine、浏览器、Codex 官方模型和 Claude 健康检查均正常。v353 已成功恢复此前被第三方提供商过滤掉的历史线程，切回 OpenAI 官方模型后也不再出现 invalid_id_prefix 错误。
