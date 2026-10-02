@@ -344,10 +344,21 @@ class PermissionManagerActivity : AppCompatActivity() {
         Toast.makeText(this, getString(R.string.claude_install_starting), Toast.LENGTH_SHORT).show()
 
         Thread {
-            val result = serverManager.installClaudeCode { progress ->
-                runOnUiThread {
-                    tvClaudeInstallStatus.text = getString(R.string.optional_agent_status_template, progress)
+            val beforeVersion = runCatching { serverManager.getInstalledClaudeCodeVersion() }.getOrElse { "" }
+            val result = runCatching {
+                serverManager.installClaudeCode { progress ->
+                    runOnUiThread {
+                        tvClaudeInstallStatus.text = getString(R.string.optional_agent_status_template, progress)
+                    }
                 }
+            }.getOrElse { error ->
+                CodexServerManager.ClaudeInstallResult(
+                    success = false,
+                    previousVersion = beforeVersion,
+                    installedVersion = runCatching { serverManager.getInstalledClaudeCodeVersion() }.getOrElse { beforeVersion },
+                    rolledBack = false,
+                    message = "安全更新发生异常，当前版本未主动覆盖：${error.message ?: "unknown error"}",
+                )
             }
             runOnUiThread {
                 claudeInstallRunning = false

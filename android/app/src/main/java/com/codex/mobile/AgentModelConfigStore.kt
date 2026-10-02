@@ -136,6 +136,7 @@ object AgentModelConfigStore {
 
         writeAllConfigs(context, all)
         writePublicState(context, all)
+        if (config.isDefault) clearRuntimeSelectedConfig(context)
     }
 
     fun setDefault(context: Context, agentId: ExternalAgentId, configId: String) {
@@ -145,6 +146,7 @@ object AgentModelConfigStore {
         }
         writeAllConfigs(context, all)
         writePublicState(context, all)
+        clearRuntimeSelectedConfig(context)
     }
 
     fun deleteConfig(context: Context, configId: String) {
@@ -236,6 +238,20 @@ object AgentModelConfigStore {
     private fun readRuntimeOverride(context: Context): JSONObject {
         val file = stateFile(context, RUNTIME_OVERRIDE_FILE)
         return if (file.isFile) runCatching { JSONObject(file.readText()) }.getOrElse { JSONObject() } else JSONObject()
+    }
+
+    private fun clearRuntimeSelectedConfig(context: Context) {
+        val override = readRuntimeOverride(context)
+        if (!override.has("selectedConfigId")) return
+        override.remove("selectedConfigId")
+        val file = stateFile(context, RUNTIME_OVERRIDE_FILE)
+        file.parentFile?.mkdirs()
+        val temp = java.io.File(file.parentFile, ".${file.name}.tmp")
+        temp.writeText(override.toString(2))
+        if (!temp.renameTo(file)) {
+            file.writeText(override.toString(2))
+            temp.delete()
+        }
     }
 
     private fun writePublicState(context: Context, configs: List<AgentModelConfig>) {

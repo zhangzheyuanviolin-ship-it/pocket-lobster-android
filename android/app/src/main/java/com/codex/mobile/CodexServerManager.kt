@@ -2531,15 +2531,19 @@ EOF
             if (backupPackage.exists()) backupPackage.renameTo(livePackage)
             return unchangedFailure("候选版本切换失败，旧版本已恢复")
         }
-        ensureClaudeWrapperScript()
 
         onProgress("正在切换后复验真实消息链路")
-        val activeVersion = getInstalledClaudeCodeVersion()
-        val activeCli = File(livePackage, "cli.js")
-        val activeHandshake = if (activeVersion == CLAUDE_CODE_VERSION && activeCli.isFile) {
-            verifyClaudeModelHandshake(activeCli, modelConfig)
-        } else {
-            false to "切换后版本或入口文件不一致"
+        val activeVersion = runCatching { getInstalledClaudeCodeVersion() }.getOrDefault("")
+        val activeHandshake = runCatching {
+            ensureClaudeWrapperScript()
+            val activeCli = File(livePackage, "cli.js")
+            if (activeVersion == CLAUDE_CODE_VERSION && activeCli.isFile) {
+                verifyClaudeModelHandshake(activeCli, modelConfig)
+            } else {
+                false to "切换后版本或入口文件不一致"
+            }
+        }.getOrElse { error ->
+            false to "切换后验证异常：${error.message ?: "unknown error"}"
         }
         if (!activeHandshake.first) {
             runCatching { livePackage.renameTo(failedPackage) }
