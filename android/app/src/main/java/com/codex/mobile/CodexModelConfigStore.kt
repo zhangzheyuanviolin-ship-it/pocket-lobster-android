@@ -22,6 +22,8 @@ data class CodexModelConfig(
     val verifiedModel: String,
     val verificationMessage: String,
     val isDefault: Boolean,
+    val contextWindowTokens: Int = 0,
+    val autoCompactTokenLimit: Int = 0,
 )
 
 object CodexModelConfigStore {
@@ -86,6 +88,8 @@ object CodexModelConfigStore {
                 verifiedModel = row.optString("verifiedModel").trim(),
                 verificationMessage = row.optString("verificationMessage").trim(),
                 isDefault = row.optBoolean("isDefault", false),
+                contextWindowTokens = row.optInt("contextWindowTokens", 0).coerceAtLeast(0),
+                autoCompactTokenLimit = row.optInt("autoCompactTokenLimit", 0).coerceAtLeast(0),
             )
         }
         val publicSelection = publicRoot?.optString("currentConfigId")
@@ -244,6 +248,8 @@ object CodexModelConfigStore {
             .put("verifiedModel", config.verifiedModel)
             .put("verificationMessage", config.verificationMessage)
             .put("isDefault", config.isDefault)
+            .put("contextWindowTokens", config.contextWindowTokens)
+            .put("autoCompactTokenLimit", config.autoCompactTokenLimit)
     }
 
     private fun readEfforts(array: JSONArray): List<String> {

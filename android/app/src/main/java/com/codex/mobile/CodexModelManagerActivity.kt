@@ -95,6 +95,7 @@ class CodexModelManagerActivity : AppCompatActivity() {
                 val protocol = "原生Responses"
                 view.findViewById<TextView>(R.id.tvAgentModelRowMeta).text =
                     "${row.modelId} | $protocol\n${row.baseUrl}\n状态：$verification" +
+                        (if (row.contextWindowTokens > 0) "\n上下文：${row.contextWindowTokens}，自动压缩：${row.autoCompactTokenLimit.takeIf { it > 0 } ?: "默认"}" else "") +
                         (if (row.verifiedModel.isNotEmpty()) "，上游返回${row.verifiedModel}" else "") +
                         (if (row.verificationMessage.isNotEmpty()) "\n${row.verificationMessage}" else "")
                 view.findViewById<Button>(R.id.btnAgentModelRowSelect).setOnClickListener { select(row) }
@@ -132,6 +133,8 @@ class CodexModelManagerActivity : AppCompatActivity() {
             val edits = JSONArray()
                 .put(configEdit("model_provider", "openai", "replace"))
                 .put(configEdit("model", preferred, "replace"))
+                .put(configEdit("model_context_window", JSONObject.NULL, "replace"))
+                .put(configEdit("model_auto_compact_token_limit", JSONObject.NULL, "replace"))
             LocalBridgeClients.callCodexRpc("config/batchWrite", JSONObject().put("edits", edits))
             CodexModelConfigStore.setOpenAiDefault(this)
             val active = LocalBridgeClients.callCodexRpc("config/read").optJSONObject("config")
@@ -160,6 +163,17 @@ class CodexModelManagerActivity : AppCompatActivity() {
             hint = if (existing == null) "API密钥" else "API密钥，留空表示保持不变"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
+        val inferredMiniMaxM3 = existing?.modelId.orEmpty().contains("minimax-m3", ignoreCase = true)
+        val contextInput = EditText(this).apply {
+            hint = "最大上下文 tokens，0 表示 Codex 自动判断"
+            setText((existing?.contextWindowTokens ?: if (inferredMiniMaxM3) 1_000_000 else 0).toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        val compactInput = EditText(this).apply {
+            hint = "自动压缩触发 tokens，0 表示 Codex 默认"
+            setText((existing?.autoCompactTokenLimit ?: if (inferredMiniMaxM3) 900_000 else 0).toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val pad = (18 * resources.displayMetrics.density).toInt()
@@ -168,8 +182,10 @@ class CodexModelManagerActivity : AppCompatActivity() {
             addView(baseUrlInput)
             addView(modelInput)
             addView(keyInput)
+            addView(contextInput)
+            addView(compactInput)
             addView(TextView(this@CodexModelManagerActivity).apply {
-                text = "推理强度请在聊天输入框下方实时选择；保存时会执行上游原生Responses生成和Codex真实路由验证。"
+                text = "推理强度请在聊天输入框下方实时选择；上下文与自动压缩值会写入 Codex 官方配置。Codex 没有通用 temperature 和单次最大输出配置，本应用不会伪造。保存时会执行上游原生Responses生成和Codex真实路由验证。"
             })
         }
         val scroll = ScrollView(this).apply { addView(container) }
@@ -184,6 +200,8 @@ class CodexModelManagerActivity : AppCompatActivity() {
                 val baseUrl = baseUrlInput.text.toString().trim().trimEnd('/')
                 val modelId = modelInput.text.toString().trim()
                 val enteredApiKey = keyInput.text.toString().trim()
+                val contextWindowTokens = contextInput.text.toString().trim().toIntOrNull()
+                val autoCompactTokenLimit = compactInput.text.toString().trim().toIntOrNull()
                 if (!isAllowedBaseUrl(baseUrl)) {
                     baseUrlInput.error = "仅允许HTTPS地址，或本机HTTP地址"
                     return@setOnClickListener
@@ -194,6 +212,18 @@ class CodexModelManagerActivity : AppCompatActivity() {
                 }
                 if (existing == null && enteredApiKey.isEmpty()) {
                     keyInput.error = "API密钥必填"
+                    return@setOnClickListener
+                }
+                if (contextWindowTokens == null || contextWindowTokens < 0) {
+                    contextInput.error = "请输入大于等于 0 的整数"
+                    return@setOnClickListener
+                }
+                if (autoCompactTokenLimit == null || autoCompactTokenLimit < 0) {
+                    compactInput.error = "请输入大于等于 0 的整数"
+                    return@setOnClickListener
+                }
+                if (contextWindowTokens > 0 && autoCompactTokenLimit > contextWindowTokens) {
+                    compactInput.error = "压缩触发值不能大于最大上下文"
                     return@setOnClickListener
                 }
                 val id = existing?.id ?: CodexModelConfigStore.createId()
@@ -213,6 +243,8 @@ class CodexModelManagerActivity : AppCompatActivity() {
                     verifiedModel = "",
                     verificationMessage = "等待保存验证",
                     isDefault = existing?.isDefault ?: false,
+                    contextWindowTokens = contextWindowTokens,
+                    autoCompactTokenLimit = autoCompactTokenLimit,
                 )
                 runBusy("正在验证上游并配置Codex路由…", {
                     val apiKey = enteredApiKey.ifBlank {
@@ -403,6 +435,8 @@ class CodexModelManagerActivity : AppCompatActivity() {
         if (select) {
             edits.put(configEdit("model_provider", config.providerId, "replace"))
             edits.put(configEdit("model", config.modelId, "replace"))
+            edits.put(configEdit("model_context_window", if (config.contextWindowTokens > 0) config.contextWindowTokens else JSONObject.NULL, "replace"))
+            edits.put(configEdit("model_auto_compact_token_limit", if (config.autoCompactTokenLimit > 0) config.autoCompactTokenLimit else JSONObject.NULL, "replace"))
         }
         LocalBridgeClients.callCodexRpc("config/batchWrite", JSONObject().put("edits", edits))
     }
@@ -412,6 +446,8 @@ class CodexModelManagerActivity : AppCompatActivity() {
         if (config.isDefault) {
             edits.put(configEdit("model_provider", JSONObject.NULL, "replace"))
             edits.put(configEdit("model", JSONObject.NULL, "replace"))
+            edits.put(configEdit("model_context_window", JSONObject.NULL, "replace"))
+            edits.put(configEdit("model_auto_compact_token_limit", JSONObject.NULL, "replace"))
         }
         LocalBridgeClients.callCodexRpc("config/batchWrite", JSONObject().put("edits", edits))
     }
@@ -424,6 +460,8 @@ class CodexModelManagerActivity : AppCompatActivity() {
         val edits = JSONArray()
             .put(configEdit("model_provider", providerId.ifBlank { "openai" }, "replace"))
             .put(configEdit("model", if (modelId.isBlank()) JSONObject.NULL else modelId, "replace"))
+            .put(configEdit("model_context_window", JSONObject.NULL, "replace"))
+            .put(configEdit("model_auto_compact_token_limit", JSONObject.NULL, "replace"))
         LocalBridgeClients.callCodexRpc("config/batchWrite", JSONObject().put("edits", edits))
     }
 

@@ -32,11 +32,18 @@ data class AgentModelConfig(
     val apiKey: String,
     val modelId: String,
     val isDefault: Boolean,
+    val contextWindowTokens: Int = 0,
+    val autoCompactWindowTokens: Int = 0,
+    val maxOutputTokens: Int = 0,
+    val effortLevel: String = "default",
+    val maxThinkingTokens: Int = 0,
 )
 
 object AgentModelConfigStore {
     private const val PREFS_NAME = "agent_model_configs"
     private const val KEY_CONFIGS_JSON = "configs_json"
+    private const val PUBLIC_STATE_FILE = "claude-model-configs.json"
+    private const val RUNTIME_OVERRIDE_FILE = "claude-runtime-overrides.json"
 
     fun presetsFor(agentId: ExternalAgentId): List<ProviderPreset> {
         return when (agentId) {
@@ -75,16 +82,29 @@ object AgentModelConfigStore {
 
     fun loadConfigs(context: Context, agentId: ExternalAgentId): List<AgentModelConfig> {
         val all = readAllConfigs(context)
-        return all.filter { it.agentId == agentId }
+        val filtered = all.filter { it.agentId == agentId }
             .sortedWith(
                 compareByDescending<AgentModelConfig> { it.isDefault }
                     .thenBy { it.displayName.lowercase() },
             )
+        if (agentId == ExternalAgentId.CLAUDE_CODE) writePublicState(context, all)
+        return filtered
     }
 
     fun loadCurrentConfig(context: Context, agentId: ExternalAgentId): AgentModelConfig? {
         val list = loadConfigs(context, agentId)
-        return list.firstOrNull { it.isDefault } ?: list.firstOrNull()
+        val stored = list.firstOrNull { it.isDefault } ?: list.firstOrNull() ?: return null
+        if (agentId != ExternalAgentId.CLAUDE_CODE) return stored
+        val override = readRuntimeOverride(context)
+        val selectedId = override.optString("selectedConfigId", "").trim()
+        val selected = list.firstOrNull { it.id == selectedId } ?: stored
+        return selected.copy(
+            contextWindowTokens = override.optInt("contextWindowTokens", selected.contextWindowTokens).coerceAtLeast(0),
+            autoCompactWindowTokens = override.optInt("autoCompactWindowTokens", selected.autoCompactWindowTokens).coerceAtLeast(0),
+            maxOutputTokens = override.optInt("maxOutputTokens", selected.maxOutputTokens).coerceAtLeast(0),
+            effortLevel = override.optString("effortLevel", selected.effortLevel).trim().ifEmpty { selected.effortLevel },
+            maxThinkingTokens = override.optInt("maxThinkingTokens", selected.maxThinkingTokens).coerceAtLeast(0),
+        )
     }
 
     fun saveConfig(context: Context, config: AgentModelConfig) {
@@ -115,6 +135,7 @@ object AgentModelConfigStore {
         }
 
         writeAllConfigs(context, all)
+        writePublicState(context, all)
     }
 
     fun setDefault(context: Context, agentId: ExternalAgentId, configId: String) {
@@ -123,6 +144,7 @@ object AgentModelConfigStore {
             row.copy(isDefault = row.id == configId)
         }
         writeAllConfigs(context, all)
+        writePublicState(context, all)
     }
 
     fun deleteConfig(context: Context, configId: String) {
@@ -139,6 +161,7 @@ object AgentModelConfigStore {
         }
 
         writeAllConfigs(context, after)
+        writePublicState(context, after)
     }
 
     private fun readAllConfigs(context: Context): List<AgentModelConfig> {
@@ -166,6 +189,11 @@ object AgentModelConfigStore {
                 apiKey = item.optString("apiKey", "").trim(),
                 modelId = item.optString("modelId", "").trim(),
                 isDefault = item.optBoolean("isDefault", false),
+                contextWindowTokens = item.optInt("contextWindowTokens", 0).coerceAtLeast(0),
+                autoCompactWindowTokens = item.optInt("autoCompactWindowTokens", 0).coerceAtLeast(0),
+                maxOutputTokens = item.optInt("maxOutputTokens", 0).coerceAtLeast(0),
+                effortLevel = item.optString("effortLevel", "default").trim().ifEmpty { "default" },
+                maxThinkingTokens = item.optInt("maxThinkingTokens", 0).coerceAtLeast(0),
             )
         }
         return output
@@ -185,7 +213,12 @@ object AgentModelConfigStore {
                     .put("baseUrl", cfg.baseUrl)
                     .put("apiKey", cfg.apiKey)
                     .put("modelId", cfg.modelId)
-                    .put("isDefault", cfg.isDefault),
+                    .put("isDefault", cfg.isDefault)
+                    .put("contextWindowTokens", cfg.contextWindowTokens)
+                    .put("autoCompactWindowTokens", cfg.autoCompactWindowTokens)
+                    .put("maxOutputTokens", cfg.maxOutputTokens)
+                    .put("effortLevel", cfg.effortLevel)
+                    .put("maxThinkingTokens", cfg.maxThinkingTokens),
             )
         }
 
@@ -193,5 +226,43 @@ object AgentModelConfigStore {
             .edit()
             .putString(KEY_CONFIGS_JSON, arr.toString())
             .apply()
+    }
+
+    private fun stateFile(context: Context, name: String): java.io.File {
+        val paths = BootstrapInstaller.getPaths(context)
+        return java.io.File(paths.homeDir, ".openclaw-android/state/$name")
+    }
+
+    private fun readRuntimeOverride(context: Context): JSONObject {
+        val file = stateFile(context, RUNTIME_OVERRIDE_FILE)
+        return if (file.isFile) runCatching { JSONObject(file.readText()) }.getOrElse { JSONObject() } else JSONObject()
+    }
+
+    private fun writePublicState(context: Context, configs: List<AgentModelConfig>) {
+        val publicConfigs = JSONArray()
+        configs.filter { it.agentId == ExternalAgentId.CLAUDE_CODE }.forEach { cfg ->
+            publicConfigs.put(
+                JSONObject()
+                    .put("id", cfg.id)
+                    .put("displayName", cfg.displayName)
+                    .put("providerName", cfg.providerName)
+                    .put("modelId", cfg.modelId)
+                    .put("isDefault", cfg.isDefault)
+                    .put("contextWindowTokens", cfg.contextWindowTokens)
+                    .put("autoCompactWindowTokens", cfg.autoCompactWindowTokens)
+                    .put("maxOutputTokens", cfg.maxOutputTokens)
+                    .put("effortLevel", cfg.effortLevel)
+                    .put("maxThinkingTokens", cfg.maxThinkingTokens),
+            )
+        }
+        val root = JSONObject().put("version", 1).put("configs", publicConfigs)
+        val file = stateFile(context, PUBLIC_STATE_FILE)
+        file.parentFile?.mkdirs()
+        val temp = java.io.File(file.parentFile, ".${file.name}.tmp")
+        temp.writeText(root.toString(2))
+        if (!temp.renameTo(file)) {
+            file.writeText(root.toString(2))
+            temp.delete()
+        }
     }
 }

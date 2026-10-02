@@ -7,6 +7,7 @@ import android.widget.Button
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 
 class PermissionManagerActivity : AppCompatActivity() {
@@ -299,41 +300,58 @@ class PermissionManagerActivity : AppCompatActivity() {
             } else {
                 ""
             }
+            val targetVersion = runCatching { serverManager.getTargetClaudeCodeVersion() }.getOrElse { "" }
+            val verification = runCatching { serverManager.getClaudeInstallVerificationStatus() }
+                .getOrElse { "尚未执行安全安装验证" }
             runOnUiThread {
-                val statusText = if (claudeInstalled) {
-                    if (claudeVersion.isBlank()) {
-                        getString(R.string.optional_agent_installed)
-                    } else {
-                        "${getString(R.string.optional_agent_installed)} · CLI $claudeVersion"
-                    }
-                } else {
-                    getString(R.string.optional_agent_not_installed)
+                val statusText = when {
+                    !claudeInstalled -> "未安装 · 安卓安全目标 $targetVersion"
+                    claudeVersion == targetVersion -> "已安装 CLI $claudeVersion · 目标一致"
+                    else -> "已安装 CLI ${claudeVersion.ifBlank { "未知" }} · 可手动安全更新到 $targetVersion"
                 }
                 tvClaudeInstallStatus.text = getString(
                     R.string.optional_agent_status_template,
-                    statusText,
+                    "$statusText\n最近安全验证：$verification",
                 )
                 btnClaudeInstall.isEnabled = !claudeInstallRunning
+                btnClaudeInstall.text = when {
+                    !claudeInstalled -> "手动安全安装 Claude $targetVersion"
+                    claudeVersion != targetVersion -> "手动安全更新 Claude $targetVersion"
+                    else -> "手动安全复验或修复 Claude $targetVersion"
+                }
             }
         }.start()
     }
 
     private fun startClaudeInstallRepair() {
         if (claudeInstallRunning) return
+        val current = runCatching { serverManager.getInstalledClaudeCodeVersion() }.getOrElse { "" }
+        val target = runCatching { serverManager.getTargetClaudeCodeVersion() }.getOrElse { "" }
+        AlertDialog.Builder(this)
+            .setTitle("手动安全更新 Claude")
+            .setMessage(
+                "当前版本：${current.ifBlank { "未安装" }}\n目标版本：$target\n\n应用更新不会自动更新 Claude。点击继续后会先在隔离目录安装，验证安卓启动，并用您当前配置的模型做真实消息握手；全部通过才切换。切换后会再次握手，失败则自动恢复旧版本。",
+            )
+            .setNegativeButton(getString(R.string.cancel), null)
+            .setPositiveButton("继续安全更新") { _, _ -> executeClaudeInstallRepair() }
+            .show()
+    }
+
+    private fun executeClaudeInstallRepair() {
+        if (claudeInstallRunning) return
         claudeInstallRunning = true
         btnClaudeInstall.isEnabled = false
         Toast.makeText(this, getString(R.string.claude_install_starting), Toast.LENGTH_SHORT).show()
 
         Thread {
-            val installed = serverManager.installClaudeCode { }
+            val result = serverManager.installClaudeCode { progress ->
+                runOnUiThread {
+                    tvClaudeInstallStatus.text = getString(R.string.optional_agent_status_template, progress)
+                }
+            }
             runOnUiThread {
                 claudeInstallRunning = false
-                val message = if (installed) {
-                    getString(R.string.claude_install_success)
-                } else {
-                    getString(R.string.claude_install_failed)
-                }
-                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                Toast.makeText(this, result.message, Toast.LENGTH_LONG).show()
                 refreshOptionalAgentInstallStatus()
             }
         }.start()

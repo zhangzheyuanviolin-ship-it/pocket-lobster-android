@@ -11,6 +11,7 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.speech.tts.TextToSpeech
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.Menu
 import android.view.View
@@ -766,14 +767,28 @@ class CliAgentChatActivity : AppCompatActivity() {
     }
 
     private fun runCompatibilityCompactionAndMaybeBind(trigger: String) {
-        val compacted = maybeCompactSessionIfNeeded(trigger = trigger, force = true)
-        if (compacted) {
-            lastExecutionRoute = "兼容压缩链路"
-            renderSession()
-            Toast.makeText(this, getString(R.string.cli_compact_done), Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(this, getString(R.string.cli_compact_not_needed), Toast.LENGTH_SHORT).show()
-        }
+        if (sending) return
+        sending = true
+        abortRequested = false
+        lastExecutionRoute = "模型压缩中"
+        renderSession()
+        Thread {
+            val compacted = maybeCompactSessionIfNeeded(trigger = trigger, force = true)
+            runOnUiThread {
+                sending = false
+                activeProcess = null
+                clearLiveProcessLines()
+                if (compacted) {
+                    lastExecutionRoute = "当前模型压缩链路"
+                    renderSession()
+                    Toast.makeText(this, getString(R.string.cli_compact_done), Toast.LENGTH_SHORT).show()
+                } else {
+                    lastExecutionRoute = "模型压缩未完成"
+                    renderSession()
+                    Toast.makeText(this, "当前模型未能生成可用摘要，原会话已完整保留", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
     }
 
     private fun maybeCompactSessionIfNeeded(trigger: String, force: Boolean = false): Boolean {
@@ -782,10 +797,21 @@ class CliAgentChatActivity : AppCompatActivity() {
         val snapshot = activeSession
         if (snapshot.messages.isEmpty()) return false
 
-        val promptBytes = promptUtf8Bytes(buildPromptWithHistory(snapshot.messages, runtimeOptions))
-        if (!force && promptBytes < CLAUDE_AUTO_COMPACT_PROMPT_BYTES) return false
+        val fullPrompt = buildPromptWithHistory(snapshot.messages, runtimeOptions)
+        val promptBytes = promptUtf8Bytes(fullPrompt)
+        val configuredWindow = AgentModelConfigStore.loadCurrentConfig(this, agentId)
+            ?.autoCompactWindowTokens
+            ?.takeIf { it > 0 }
+        if (!force) {
+            val thresholdReached = if (configuredWindow != null) {
+                estimatePromptTokens(fullPrompt) >= configuredWindow
+            } else {
+                promptBytes >= CLAUDE_AUTO_COMPACT_PROMPT_BYTES
+            }
+            if (!thresholdReached) return false
+        }
 
-        val summary = buildCompactionSummary(snapshot, trigger, promptBytes)
+        val summary = buildModelCompactionSummary(snapshot, trigger, promptBytes) ?: return false
         val baseTitle = snapshot.title.trim().ifEmpty { "Claude Code 会话" }
         val nextTitle = if (baseTitle.contains("续接")) baseTitle else "$baseTitle（续接）"
 
@@ -812,6 +838,42 @@ class CliAgentChatActivity : AppCompatActivity() {
         activeSession = nextSession
         clearLiveProcessLines()
         return true
+    }
+
+    private fun buildModelCompactionSummary(
+        session: AgentChatSession,
+        trigger: String,
+        promptBytes: Int,
+    ): String? {
+        val config = AgentModelConfigStore.loadCurrentConfig(this, agentId) ?: return null
+        val transcript = buildString {
+            session.messages.forEach { message ->
+                appendLine("[${message.role}] ${message.text}")
+            }
+        }
+        val prompt = """
+            你是会话压缩器。请完整阅读下面的真实会话，用当前模型生成可继续开发工作的高保真中文交接摘要。
+            必须保留：用户当前目标、已经完成的修改、所有文件绝对路径、分支和提交、版本号、命令与验证结果、接口和模型标识、错误原文与根因、尚未完成事项、明确约束、风险、下一步；最近三轮用户原话必须逐字保留；不得编造，不得用省略号代替关键事实。
+            输出必须以【模型生成的会话压缩摘要】开头，并包含 source_session_id=${session.sessionId}、trigger=$trigger、original_message_count=${session.messages.size}、estimated_prompt_bytes=$promptBytes。
+            只输出摘要正文，不要调用工具，不要解释任务。
+
+            真实会话：
+            $transcript
+        """.trimIndent()
+        val result = runCatching {
+            runClaudePrint(
+                config = config,
+                prompt = prompt,
+                options = runtimeOptions,
+                sendPromptViaStdin = true,
+            )
+        }.getOrElse { error ->
+            Log.e("CliAgentChat", "Model compaction failed", error)
+            return null
+        }
+        val summary = result.assistantText.trim()
+        if (summary.length < 200 || !summary.contains("模型生成的会话压缩摘要")) return null
+        return summary
     }
 
     private fun buildCompactionSummary(
@@ -985,6 +1047,28 @@ class CliAgentChatActivity : AppCompatActivity() {
 
     private fun promptUtf8Bytes(value: String): Int {
         return value.toByteArray(Charsets.UTF_8).size
+    }
+
+    private fun estimatePromptTokens(value: String): Int {
+        var weightedQuarters = 0L
+        value.forEach { char ->
+            weightedQuarters += when {
+                char.code in 0x3400..0x9FFF -> 4
+                char.code in 0x3040..0x30FF -> 4
+                char.code in 0xAC00..0xD7AF -> 4
+                else -> 1
+            }
+        }
+        return ((weightedQuarters + 3L) / 4L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    private fun isClaudePromptOverHardLimit(prompt: String, config: AgentModelConfig): Boolean {
+        if (config.contextWindowTokens > 0) {
+            val reservedOutput = config.maxOutputTokens.takeIf { it > 0 } ?: 16_384
+            val safeInputLimit = (config.contextWindowTokens - reservedOutput).coerceAtLeast(1) * 9 / 10
+            return estimatePromptTokens(prompt) > safeInputLimit
+        }
+        return promptUtf8Bytes(prompt) > CLAUDE_HARD_PROMPT_BYTES
     }
 
     private fun isArgumentListTooLong(error: Throwable): Boolean {
@@ -1169,13 +1253,15 @@ class CliAgentChatActivity : AppCompatActivity() {
                 }
                 if (agentId == ExternalAgentId.CLAUDE_CODE &&
                     !useNativeSession &&
-                    promptUtf8Bytes(prompt) > CLAUDE_HARD_PROMPT_BYTES
+                    isClaudePromptOverHardLimit(prompt, modelConfig)
                 ) {
                     if (maybeCompactSessionIfNeeded(trigger = "hard_limit_guard", force = true)) {
                         runOnUiThread {
                             Toast.makeText(this, getString(R.string.cli_compact_auto_triggered), Toast.LENGTH_SHORT).show()
                             renderSession()
                         }
+                    } else {
+                        throw IllegalStateException("当前模型未能完成高保真上下文压缩；为避免丢失历史，已停止本次发送并完整保留原会话")
                     }
                     prompt = buildPromptWithHistory(activeSession.messages, runtimeOptions)
                 }
@@ -1328,7 +1414,7 @@ class CliAgentChatActivity : AppCompatActivity() {
         messages: List<AgentChatMessage>,
         options: AgentRuntimeOptions,
     ): String {
-        val recent = messages.takeLast(historyWindowSize.coerceIn(20, 120))
+        val recent = messages
         val out = StringBuilder()
         out.appendLine("你正在继续已有会话。请结合上下文回答，并在需要时执行可用工具。")
         if (agentId == ExternalAgentId.CLAUDE_CODE) {
@@ -1401,6 +1487,7 @@ class CliAgentChatActivity : AppCompatActivity() {
         out.appendLine("20) Minis浏览器标准流程为list_tabs、navigate、wait_for_dom_stable，再执行get_text、get_readable、click或type；需要接手其他智能体的页面时必须传入list_tabs返回的明确tab_id，同一标签上的动作会自动串行，禁止猜测动作名或标签编号。")
         out.appendLine("21) click和type的selector_type支持css、xpath、text；元素暂时不存在时工具会自动等待重试并返回页面上下文。")
         out.appendLine("22) screenshot会直接返回PNG图像内容和imageFilePath；需要视觉判断时必须读取该图像，不得仅凭截图成功文案推断页面状态。")
+        out.appendLine("23) 用户要求切换已配置模型或调整上下文、压缩、输出、思考参数时，使用 mcp__anyclaw_toolbox__anyclaw_agent_model_config；先 get 核对，再 update，变更从下一轮生效且不得声称 CLI 不支持的参数已生效。")
     }
 
     private fun runClaudePrint(
@@ -1449,6 +1536,21 @@ class CliAgentChatActivity : AppCompatActivity() {
         )
         if (config.baseUrl.isNotBlank()) {
             extraEnv["ANTHROPIC_BASE_URL"] = config.baseUrl.trim()
+        }
+        if (config.contextWindowTokens > 0) {
+            extraEnv["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = config.contextWindowTokens.toString()
+        }
+        if (config.autoCompactWindowTokens > 0) {
+            extraEnv["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = config.autoCompactWindowTokens.toString()
+        }
+        if (config.maxOutputTokens > 0) {
+            extraEnv["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = config.maxOutputTokens.toString()
+        }
+        if (config.effortLevel in setOf("low", "medium", "high")) {
+            extraEnv["CLAUDE_CODE_EFFORT_LEVEL"] = config.effortLevel
+        }
+        if (config.maxThinkingTokens > 0) {
+            extraEnv["MAX_THINKING_TOKENS"] = config.maxThinkingTokens.toString()
         }
 
         val process = serverManager.startPrefixExecProcess(args, extraEnv)

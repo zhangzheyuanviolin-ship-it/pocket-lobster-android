@@ -11,6 +11,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URL
 import java.security.SecureRandom
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,6 +25,14 @@ import com.openminis.app.integration.PocketLobsterPortPolicy
  * `codex login`, and the codex-web-local web server.
  */
 class CodexServerManager(private val context: Context) {
+
+    data class ClaudeInstallResult(
+        val success: Boolean,
+        val previousVersion: String,
+        val installedVersion: String,
+        val rolledBack: Boolean,
+        val message: String,
+    )
 
     companion object {
         private const val TAG = "CodexServerManager"
@@ -236,8 +245,7 @@ class CodexServerManager(private val context: Context) {
     fun isClaudeCodeInstalled(): Boolean {
         val paths = BootstrapInstaller.getPaths(context)
         val pkg = File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code")
-        if (pkg.exists()) return true
-        return runCapture("command -v claude >/dev/null 2>&1 && echo yes || echo no") == "yes"
+        return File(pkg, "package.json").isFile && File(pkg, "cli.js").isFile
     }
 
     fun getInstalledCodexVersion(): String {
@@ -258,6 +266,14 @@ class CodexServerManager(private val context: Context) {
         return runCatching {
             JSONObject(pkg.readText()).optString("version", "").trim()
         }.getOrDefault("")
+    }
+
+    fun getTargetClaudeCodeVersion(): String = CLAUDE_CODE_VERSION
+
+    fun getClaudeInstallVerificationStatus(): String {
+        return context.getSharedPreferences("claude_safe_installer", Context.MODE_PRIVATE)
+            .getString("last_status", "尚未执行安全安装验证")
+            .orEmpty()
     }
 
     fun isServerBundleInstalled(): Boolean = false
@@ -2440,21 +2456,221 @@ EOF
         return isCodexInstalled() && getInstalledCodexVersion() == CODEX_VERSION
     }
 
-    fun installClaudeCode(onProgress: (String) -> Unit): Boolean {
+    fun installClaudeCode(onProgress: (String) -> Unit): ClaudeInstallResult {
         val paths = BootstrapInstaller.getPaths(context)
         val prefix = paths.prefixDir
-        val npmCli = "$prefix/lib/node_modules/npm/bin/npm-cli.js"
-
-        onProgress("Installing Claude Code CLI $CLAUDE_CODE_VERSION …")
-        val code = runInPrefix(
-            "node $npmCli install -g @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION 2>&1",
-            onOutput = { onProgress(it) },
-        )
-        if (code != 0) {
-            Log.e(TAG, "npm install @anthropic-ai/claude-code failed with code $code")
-            return false
+        val npmCli = File(prefix, "lib/node_modules/npm/bin/npm-cli.js")
+        val node = File(prefix, "bin/node")
+        val previousVersion = getInstalledClaudeCodeVersion()
+        val modelConfig = AgentModelConfigStore.loadCurrentConfig(context, ExternalAgentId.CLAUDE_CODE)
+        if (modelConfig == null) {
+            return recordClaudeInstallResult(
+                ClaudeInstallResult(false, previousVersion, previousVersion, false, "请先配置 Claude 当前模型；安全更新必须先做真实消息握手"),
+            )
         }
-        return isClaudeCodeInstalled()
+        if (!node.exists() || !npmCli.exists()) {
+            return recordClaudeInstallResult(
+                ClaudeInstallResult(false, previousVersion, previousVersion, false, "Node 或 npm 不完整，未触碰当前 Claude"),
+            )
+        }
+
+        val runId = "${System.currentTimeMillis()}-${UUID.randomUUID()}"
+        val stageRoot = File(prefix, "tmp/claude-safe-update-$runId")
+        val stagePackage = File(stageRoot, "lib/node_modules/@anthropic-ai/claude-code")
+        val livePackage = File(prefix, "lib/node_modules/@anthropic-ai/claude-code")
+        val packageParent = File(prefix, "lib/node_modules/@anthropic-ai")
+        val backupPackage = File(packageParent, ".claude-code-backup-$runId-${previousVersion.ifBlank { "none" }}")
+        val failedPackage = File(packageParent, ".claude-code-rejected-$runId")
+
+        fun unchangedFailure(message: String): ClaudeInstallResult {
+            runCatching { stageRoot.deleteRecursively() }
+            return recordClaudeInstallResult(
+                ClaudeInstallResult(false, previousVersion, getInstalledClaudeCodeVersion(), false, message),
+            )
+        }
+
+        onProgress("正在隔离目录下载 Claude Code $CLAUDE_CODE_VERSION；当前版本保持运行")
+        stageRoot.mkdirs()
+        val installCode = runInPrefix(
+            "${shellQuote(node.absolutePath)} ${shellQuote(npmCli.absolutePath)} install -g --prefix ${shellQuote(stageRoot.absolutePath)} --no-audit --no-fund @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION 2>&1",
+            onOutput = onProgress,
+        )
+        if (installCode != 0) {
+            return unchangedFailure("隔离下载失败，当前 Claude 未改变（npm exit=$installCode）")
+        }
+
+        val stagedVersion = readPackageVersion(stagePackage)
+        val stagedCli = File(stagePackage, "cli.js")
+        if (stagedVersion != CLAUDE_CODE_VERSION || !stagedCli.isFile) {
+            return unchangedFailure("候选包结构或版本不符合安卓运行要求，当前 Claude 未改变")
+        }
+
+        onProgress("正在验证候选 CLI 能否在安卓启动")
+        val localCheck = runClaudeCandidateCommand(
+            cliFile = stagedCli,
+            args = listOf("--version"),
+            extraEnv = emptyMap(),
+            stdinText = null,
+            timeoutSeconds = 30,
+        )
+        if (localCheck.first != 0 || !localCheck.second.contains(CLAUDE_CODE_VERSION)) {
+            return unchangedFailure("候选 CLI 安卓启动验证失败，当前 Claude 未改变")
+        }
+
+        onProgress("正在用当前模型做隔离真实消息握手")
+        val stagedHandshake = verifyClaudeModelHandshake(stagedCli, modelConfig)
+        if (!stagedHandshake.first) {
+            return unchangedFailure("候选 CLI 未通过真实消息握手：${stagedHandshake.second}；当前 Claude 未改变")
+        }
+
+        packageParent.mkdirs()
+        if (livePackage.exists() && !livePackage.renameTo(backupPackage)) {
+            return unchangedFailure("无法建立旧版本回滚副本，已拒绝更新")
+        }
+        if (!stagePackage.renameTo(livePackage)) {
+            if (backupPackage.exists()) backupPackage.renameTo(livePackage)
+            return unchangedFailure("候选版本切换失败，旧版本已恢复")
+        }
+        ensureClaudeWrapperScript()
+
+        onProgress("正在切换后复验真实消息链路")
+        val activeVersion = getInstalledClaudeCodeVersion()
+        val activeCli = File(livePackage, "cli.js")
+        val activeHandshake = if (activeVersion == CLAUDE_CODE_VERSION && activeCli.isFile) {
+            verifyClaudeModelHandshake(activeCli, modelConfig)
+        } else {
+            false to "切换后版本或入口文件不一致"
+        }
+        if (!activeHandshake.first) {
+            runCatching { livePackage.renameTo(failedPackage) }
+            val restored = backupPackage.exists() && backupPackage.renameTo(livePackage)
+            ensureClaudeWrapperScript()
+            runCatching { stageRoot.deleteRecursively() }
+            val restoredVersion = getInstalledClaudeCodeVersion()
+            return recordClaudeInstallResult(
+                ClaudeInstallResult(
+                    success = false,
+                    previousVersion = previousVersion,
+                    installedVersion = restoredVersion,
+                    rolledBack = restored,
+                    message = if (restored) {
+                        "新版本切换后复验失败，已自动回滚到 $restoredVersion；失败包已隔离"
+                    } else {
+                        "新版本复验失败且自动回滚未完成，请勿发起 Claude 会话"
+                    },
+                ),
+            )
+        }
+
+        runCatching { stageRoot.deleteRecursively() }
+        return recordClaudeInstallResult(
+            ClaudeInstallResult(
+                success = true,
+                previousVersion = previousVersion,
+                installedVersion = activeVersion,
+                rolledBack = false,
+                message = "隔离安装、安卓启动和切换前后真实消息握手均通过；旧版本回滚副本已保留",
+            ),
+        )
+    }
+
+    private fun readPackageVersion(packageDir: File): String {
+        val packageJson = File(packageDir, "package.json")
+        if (!packageJson.isFile) return ""
+        return runCatching { JSONObject(packageJson.readText()).optString("version", "").trim() }.getOrDefault("")
+    }
+
+    private fun verifyClaudeModelHandshake(
+        cliFile: File,
+        config: AgentModelConfig,
+    ): Pair<Boolean, String> {
+        val marker = "POCKETLOBSTER_CLAUDE_HEALTH_OK_${System.currentTimeMillis()}"
+        val env = claudeModelEnvironment(config)
+        val args = mutableListOf("-p", "--output-format", "json", "--max-turns", "1")
+        if (config.modelId.isNotBlank()) args += listOf("--model", config.modelId.trim())
+        val result = runClaudeCandidateCommand(
+            cliFile = cliFile,
+            args = args,
+            extraEnv = env,
+            stdinText = "这是安装健康检查。不要调用工具，只回复这一段精确文本：$marker",
+            timeoutSeconds = 150,
+        )
+        if (result.first != 0) return false to "进程退出码 ${result.first}"
+        if (!result.second.contains(marker)) return false to "模型未返回握手标记"
+        return true to "真实消息握手通过"
+    }
+
+    private fun claudeModelEnvironment(config: AgentModelConfig): Map<String, String> {
+        val env = mutableMapOf("ANTHROPIC_API_KEY" to config.apiKey.trim())
+        if (config.baseUrl.isNotBlank()) env["ANTHROPIC_BASE_URL"] = config.baseUrl.trim()
+        if (config.contextWindowTokens > 0) env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = config.contextWindowTokens.toString()
+        if (config.autoCompactWindowTokens > 0) env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = config.autoCompactWindowTokens.toString()
+        if (config.maxOutputTokens > 0) env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = config.maxOutputTokens.toString()
+        if (config.effortLevel in setOf("low", "medium", "high")) env["CLAUDE_CODE_EFFORT_LEVEL"] = config.effortLevel
+        if (config.maxThinkingTokens > 0) env["MAX_THINKING_TOKENS"] = config.maxThinkingTokens.toString()
+        return env
+    }
+
+    private fun runClaudeCandidateCommand(
+        cliFile: File,
+        args: List<String>,
+        extraEnv: Map<String, String>,
+        stdinText: String?,
+        timeoutSeconds: Long,
+    ): Pair<Int, String> {
+        val paths = BootstrapInstaller.getPaths(context)
+        val command = mutableListOf(File(paths.prefixDir, "bin/node").absolutePath, cliFile.absolutePath)
+        command += args
+        val process = startPrefixExecProcess(command, extraEnv)
+        val output = StringBuilder()
+        val readerThread = Thread {
+            runCatching {
+                process.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                    lines.forEach { line ->
+                        if (output.length < 128 * 1024) output.appendLine(line)
+                    }
+                }
+            }
+        }.apply { start() }
+        if (stdinText != null) {
+            runCatching {
+                process.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
+                    writer.write(stdinText)
+                    writer.write("\n")
+                }
+            }
+        } else {
+            runCatching { process.outputStream.close() }
+        }
+        val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+        if (!finished) {
+            process.destroyForcibly()
+            readerThread.join(3_000)
+            return -1 to "timeout"
+        }
+        readerThread.join(3_000)
+        return process.exitValue() to output.toString().trim()
+    }
+
+    private fun ensureClaudeWrapperScript() {
+        val paths = BootstrapInstaller.getPaths(context)
+        val cli = File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code/cli.js")
+        val wrapper = File(paths.prefixDir, "bin/claude")
+        if (!cli.isFile) return
+        wrapper.parentFile?.mkdirs()
+        wrapper.writeText(
+            "#!/system/bin/sh\nexec ${paths.prefixDir}/bin/node ${cli.absolutePath} \"\$@\"\n",
+        )
+        wrapper.setExecutable(true, false)
+    }
+
+    private fun recordClaudeInstallResult(result: ClaudeInstallResult): ClaudeInstallResult {
+        val stamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        context.getSharedPreferences("claude_safe_installer", Context.MODE_PRIVATE)
+            .edit()
+            .putString("last_status", "$stamp · ${result.message}")
+            .apply()
+        return result
     }
 
     fun ensureCodexWrapperScript() {

@@ -49,8 +49,8 @@ android {
         // Android 10+ (targetSdk 29+) enforces W^X which blocks this via SELinux.
         // Termux (F-Droid) uses the same approach.
         targetSdk = 28
-        versionCode = 360
-        versionName = "1.0.119-codex-cli-0.153.4-gpt-6-astra-ready-openminis-1.12-provider-history-continuity-recovery-v360"
+        versionCode = 361
+        versionName = "1.0.120-codex-cli-0.153.4-openminis-1.12-agent-context-safe-claude-updater-v361"
     }
 
     flavorDimensions += "channel"

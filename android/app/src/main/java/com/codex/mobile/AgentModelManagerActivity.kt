@@ -49,7 +49,7 @@ class AgentModelManagerActivity : AppCompatActivity() {
 
         val title = "${AgentSessionStore.displayAgentName(agentId)} 模型管理"
         tvTitle.text = title
-        tvSubtitle.text = "支持添加、编辑、删除和切换当前模型。可预置常见提供商端点。"
+        tvSubtitle.text = "支持添加、编辑、删除和切换当前模型，并配置上下文、自动压缩、单次输出和思考参数。"
 
         btnRefresh.setOnClickListener { refresh() }
         btnCreate.setOnClickListener { showEditDialog(null) }
@@ -79,8 +79,10 @@ class AgentModelManagerActivity : AppCompatActivity() {
                 val row = rows[position]
                 val checkedPrefix = if (row.isDefault) "✓ " else ""
                 rowView.findViewById<TextView>(R.id.tvAgentModelRowTitle).text = "$checkedPrefix${row.displayName}"
+                val contextLabel = if (row.contextWindowTokens > 0) row.contextWindowTokens.toString() else "自动"
+                val outputLabel = if (row.maxOutputTokens > 0) row.maxOutputTokens.toString() else "自动"
                 rowView.findViewById<TextView>(R.id.tvAgentModelRowMeta).text =
-                    "${row.modelId} | ${row.providerName} | ${row.protocol.value}\n${row.baseUrl}"
+                    "${row.modelId} | ${row.providerName} | ${row.protocol.value}\n上下文 $contextLabel · 输出 $outputLabel · 思考 ${row.effortLevel}\n${row.baseUrl}"
 
                 rowView.findViewById<Button>(R.id.btnAgentModelRowSelect).setOnClickListener {
                     AgentModelConfigStore.setDefault(this@AgentModelManagerActivity, agentId, row.id)
@@ -147,6 +149,38 @@ class AgentModelManagerActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
 
+        val inferredMiniMaxM3 = existing?.modelId.orEmpty().contains("minimax-m3", ignoreCase = true)
+        val contextInput = EditText(this).apply {
+            hint = "最大上下文 tokens，0 表示由 CLI 自动判断"
+            setText((existing?.contextWindowTokens ?: if (inferredMiniMaxM3) 1_000_000 else 0).toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        val compactWindowInput = EditText(this).apply {
+            hint = "自动压缩触发 tokens，0 表示 CLI 默认"
+            setText((existing?.autoCompactWindowTokens ?: if (inferredMiniMaxM3) 900_000 else 0).toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        val maxOutputInput = EditText(this).apply {
+            hint = "单次最大输出 tokens，0 表示模型默认"
+            setText((existing?.maxOutputTokens ?: if (inferredMiniMaxM3) 32_768 else 0).toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        val thinkingTokensInput = EditText(this).apply {
+            hint = "最大思考 tokens，0 表示模型默认"
+            setText((existing?.maxThinkingTokens ?: 0).toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        val effortValues = listOf("default", "low", "medium", "high")
+        val effortSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@AgentModelManagerActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("思考强度：模型默认", "思考强度：低", "思考强度：中", "思考强度：高"),
+            )
+            val storedIndex = existing?.effortLevel?.let { effortValues.indexOf(it) } ?: -1
+            setSelection(storedIndex.takeIf { it >= 0 } ?: 0)
+        }
+
         val presetSpinner = Spinner(this)
         val presetLabels = presets.map { preset ->
             if (preset.note.isBlank()) preset.name else "${preset.name}（${preset.note}）"
@@ -200,6 +234,20 @@ class AgentModelManagerActivity : AppCompatActivity() {
             addView(modelIdInput)
             addView(baseUrlInput)
             addView(apiKeyInput)
+            addView(TextView(this@AgentModelManagerActivity).apply {
+                text = "高级推理参数（填写 0 时不覆盖模型或 CLI 默认值）"
+                textSize = 14f
+                setPadding(0, pad / 2, 0, 0)
+            })
+            addView(contextInput)
+            addView(compactWindowInput)
+            addView(maxOutputInput)
+            addView(effortSpinner)
+            addView(thinkingTokensInput)
+            addView(TextView(this@AgentModelManagerActivity).apply {
+                text = "Claude Code CLI 没有稳定的 temperature 参数，因此本应用不伪造该设置；提供商不支持的参数会保持默认。"
+                textSize = 12f
+            })
             addView(setDefault)
         }
 
@@ -224,6 +272,10 @@ class AgentModelManagerActivity : AppCompatActivity() {
                         val displayName = nameInput.text.toString().trim().ifEmpty {
                             "${selectedPreset.name} / $modelId"
                         }
+                        val contextWindowTokens = contextInput.text.toString().trim().toIntOrNull()
+                        val autoCompactWindowTokens = compactWindowInput.text.toString().trim().toIntOrNull()
+                        val maxOutputTokens = maxOutputInput.text.toString().trim().toIntOrNull()
+                        val maxThinkingTokens = thinkingTokensInput.text.toString().trim().toIntOrNull()
 
                         when {
                             modelId.isEmpty() -> {
@@ -236,6 +288,26 @@ class AgentModelManagerActivity : AppCompatActivity() {
                             }
                             apiKey.isEmpty() -> {
                                 apiKeyInput.error = "API Key必填"
+                                return@setOnClickListener
+                            }
+                            contextWindowTokens == null || contextWindowTokens < 0 -> {
+                                contextInput.error = "请输入大于等于 0 的整数"
+                                return@setOnClickListener
+                            }
+                            autoCompactWindowTokens == null || autoCompactWindowTokens < 0 -> {
+                                compactWindowInput.error = "请输入大于等于 0 的整数"
+                                return@setOnClickListener
+                            }
+                            contextWindowTokens > 0 && autoCompactWindowTokens > contextWindowTokens -> {
+                                compactWindowInput.error = "压缩触发值不能大于最大上下文"
+                                return@setOnClickListener
+                            }
+                            maxOutputTokens == null || maxOutputTokens < 0 -> {
+                                maxOutputInput.error = "请输入大于等于 0 的整数"
+                                return@setOnClickListener
+                            }
+                            maxThinkingTokens == null || maxThinkingTokens < 0 -> {
+                                thinkingTokensInput.error = "请输入大于等于 0 的整数"
                                 return@setOnClickListener
                             }
                         }
@@ -251,6 +323,11 @@ class AgentModelManagerActivity : AppCompatActivity() {
                             apiKey = apiKey,
                             modelId = modelId,
                             isDefault = setDefault.isChecked,
+                            contextWindowTokens = contextWindowTokens,
+                            autoCompactWindowTokens = autoCompactWindowTokens,
+                            maxOutputTokens = maxOutputTokens,
+                            effortLevel = effortValues[effortSpinner.selectedItemPosition],
+                            maxThinkingTokens = maxThinkingTokens,
                         )
                         AgentModelConfigStore.saveConfig(this, config)
                         refresh()

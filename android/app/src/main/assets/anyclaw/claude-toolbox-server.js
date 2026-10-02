@@ -25,6 +25,9 @@ const EXA_API_BASE_URL = (process.env.ANYCLAW_EXA_API_BASE_URL || "https://api.e
 const GITHUB_API_BASE = (process.env.ANYCLAW_GITHUB_API_BASE_URL || "https://api.github.com").replace(/\/$/, "");
 const WORKSPACE_ROOT = path.resolve(process.env.ANYCLAW_WORKSPACE_ROOT || path.join(process.env.HOME || "/tmp", ".openclaw", "workspace"));
 const MCP_CONFIG_PATH = process.env.ANYCLAW_MCP_CONFIG_PATH || "";
+const AGENT_STATE_DIR = path.join(process.env.HOME || "/tmp", ".openclaw-android", "state");
+const CLAUDE_MODEL_CATALOG_PATH = path.join(AGENT_STATE_DIR, "claude-model-configs.json");
+const CLAUDE_RUNTIME_OVERRIDE_PATH = path.join(AGENT_STATE_DIR, "claude-runtime-overrides.json");
 const DEFAULT_EXA_MCP_TOOLS = [
   "web_search_exa",
   "web_search_advanced_exa",
@@ -308,6 +311,15 @@ const TOOL_DEFS = [
     replace: { type: "string" },
     createDirs: { type: "boolean" }
   }, ["path", "mode"]),
+  tool("anyclaw_agent_model_config", "Read or update Claude's own active model and runtime parameters. Use when the user asks in natural language to switch a configured Claude model or change context, compaction, output, effort, or thinking limits. Changes apply from the next turn and never expose API keys.", {
+    action: { type: "string", enum: ["get", "update", "reset"] },
+    selectedConfigId: { type: "string" },
+    contextWindowTokens: { type: "integer", minimum: 0, maximum: 2000000 },
+    autoCompactWindowTokens: { type: "integer", minimum: 0, maximum: 2000000 },
+    maxOutputTokens: { type: "integer", minimum: 0, maximum: 524288 },
+    effortLevel: { type: "string", enum: ["default", "low", "medium", "high"] },
+    maxThinkingTokens: { type: "integer", minimum: 0, maximum: 524288 }
+  }, ["action"]),
   tool("anyclaw_terminal", "Execute a command in the app-local Android shell. Defaults to workspaceRoot; returns ok, exitCode, stdout, stderr, error, and cwd.", {
     command: { type: "string", minLength: 1 },
     cwd: { type: "string" },
@@ -2111,6 +2123,67 @@ async function callTool(name, args) {
         bytesBefore: Buffer.byteLength(before, "utf8"),
         bytesAfter: Buffer.byteLength(after, "utf8")
       };
+    }
+    case "anyclaw_agent_model_config": {
+      const action = toStringSafe(args.action, "get").trim().toLowerCase();
+      let catalog = { version: 1, configs: [] };
+      try {
+        catalog = JSON.parse(fs.readFileSync(CLAUDE_MODEL_CATALOG_PATH, "utf8"));
+      } catch (_) {}
+      const configs = Array.isArray(catalog.configs) ? catalog.configs : [];
+      let overrides = {};
+      try {
+        overrides = JSON.parse(fs.readFileSync(CLAUDE_RUNTIME_OVERRIDE_PATH, "utf8"));
+      } catch (_) {}
+      if (action === "get") {
+        return { ok: true, configs, overrides, appliesFrom: "next_turn", apiKeysExposed: false };
+      }
+      if (action === "reset") {
+        fs.mkdirSync(AGENT_STATE_DIR, { recursive: true });
+        const temp = `${CLAUDE_RUNTIME_OVERRIDE_PATH}.${process.pid}.tmp`;
+        fs.writeFileSync(temp, "{}\n", { encoding: "utf8", mode: 0o600 });
+        fs.renameSync(temp, CLAUDE_RUNTIME_OVERRIDE_PATH);
+        return { ok: true, overrides: {}, appliesFrom: "next_turn" };
+      }
+      if (action !== "update") return { ok: false, error: "action_must_be_get_update_or_reset" };
+
+      const next = { ...overrides };
+      if (Object.prototype.hasOwnProperty.call(args, "selectedConfigId")) {
+        const selectedConfigId = toStringSafe(args.selectedConfigId, "").trim();
+        if (selectedConfigId && !configs.some((item) => item && item.id === selectedConfigId)) {
+          return { ok: false, error: "configured_model_not_found", selectedConfigId, configs };
+        }
+        next.selectedConfigId = selectedConfigId;
+      }
+      const integerFields = {
+        contextWindowTokens: 2000000,
+        autoCompactWindowTokens: 2000000,
+        maxOutputTokens: 524288,
+        maxThinkingTokens: 524288
+      };
+      for (const [field, maximum] of Object.entries(integerFields)) {
+        if (!Object.prototype.hasOwnProperty.call(args, field)) continue;
+        const value = Number(args[field]);
+        if (!Number.isInteger(value) || value < 0 || value > maximum) {
+          return { ok: false, error: "invalid_parameter", field, minimum: 0, maximum };
+        }
+        next[field] = value;
+      }
+      if (Object.prototype.hasOwnProperty.call(args, "effortLevel")) {
+        const value = toStringSafe(args.effortLevel, "default").trim().toLowerCase();
+        if (!["default", "low", "medium", "high"].includes(value)) {
+          return { ok: false, error: "invalid_effort_level" };
+        }
+        next.effortLevel = value;
+      }
+      if (Number(next.contextWindowTokens) > 0 && Number(next.autoCompactWindowTokens) > Number(next.contextWindowTokens)) {
+        return { ok: false, error: "auto_compact_exceeds_context_window" };
+      }
+      fs.mkdirSync(AGENT_STATE_DIR, { recursive: true });
+      const temp = `${CLAUDE_RUNTIME_OVERRIDE_PATH}.${process.pid}.tmp`;
+      fs.writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      fs.renameSync(temp, CLAUDE_RUNTIME_OVERRIDE_PATH);
+      return { ok: true, overrides: next, appliesFrom: "next_turn", apiKeysExposed: false };
     }
     case "anyclaw_terminal": {
       const command = toStringSafe(args.command, "").trim();

@@ -188,14 +188,17 @@ async function proxyResponses(
   payload: unknown,
   authorization: string,
   options: AdapterOptions,
+  upstreamPath = 'responses',
 ): Promise<void> {
   const request = asRecord(payload) ?? {}
   const requestedModel = text(request.model) || provider.modelId
   const localRequestId = `resp_${randomUUID().replace(/-/gu, '')}`
   const observed = { model: '', error: '', requestId: '' }
-  const prepared = prepareProviderRequest(sanitizeResponsesHistory(payload))
+  const prepared = upstreamPath === 'responses/compact'
+    ? { payload: { ...request, model: requestedModel }, customToolNames: [] as string[] }
+    : prepareProviderRequest(sanitizeResponsesHistory(payload))
   const responseContext = createProviderResponseContext(prepared.customToolNames)
-  const upstream = await fetch(`${provider.baseUrl}/responses`, {
+  const upstream = await fetch(`${provider.baseUrl}/${upstreamPath}`, {
     method: 'POST',
     headers: { Authorization: authorization, 'Content-Type': 'application/json' },
     body: JSON.stringify(prepared.payload),
@@ -311,7 +314,7 @@ export async function handleCodexProviderAdapterRequest(
   url: URL,
   options: AdapterOptions,
 ): Promise<boolean> {
-  const match = /^\/codex-provider-adapter\/([^/]+)\/v1\/responses$/u.exec(url.pathname)
+  const match = /^\/codex-provider-adapter\/([^/]+)\/v1\/(responses(?:\/compact)?)$/u.exec(url.pathname)
   if (!match) return false
   if (req.method !== 'POST') {
     setJson(res, 405, { error: { message: 'Method not allowed' } })
@@ -329,8 +332,9 @@ export async function handleCodexProviderAdapterRequest(
     return true
   }
   try {
-    const payload = await readJsonBody(req)
-    await proxyResponses(res, provider, payload, authorization, options)
+    const upstreamPath = match[2]
+    const payload = await readJsonBody(req, upstreamPath === 'responses/compact' ? 128 * 1024 * 1024 : undefined)
+    await proxyResponses(res, provider, payload, authorization, options, upstreamPath)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await recordRuntimeStatus(options.runtimeStatusPath, {
