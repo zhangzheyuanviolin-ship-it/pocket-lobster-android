@@ -2,11 +2,17 @@
 
 口袋大龙虾是一套运行在非 root ARM64 Android 手机上的多智能体工作平台。它把 Codex、Claude Code、OpenMinis 和手机操作智能体放进同一个原生应用，让模型不仅能对话，还能使用三套终端、真实可见浏览器、Android 共享存储和 Shizuku 系统链路完成实际任务。
 
-当前稳定版本：1.0.100，versionCode 341  
-Codex CLI：0.153.4  
+当前稳定版本：1.0.121，versionCode 362（用户验证的通讯通道）  
+稳定发布：[stable-v362-20261003](https://github.com/zhangzheyuanviolin-ship-it/pocket-lobster-android/releases/tag/stable-v362-20261003)  
+安装包：pocket-lobster-test.apk，包名 com.codex.mobile.pocketlobster.test  
+Codex CLI 手动安全安装目标：0.160.0  
 OpenMinis：1.12  
 Android：8.0 及以上，ARM64  
 许可证：GNU GPL v3，第三方组件许可证见 NOTICE 和 LICENSES
+
+v362 稳定发布使用已在手机覆盖安装并验收的通讯版 APK，不重新构建或改包名。安装包 SHA-256 为 970ee57c83764f34b557f94265553b368b406c0ea1bcd8da5090697b17eb9bc8。它只能覆盖同包名通讯通道；已有 prod 或 beta 安装仍属于各自独立通道。
+
+本版保留官方与第三方模型切换、聊天历史持久化与可见性修复，提供 Codex 和 Claude 自然语言模型参数配置以及上下文压缩支持。Codex 更新只由权限管理中心手动触发，先隔离验证候选版本，再备份和切换，失败时恢复旧二进制与会话状态。APK 覆盖安装不会自行更新 CLI。详细验收、哈希与恢复约束见 [v362 稳定发布说明](docs/pocket-lobster/RELEASE_NOTES_V362_2026-10-03.md)。
 
 ## 当前形态
 
@@ -83,7 +89,9 @@ API 密钥保存在应用私有配置中。仓库、日志和发布产物不应�
 - docs/pocket-lobster/PROJECT_OVERVIEW_2026-09-05.md：完整产品介绍与使用场景。
 - docs/pocket-lobster/AGENTS_AND_RUNTIMES_2026-09-05.md：四智能体、工具权限和运行时边界。
 - docs/pocket-lobster/VERSION_LINEAGE_2026-09-05.md：主线、黄金基线和发布渠道。
-- docs/pocket-lobster/RELEASE_NOTES_V341_2026-09-05.md：v341 正式发布说明。
+- docs/pocket-lobster/RELEASE_NOTES_V362_2026-10-03.md：当前 v362 稳定发布说明、校验和验收标准。
+- docs/pocket-lobster/STABLE_RELEASE.json：当前稳定版机器可读身份与校验清单。
+- docs/pocket-lobster/RELEASE_NOTES_V341_2026-09-05.md：保留的 v341 历史发布说明。
 - NOTICE：上游来源与第三方许可证。
 - LICENSES：OpenMinis、Operit 等第三方组件的许可证与历史声明。
 

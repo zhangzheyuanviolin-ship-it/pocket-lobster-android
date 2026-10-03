@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-10-03",
+  "releaseTag": "stable-v362-20261003",
+  "releaseUrl": "https://github.com/zhangzheyuanviolin-ship-it/pocket-lobster-android/releases/tag/stable-v362-20261003",
+  "channel": "test",
+  "packageId": "com.codex.mobile.pocketlobster.test",
+  "versionCode": 362,
+  "versionName": "1.0.121-codex-cli-0.160.0-openminis-1.12-safe-codex-updater-v362",
+  "runtimeSourceCommit": "ee0610a06e2657c3371226acc4df8661a430817d",
+  "cloudBuildRunId": 37106772702,
+  "assetName": "pocket-lobster-test.apk",
+  "assetBytes": 183430123,
+  "apkSha256": "970ee57c83764f34b557f94265553b368b406c0ea1bcd8da5090697b17eb9bc8",
+  "signerCertificateSha256": "e4c798531ebbf7b023a29c02d5d42fabe7ca3917d9857eabd97f0d5e6c24afc8",
+  "bundleId": "1.0.121-codex-cli-0.160.0-openminis-1.12-safe-codex-updater-v362:c94009b02f0669ae2adfd374a76db5036cdd1bd5e03dcbf52c4fe3436cc6f01c",
+  "codexManualInstallTarget": "0.160.0",
+  "apkInstallationAutomaticallyUpdatesCodex": false,
+  "rescueBranch": "rescue/v362-validated-r2000000002",
+  "rescueVersionCode": 2000000002
+}

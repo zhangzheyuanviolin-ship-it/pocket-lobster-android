@@ -2,6 +2,10 @@
 
 ## 中文
 
+- [当前 v362 稳定发布与验收](RELEASE_NOTES_V362_2026-10-03.md)
+- [当前稳定版本校验清单](STABLE_RELEASE.json)
+- [版本谱系与稳定基线（更新至 v362）](VERSION_LINEAGE_2026-09-05.md)
+
 - [项目正式介绍](PROJECT_OVERVIEW_2026-03-25.md)
 - [首版正式发布文案](FIRST_RELEASE_COPY_2026-03-25.md)
 - [三通道包名与发布治理](RELEASE_CHANNELS_AND_PACKAGE_IDS_2026-03-25.md)
