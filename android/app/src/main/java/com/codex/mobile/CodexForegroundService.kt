@@ -69,6 +69,10 @@ class CodexForegroundService : Service() {
 
     private fun ensureHostServer() {
         if (healthCheckRunning) return
+        if (CodexServerManager.isCodexSafeUpdateInProgress()) {
+            reportState("codex_safe_update_in_progress")
+            return
+        }
         healthCheckRunning = true
         Thread {
             try {

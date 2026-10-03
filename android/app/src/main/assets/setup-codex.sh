@@ -16,7 +16,7 @@
 
 set -eu
 
-CODEX_VERSION="0.153.4"
+CODEX_VERSION="0.160.0"
 
 echo "[setup] Updating package index..."
 apt-get update -y || {

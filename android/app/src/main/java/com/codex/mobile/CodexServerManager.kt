@@ -12,7 +12,9 @@ import java.net.Socket
 import java.net.URL
 import java.security.SecureRandom
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -26,6 +28,14 @@ import com.openminis.app.integration.PocketLobsterPortPolicy
  */
 class CodexServerManager(private val context: Context) {
 
+    data class CodexInstallResult(
+        val success: Boolean,
+        val previousVersion: String,
+        val installedVersion: String,
+        val rolledBack: Boolean,
+        val message: String,
+    )
+
     data class ClaudeInstallResult(
         val success: Boolean,
         val previousVersion: String,
@@ -38,7 +48,9 @@ class CodexServerManager(private val context: Context) {
         private const val TAG = "CodexServerManager"
         @JvmField val SERVER_PORT = PocketLobsterPortPolicy.appServerPort(BuildConfig.APPLICATION_ID)
         private val PROXY_PORT = PocketLobsterPortPolicy.proxyPort(BuildConfig.APPLICATION_ID)
-        private const val CODEX_VERSION = "0.153.4"
+        private const val CODEX_VERSION = "0.160.0"
+        private const val CODEX_JS_SHA256 = "373517768e912eeb5054024ae9215e2c90a1420957b66fe134ef745a00948d4a"
+        private const val CODEX_NATIVE_SHA256 = "9286a7e01d500ab224c9e5b4b223b7adf5dd901fba23efd6a438316426798b17"
         private const val CLAUDE_CODE_VERSION = "2.1.112"
         private const val COLLABORATION_PROTOCOL_ID = "durable-agent-tools-v2"
         @JvmField val OPENCLAW_GATEWAY_PORT = PocketLobsterPortPolicy.openClawGatewayPort(BuildConfig.APPLICATION_ID)
@@ -60,6 +72,9 @@ class CodexServerManager(private val context: Context) {
         private val serverStartLock = Any()
         private val proxyStartLock = Any()
         @Volatile private var managedServerProcess: Process? = null
+        @Volatile private var codexSafeUpdateInProgress = false
+
+        fun isCodexSafeUpdateInProgress(): Boolean = codexSafeUpdateInProgress
     }
 
     private var proxyProcess: Process? = null
@@ -258,6 +273,12 @@ class CodexServerManager(private val context: Context) {
     }
 
     fun getTargetCodexVersion(): String = CODEX_VERSION
+
+    fun getCodexInstallVerificationStatus(): String {
+        return context.getSharedPreferences("codex_safe_installer", Context.MODE_PRIVATE)
+            .getString("last_status", "尚未执行 Codex 安全安装验证")
+            .orEmpty()
+    }
 
     fun getInstalledClaudeCodeVersion(): String {
         val paths = BootstrapInstaller.getPaths(context)
@@ -2433,27 +2454,580 @@ EOF
         }.start()
     }
 
-    fun installCodex(onProgress: (String) -> Unit): Boolean {
+    fun installCodex(onProgress: (String) -> Unit): CodexInstallResult {
+        recoverInterruptedCodexUpdate()
         val paths = BootstrapInstaller.getPaths(context)
         val prefix = paths.prefixDir
-        val npmCli = "$prefix/lib/node_modules/npm/bin/npm-cli.js"
-        val installedVersion = getInstalledCodexVersion()
-
-        val operation = if (installedVersion.isBlank()) "Installing" else "Updating"
-        onProgress("$operation Codex CLI $CODEX_VERSION …")
-        val codexCode = runInPrefix(
-            "node $npmCli install -g --force @openai/codex@$CODEX_VERSION 2>&1",
-            onOutput = { onProgress(it) },
-        )
-        if (codexCode != 0) {
-            Log.e(TAG, "npm install @openai/codex failed with code $codexCode")
-            return false
+        val node = File(prefix, "bin/node")
+        val previousVersion = getInstalledCodexVersion()
+        val currentConfig = CodexModelConfigStore.loadCurrent(context)
+        if (!node.isFile) {
+            return recordCodexInstallResult(
+                CodexInstallResult(false, previousVersion, previousVersion, false, "Node 运行时不完整，当前 Codex 未改变"),
+            )
         }
 
-        ensureCodexWrapperScript()
-        ensureCodexBundledRgWrapper()
-        SharedRuntimeCliInstaller.ensureInstalled(context)
-        return isCodexInstalled() && getInstalledCodexVersion() == CODEX_VERSION
+        val providerSecretEnvironment = mutableMapOf<String, String>()
+        if (currentConfig != null) {
+            val apiKey = CodexModelConfigStore.loadApiKey(context, currentConfig.id).trim()
+            if (apiKey.isBlank()) {
+                return recordCodexInstallResult(
+                    CodexInstallResult(false, previousVersion, previousVersion, false, "当前第三方模型缺少密钥，无法完成真实工具握手；当前 Codex 未改变"),
+                )
+            }
+            providerSecretEnvironment[CodexModelConfigStore.environmentKey(currentConfig.id)] = apiKey
+        }
+        val canRunModelHandshake = currentConfig != null || File(paths.homeDir, ".codex/auth.json").isFile
+        if (previousVersion.isNotBlank() && !canRunModelHandshake) {
+            return recordCodexInstallResult(
+                CodexInstallResult(false, previousVersion, previousVersion, false, "当前 Codex 没有可验证的登录或模型配置，拒绝覆盖正在使用的版本"),
+            )
+        }
+
+        val runId = "${System.currentTimeMillis()}-${UUID.randomUUID()}"
+        val stageRoot = File(prefix, "tmp/codex-safe-update-$runId")
+        val stageScope = File(stageRoot, "lib/node_modules/@openai")
+        val stagedJsPackage = File(stageScope, "codex")
+        val stagedNativePackage = File(stageScope, "codex-linux-arm64")
+        val stagedJs = File(stagedJsPackage, "bin/codex.js")
+        val stagedBinary = File(stagedNativePackage, "vendor/aarch64-unknown-linux-musl/bin/codex")
+        val liveScope = File(prefix, "lib/node_modules/@openai")
+        val packageParent = liveScope.parentFile
+        val backupScope = File(packageParent, ".codex-safe-backup-$runId-${previousVersion.ifBlank { "none" }}")
+        val rejectedScope = File(packageParent, ".codex-safe-rejected-$runId")
+        val backupRoot = File(prefix, "var/lib/pocket-lobster/codex-backups/$runId")
+        val snapshotDir = File(backupRoot, "mutable-state")
+        val candidateHome = File(stageRoot, "codex-home")
+        val journal = File(prefix, "var/lib/pocket-lobster/codex-update-journal.json")
+
+        fun unchangedFailure(message: String): CodexInstallResult {
+            runCatching { stageRoot.deleteRecursively() }
+            return recordCodexInstallResult(
+                CodexInstallResult(false, previousVersion, getInstalledCodexVersion(), false, message),
+            )
+        }
+
+        onProgress("正在隔离目录下载 Codex CLI $CODEX_VERSION；当前 $previousVersion 保持运行")
+        stageRoot.mkdirs()
+        stageScope.mkdirs()
+        val jsArchive = File(stageRoot, "codex.tgz")
+        val nativeArchive = File(stageRoot, "codex-linux-arm64.tgz")
+        val downloader = """
+            const https = require('https');
+            const fs = require('fs');
+            const download = (url, target, redirects = 0) => new Promise((resolve, reject) => {
+              if (redirects > 5) return reject(new Error('too many redirects'));
+              https.get(url, (res) => {
+                if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                  res.resume();
+                  return download(res.headers.location, target, redirects + 1).then(resolve, reject);
+                }
+                if (res.statusCode !== 200) {
+                  res.resume();
+                  return reject(new Error('HTTP ' + res.statusCode));
+                }
+                const file = fs.createWriteStream(target, { flags: 'wx' });
+                file.on('error', reject);
+                res.on('error', reject);
+                res.pipe(file);
+                file.on('finish', () => file.close(resolve));
+              }).on('error', reject);
+            });
+            Promise.all([
+              download(process.argv[1], process.argv[2]),
+              download(process.argv[3], process.argv[4]),
+            ]).catch((error) => { console.error(error.message); process.exit(1); });
+        """.trimIndent()
+        val downloadCode = runInPrefix(
+            listOf(
+                shellQuote(node.absolutePath),
+                "-e",
+                shellQuote(downloader),
+                shellQuote("https://registry.npmjs.org/@openai/codex/-/codex-$CODEX_VERSION.tgz"),
+                shellQuote(jsArchive.absolutePath),
+                shellQuote("https://registry.npmjs.org/@openai/codex/-/codex-$CODEX_VERSION-linux-arm64.tgz"),
+                shellQuote(nativeArchive.absolutePath),
+            ).joinToString(" "),
+            onOutput = onProgress,
+        )
+        if (downloadCode != 0) return unchangedFailure("隔离下载失败，当前 Codex 未改变（exit=$downloadCode）")
+
+        onProgress("正在校验官方包哈希并展开候选版本")
+        val jsExtract = File(stageRoot, "extract-js")
+        val nativeExtract = File(stageRoot, "extract-native")
+        val extractCommand = """
+            echo ${shellQuote("$CODEX_JS_SHA256  ${jsArchive.absolutePath}")} | sha256sum -c - &&
+            echo ${shellQuote("$CODEX_NATIVE_SHA256  ${nativeArchive.absolutePath}")} | sha256sum -c - &&
+            mkdir -p ${shellQuote(jsExtract.absolutePath)} ${shellQuote(nativeExtract.absolutePath)} &&
+            tar xzf ${shellQuote(jsArchive.absolutePath)} -C ${shellQuote(jsExtract.absolutePath)} &&
+            tar xzf ${shellQuote(nativeArchive.absolutePath)} -C ${shellQuote(nativeExtract.absolutePath)} &&
+            mv ${shellQuote(File(jsExtract, "package").absolutePath)} ${shellQuote(stagedJsPackage.absolutePath)} &&
+            mv ${shellQuote(File(nativeExtract, "package").absolutePath)} ${shellQuote(stagedNativePackage.absolutePath)} &&
+            chmod 700 ${shellQuote(stagedBinary.absolutePath)}
+        """.trimIndent()
+        val extractCode = runInPrefix(extractCommand, onOutput = onProgress)
+        if (extractCode != 0) return unchangedFailure("候选包哈希或结构校验失败，当前 Codex 未改变")
+        if (
+            readPackageVersion(stagedJsPackage) != CODEX_VERSION ||
+            readPackageVersion(stagedNativePackage) != "$CODEX_VERSION-linux-arm64" ||
+            !stagedJs.isFile ||
+            !stagedBinary.isFile
+        ) {
+            return unchangedFailure("候选包版本或安卓 arm64 结构不符合要求，当前 Codex 未改变")
+        }
+
+        prepareCodexCandidateHome(paths, candidateHome)
+        val candidateEnvironment = providerSecretEnvironment.toMutableMap().apply {
+            put("CODEX_HOME", candidateHome.absolutePath)
+            put("HTTPS_PROXY", "http://127.0.0.1:$PROXY_PORT")
+            put("HTTP_PROXY", "http://127.0.0.1:$PROXY_PORT")
+            put("SHELL", File(prefix, "bin/bash").absolutePath)
+        }
+        onProgress("正在验证候选 JS 入口、安卓原生二进制和 app-server 协议")
+        val jsVersion = runCodexCandidateCommand(
+            listOf(node.absolutePath, stagedJs.absolutePath, "--version"),
+            candidateEnvironment,
+            null,
+            30,
+        )
+        val binaryVersion = runCodexCandidateCommand(
+            listOf(stagedBinary.absolutePath, "--version"),
+            candidateEnvironment,
+            null,
+            30,
+        )
+        if (
+            jsVersion.first != 0 || !jsVersion.second.contains("codex-cli $CODEX_VERSION") ||
+            binaryVersion.first != 0 || !binaryVersion.second.contains("codex-cli $CODEX_VERSION")
+        ) {
+            return unchangedFailure("候选 Codex 无法在安卓启动，当前 Codex 未改变")
+        }
+        val appServerProbe = verifyCodexAppServerInitialize(stagedBinary, candidateEnvironment)
+        if (!appServerProbe.first) return unchangedFailure("候选 app-server 初始化失败：${appServerProbe.second}；当前 Codex 未改变")
+        if (canRunModelHandshake) {
+            if (!isProxyReady() && !startProxy()) return unchangedFailure("候选验证需要的网络代理无法启动，当前 Codex 未改变")
+            if (!isServerReady() && (!startServer() || !waitForServer(90_000))) {
+                return unchangedFailure("当前 Codex 宿主服务未就绪，拒绝在无法建立安全基线时更新")
+            }
+            onProgress("正在用当前模型做真实消息和终端工具握手")
+            val toolProbe = verifyCodexModelAndToolHandshake(stagedBinary, candidateEnvironment, stageRoot)
+            if (!toolProbe.first) return unchangedFailure("候选 Codex 真实握手失败：${toolProbe.second}；当前 Codex 未改变")
+        } else {
+            onProgress("当前为首次安装且尚未登录；已完成无需账号的安卓和 app-server 验证")
+        }
+
+        var activated = false
+        codexSafeUpdateInProgress = true
+        try {
+            onProgress("候选版本全部通过；正在暂停服务并创建会话状态快照")
+            stopServer()
+            snapshotCodexMutableState(File(paths.homeDir, ".codex"), snapshotDir)
+            writeCodexUpdateJournal(journal, runId, "prepared", liveScope, backupScope, rejectedScope, snapshotDir, stageRoot)
+
+            packageParent.mkdirs()
+            if (liveScope.exists() && !liveScope.renameTo(backupScope)) {
+                throw IllegalStateException("无法建立旧 Codex 包回滚副本")
+            }
+            writeCodexUpdateJournal(journal, runId, "backed_up", liveScope, backupScope, rejectedScope, snapshotDir, stageRoot)
+            if (!stageScope.renameTo(liveScope)) {
+                throw IllegalStateException("候选 Codex 包切换失败")
+            }
+            activated = true
+            writeCodexUpdateJournal(journal, runId, "activated_unverified", liveScope, backupScope, rejectedScope, snapshotDir, stageRoot)
+
+            ensureCodexWrapperScript()
+            ensureCodexBundledRgWrapper()
+            SharedRuntimeCliInstaller.ensureInstalled(context)
+            val activeBinary = installedCodexBinaryFile(paths)
+                ?: throw IllegalStateException("切换后原生二进制缺失")
+            if (getInstalledCodexVersion() != CODEX_VERSION) {
+                throw IllegalStateException("切换后 CLI 版本不一致")
+            }
+            val activeInit = verifyCodexAppServerInitialize(activeBinary, candidateEnvironment)
+            if (!activeInit.first) throw IllegalStateException("切换后 app-server 初始化失败：${activeInit.second}")
+            if (!startProxy()) throw IllegalStateException("切换后网络代理无法恢复")
+            if (canRunModelHandshake) {
+                val activeToolProbe = verifyCodexModelAndToolHandshake(activeBinary, candidateEnvironment, stageRoot)
+                if (!activeToolProbe.first) throw IllegalStateException("切换后真实工具握手失败：${activeToolProbe.second}")
+            }
+
+            onProgress(if (canRunModelHandshake) "正在重启口袋大龙虾服务并执行两轮真实对话复验" else "正在启动口袋大龙虾服务")
+            if (!startProxy()) throw IllegalStateException("网络代理无法启动")
+            if (!startServer() || !waitForServer(90_000)) throw IllegalStateException("Codex 宿主服务无法恢复")
+            if (canRunModelHandshake) {
+                val hostProbe = verifyActiveCodexHostHandshake()
+                if (!hostProbe.first) throw IllegalStateException("宿主真实对话复验失败：${hostProbe.second}")
+            }
+
+            writeCodexUpdateJournal(journal, runId, "verified", liveScope, backupScope, rejectedScope, snapshotDir, stageRoot)
+            journal.delete()
+            runCatching { stageRoot.deleteRecursively() }
+            return recordCodexInstallResult(
+                CodexInstallResult(
+                    success = true,
+                    previousVersion = previousVersion,
+                    installedVersion = getInstalledCodexVersion(),
+                    rolledBack = false,
+                    message = if (canRunModelHandshake) {
+                        "隔离下载、哈希、安卓启动、工具、app-server 与切换后两轮真实对话均通过；旧版和会话状态快照已保留"
+                    } else {
+                        "Codex 首次安装已通过包哈希、安卓启动、app-server 和宿主启动验证；请完成账号登录后使用"
+                    },
+                ),
+            )
+        } catch (error: Throwable) {
+            onProgress("安全复验失败，正在恢复旧 Codex 和会话状态")
+            runCatching { stopServer() }
+            val restored = rollbackCodexUpdate(liveScope, backupScope, rejectedScope, snapshotDir, journal, activated)
+            runCatching { ensureCodexWrapperScript() }
+            runCatching { ensureCodexBundledRgWrapper() }
+            val serviceRestored = runCatching {
+                startProxy() && startServer() && waitForServer(90_000)
+            }.getOrDefault(false)
+            runCatching { stageRoot.deleteRecursively() }
+            val restoredVersion = getInstalledCodexVersion()
+            return recordCodexInstallResult(
+                CodexInstallResult(
+                    success = false,
+                    previousVersion = previousVersion,
+                    installedVersion = restoredVersion,
+                    rolledBack = restored,
+                    message = if (restored && serviceRestored) {
+                        "新版本复验失败，已自动恢复 Codex $restoredVersion、会话状态和宿主服务：${error.message ?: "unknown error"}"
+                    } else if (!activated && restoredVersion == previousVersion && serviceRestored) {
+                        "更新在激活前停止，当前 Codex $restoredVersion 与宿主服务保持可用：${error.message ?: "unknown error"}"
+                    } else {
+                        "Codex 安全更新失败且自动恢复未完全通过，请立即安装v361紧急回滚包：${error.message ?: "unknown error"}"
+                    },
+                ),
+            )
+        } finally {
+            codexSafeUpdateInProgress = false
+        }
+    }
+
+    private fun prepareCodexCandidateHome(paths: BootstrapInstaller.Paths, candidateHome: File) {
+        candidateHome.mkdirs()
+        val liveHome = File(paths.homeDir, ".codex")
+        listOf("auth.json", "config.toml", "models_cache.json", "installation_id").forEach { name ->
+            val source = File(liveHome, name)
+            if (source.isFile) source.copyTo(File(candidateHome, name), overwrite = true)
+        }
+    }
+
+    private fun runCodexCandidateCommand(
+        command: List<String>,
+        extraEnv: Map<String, String>,
+        stdinText: String?,
+        timeoutSeconds: Long,
+    ): Pair<Int, String> {
+        val process = startPrefixExecProcess(command, extraEnv)
+        val output = StringBuilder()
+        val readerThread = Thread {
+            runCatching {
+                process.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                    lines.forEach { line ->
+                        if (output.length < 256 * 1024) output.appendLine(line)
+                    }
+                }
+            }
+        }.apply { start() }
+        if (stdinText != null) {
+            runCatching {
+                process.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
+                    writer.write(stdinText)
+                    writer.write("\n")
+                }
+            }
+        } else {
+            runCatching { process.outputStream.close() }
+        }
+        val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+        if (!finished) {
+            process.destroyForcibly()
+            readerThread.join(3_000)
+            return -1 to "timeout"
+        }
+        readerThread.join(3_000)
+        return process.exitValue() to output.toString().trim()
+    }
+
+    private fun verifyCodexAppServerInitialize(
+        binary: File,
+        environment: Map<String, String>,
+    ): Pair<Boolean, String> {
+        val process = startPrefixExecProcess(listOf(binary.absolutePath, "app-server"), environment)
+        val result = AtomicReference(false to "app-server 没有返回 initialize 响应")
+        val latch = CountDownLatch(1)
+        val readerThread = Thread {
+            runCatching {
+                process.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                    lines.forEach { line ->
+                        val payload = runCatching { JSONObject(line) }.getOrNull() ?: return@forEach
+                        if (payload.optInt("id", -1) != 1) return@forEach
+                        val error = payload.optJSONObject("error")
+                        if (error != null) {
+                            result.set(false to error.optString("message", "initialize error"))
+                        } else {
+                            val userAgent = payload.optJSONObject("result")?.optString("userAgent").orEmpty()
+                            result.set((userAgent.contains(CODEX_VERSION)) to userAgent.ifBlank { "缺少 userAgent" })
+                        }
+                        latch.countDown()
+                    }
+                }
+            }.onFailure { error ->
+                result.set(false to (error.message ?: "读取 app-server 响应失败"))
+                latch.countDown()
+            }
+        }.apply { start() }
+        return try {
+            process.outputStream.bufferedWriter(Charsets.UTF_8).apply {
+                write(
+                    JSONObject()
+                        .put("jsonrpc", "2.0")
+                        .put("id", 1)
+                        .put("method", "initialize")
+                        .put(
+                            "params",
+                            JSONObject()
+                                .put("clientInfo", JSONObject().put("name", "pocket-lobster-safe-updater").put("version", "1"))
+                                .put("capabilities", JSONObject().put("experimentalApi", true)),
+                        )
+                        .toString(),
+                )
+                write("\n")
+                flush()
+            }
+            if (!latch.await(30, TimeUnit.SECONDS)) false to "initialize 超时" else result.get()
+        } catch (error: Throwable) {
+            false to (error.message ?: "initialize 异常")
+        } finally {
+            process.destroy()
+            if (!process.waitFor(2, TimeUnit.SECONDS)) process.destroyForcibly()
+            readerThread.join(3_000)
+        }
+    }
+
+    private fun verifyCodexModelAndToolHandshake(
+        binary: File,
+        environment: Map<String, String>,
+        workingRoot: File,
+    ): Pair<Boolean, String> {
+        val marker = "POCKET_LOBSTER_CODEX_SAFE_OK_${System.currentTimeMillis()}"
+        val proofFile = File(workingRoot, "tool-proof-$marker.txt")
+        val finalFile = File(workingRoot, "last-message-$marker.txt")
+        proofFile.delete()
+        finalFile.delete()
+        val command = "printf '%s\\n' '$marker' > ${shellQuote(proofFile.absolutePath)}"
+        val prompt = "这是 Codex 安全更新健康检查。必须使用终端工具且只调用一次，执行这条命令：$command。命令成功后只回复这一段精确文本：$marker"
+        val result = runCodexCandidateCommand(
+            listOf(
+                binary.absolutePath,
+                "exec",
+                "--ephemeral",
+                "--ignore-rules",
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--color",
+                "never",
+                "-C",
+                workingRoot.absolutePath,
+                "-o",
+                finalFile.absolutePath,
+                prompt,
+            ),
+            environment,
+            null,
+            180,
+        )
+        if (result.first != 0) return false to "进程退出码 ${result.first}：${result.second.takeLast(500)}"
+        if (!proofFile.isFile || proofFile.readText().trim() != marker) return false to "终端工具没有生成握手凭据"
+        if (!finalFile.isFile || finalFile.readText().trim() != marker) return false to "模型没有返回精确握手标记"
+        return true to "真实模型和终端工具握手通过"
+    }
+
+    private fun snapshotCodexMutableState(codexHome: File, snapshotDir: File) {
+        snapshotDir.mkdirs()
+        val names = codexHome.listFiles()
+            .orEmpty()
+            .filter { file -> file.isFile && isCodexMutableStateFile(file.name) }
+            .map { it.name }
+            .sorted()
+        names.forEach { name -> File(codexHome, name).copyTo(File(snapshotDir, name), overwrite = true) }
+        File(snapshotDir, "manifest.json").writeText(JSONObject().put("files", JSONArray(names)).toString(2))
+    }
+
+    private fun restoreCodexMutableState(codexHome: File, snapshotDir: File): Boolean {
+        val manifest = File(snapshotDir, "manifest.json")
+        if (!manifest.isFile) return false
+        return runCatching {
+            val files = JSONObject(manifest.readText()).getJSONArray("files")
+            val snapshotNames = (0 until files.length()).map { files.getString(it) }.toSet()
+            codexHome.listFiles()
+                .orEmpty()
+                .filter { file -> file.isFile && isCodexMutableStateFile(file.name) && file.name !in snapshotNames }
+                .forEach { file -> check(file.delete()) { "failed to remove post-update state ${file.name}" } }
+            for (index in 0 until files.length()) {
+                val name = files.getString(index)
+                if (name.contains('/') || name.contains('\\')) error("invalid snapshot entry")
+                val source = File(snapshotDir, name)
+                if (source.isFile) source.copyTo(File(codexHome, name), overwrite = true)
+            }
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun isCodexMutableStateFile(name: String): Boolean {
+        return name.contains(".sqlite") ||
+            name in setOf("auth.json", "config.toml", "models_cache.json", "installation_id")
+    }
+
+    private fun writeCodexUpdateJournal(
+        journal: File,
+        runId: String,
+        state: String,
+        liveScope: File,
+        backupScope: File,
+        rejectedScope: File,
+        snapshotDir: File,
+        stageRoot: File,
+    ) {
+        journal.parentFile?.mkdirs()
+        val payload = JSONObject()
+            .put("runId", runId)
+            .put("state", state)
+            .put("liveScope", liveScope.absolutePath)
+            .put("backupScope", backupScope.absolutePath)
+            .put("rejectedScope", rejectedScope.absolutePath)
+            .put("snapshotDir", snapshotDir.absolutePath)
+            .put("stageRoot", stageRoot.absolutePath)
+        val temp = File(journal.parentFile, ".${journal.name}.tmp")
+        temp.writeText(payload.toString(2))
+        check(temp.renameTo(journal) || run {
+            journal.writeText(payload.toString(2))
+            temp.delete()
+            true
+        })
+    }
+
+    private fun rollbackCodexUpdate(
+        liveScope: File,
+        backupScope: File,
+        rejectedScope: File,
+        snapshotDir: File,
+        journal: File,
+        activated: Boolean,
+    ): Boolean {
+        val paths = BootstrapInstaller.getPaths(context)
+        var packageRestored = false
+        runCatching {
+            if (backupScope.exists()) {
+                if (liveScope.exists()) {
+                    if (rejectedScope.exists()) rejectedScope.deleteRecursively()
+                    check(liveScope.renameTo(rejectedScope)) { "无法隔离失败的 Codex 包" }
+                }
+                check(backupScope.renameTo(liveScope)) { "无法恢复旧 Codex 包" }
+                packageRestored = true
+            } else if (activated && liveScope.exists()) {
+                if (rejectedScope.exists()) rejectedScope.deleteRecursively()
+                check(liveScope.renameTo(rejectedScope)) { "无法隔离首次安装的失败包" }
+                packageRestored = true
+            } else if (!activated) {
+                packageRestored = true
+            }
+        }
+        val stateRestored = restoreCodexMutableState(File(paths.homeDir, ".codex"), snapshotDir)
+        journal.delete()
+        return packageRestored && stateRestored
+    }
+
+    private fun recoverInterruptedCodexUpdate() {
+        if (codexSafeUpdateInProgress) return
+        val paths = BootstrapInstaller.getPaths(context)
+        val journal = File(paths.prefixDir, "var/lib/pocket-lobster/codex-update-journal.json")
+        if (!journal.isFile) return
+        runCatching {
+            val payload = JSONObject(journal.readText())
+            val state = payload.optString("state")
+            if (state == "verified") {
+                journal.delete()
+                return
+            }
+            val expectedLive = File(paths.prefixDir, "lib/node_modules/@openai").canonicalFile
+            val liveScope = File(payload.getString("liveScope")).canonicalFile
+            val backupScope = File(payload.getString("backupScope")).canonicalFile
+            val rejectedScope = File(payload.getString("rejectedScope")).canonicalFile
+            val snapshotDir = File(payload.getString("snapshotDir")).canonicalFile
+            val packageParent = expectedLive.parentFile
+            check(liveScope == expectedLive)
+            check(backupScope.parentFile == packageParent && backupScope.name.startsWith(".codex-safe-backup-"))
+            check(rejectedScope.parentFile == packageParent && rejectedScope.name.startsWith(".codex-safe-rejected-"))
+            check(snapshotDir.path.startsWith(File(paths.prefixDir, "var/lib/pocket-lobster/codex-backups").canonicalPath + File.separator))
+            if (backupScope.exists()) {
+                if (liveScope.exists()) {
+                    val recoveredRejected = File(packageParent, "${rejectedScope.name}-recovery-${System.currentTimeMillis()}")
+                    check(liveScope.renameTo(recoveredRejected))
+                }
+                check(backupScope.renameTo(liveScope))
+                restoreCodexMutableState(File(paths.homeDir, ".codex"), snapshotDir)
+                context.getSharedPreferences("codex_safe_installer", Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("last_status", "检测到中断的 Codex 更新，已在启动前自动恢复旧版本和会话状态")
+                    .apply()
+            } else if (state == "activated_unverified" && liveScope.exists()) {
+                val recoveredRejected = File(packageParent, "${rejectedScope.name}-first-install-recovery-${System.currentTimeMillis()}")
+                check(liveScope.renameTo(recoveredRejected))
+                restoreCodexMutableState(File(paths.homeDir, ".codex"), snapshotDir)
+                context.getSharedPreferences("codex_safe_installer", Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("last_status", "检测到中断的 Codex 首次安装，已在启动前隔离未验证版本")
+                    .apply()
+            }
+            journal.delete()
+        }.onFailure { error ->
+            Log.e(TAG, "Interrupted Codex update recovery failed: ${error.message}")
+        }
+    }
+
+    private fun verifyActiveCodexHostHandshake(): Pair<Boolean, String> {
+        val configResult = LocalBridgeClients.callCodexRpc("config/read")
+        val active = configResult.optJSONObject("config") ?: return false to "Codex 未返回当前配置"
+        val provider = active.optString("model_provider").trim().ifBlank { "openai" }
+        val model = active.optString("model").trim()
+        if (model.isBlank()) return false to "Codex 未返回当前模型"
+        val connection = (URL("http://127.0.0.1:$SERVER_PORT/codex-api/model-providers/end-to-end-test")
+            .openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 10_000
+            readTimeout = 150_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+        }
+        return try {
+            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
+                writer.write(JSONObject().put("providerId", provider).put("model", model).toString())
+            }
+            val code = connection.responseCode
+            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val raw = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            if (code !in 200..299) return false to "HTTP $code：${raw.take(400)}"
+            val payload = JSONObject(raw)
+            if (!payload.optBoolean("ok", false)) return false to raw.take(400)
+            true to "$provider/$model 两轮真实对话通过"
+        } catch (error: Throwable) {
+            false to (error.message ?: "宿主握手异常")
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun recordCodexInstallResult(result: CodexInstallResult): CodexInstallResult {
+        val stamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        context.getSharedPreferences("codex_safe_installer", Context.MODE_PRIVATE)
+            .edit()
+            .putString("last_status", "$stamp · ${result.message}")
+            .apply()
+        return result
     }
 
     fun installClaudeCode(onProgress: (String) -> Unit): ClaudeInstallResult {
@@ -2678,6 +3252,7 @@ EOF
     }
 
     fun ensureCodexWrapperScript() {
+        recoverInterruptedCodexUpdate()
         val paths = BootstrapInstaller.getPaths(context)
         val prefix = paths.prefixDir
         val codexJs = File(prefix, "lib/node_modules/@openai/codex/bin/codex.js")
@@ -4343,7 +4918,7 @@ EOF
         val desired = """
             |approval_policy = "never"
             |sandbox_mode = "danger-full-access"
-            |model = "gpt-5.6"
+            |model = "gpt-6.1-sol"
         """.trimMargin().trim() + "\n"
 
         if (configFile.exists()) {
@@ -4356,7 +4931,7 @@ EOF
                 updated = appendCodexConfigLine(updated, "sandbox_mode = \"danger-full-access\"")
             }
             if (!Regex("""(?m)^\s*model\s*=""").containsMatchIn(updated)) {
-                updated = appendCodexConfigLine(updated, "model = \"gpt-5.6\"")
+                updated = appendCodexConfigLine(updated, "model = \"gpt-6.1-sol\"")
             }
             if (updated != current) {
                 configFile.writeText(updated)

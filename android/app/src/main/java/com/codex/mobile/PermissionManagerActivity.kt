@@ -149,6 +149,8 @@ class PermissionManagerActivity : AppCompatActivity() {
             } else {
                 false
             }
+            val verification = runCatching { serverManager.getCodexInstallVerificationStatus() }
+                .getOrElse { "尚未执行 Codex 安全安装验证" }
             runOnUiThread {
                 val text = when {
                     !cliInstalled -> getString(R.string.codex_install_status_missing)
@@ -157,7 +159,8 @@ class PermissionManagerActivity : AppCompatActivity() {
                     loggedIn -> getString(R.string.codex_auth_status_logged_in)
                     else -> getString(R.string.codex_auth_status_logged_out)
                 }
-                val textWithVersion = if (codexVersion.isBlank()) text else "$text · CLI $codexVersion"
+                val versionText = if (codexVersion.isBlank()) text else "$text · CLI $codexVersion"
+                val textWithVersion = "$versionText\n安全更新目标：$targetVersion\n最近安全验证：$verification"
                 tvCodexAuthStatus.text = getString(R.string.codex_auth_status_template, textWithVersion)
                 btnCodexAuthBrowser.isEnabled = !codexLoginRunning && cliInstalled && cliCurrent && binaryInstalled
                 btnCodexInstall.isEnabled = !codexInstallRunning
@@ -236,46 +239,47 @@ class PermissionManagerActivity : AppCompatActivity() {
 
     private fun startCodexInstallRepair() {
         if (codexInstallRunning) return
+        val current = runCatching { serverManager.getInstalledCodexVersion() }.getOrElse { "" }
+        val target = runCatching { serverManager.getTargetCodexVersion() }.getOrElse { "" }
+        AlertDialog.Builder(this)
+            .setTitle("手动安全更新 Codex")
+            .setMessage(
+                "当前版本：${current.ifBlank { "未安装" }}\n目标版本：$target\n\n安装新版口袋大龙虾不会自动更新 Codex。点击继续后会先在隔离目录下载并核对官方包哈希，验证安卓启动、app-server、当前模型和终端工具；全部通过后才暂停服务并切换。切换后还会重启宿主并完成两轮真实对话，任何失败都会恢复旧二进制和会话状态快照。",
+            )
+            .setNegativeButton(getString(R.string.cancel), null)
+            .setPositiveButton("继续安全更新") { _, _ -> executeCodexInstallRepair() }
+            .show()
+    }
+
+    private fun executeCodexInstallRepair() {
+        if (codexInstallRunning) return
         codexInstallRunning = true
         btnCodexInstall.isEnabled = false
         btnCodexAuthBrowser.isEnabled = false
-        Toast.makeText(this, getString(R.string.codex_install_starting), Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "正在执行 Codex 隔离安全更新…", Toast.LENGTH_SHORT).show()
 
         Thread {
-            val installedVersion = runCatching { serverManager.getInstalledCodexVersion() }.getOrElse { "" }
-            val targetVersion = runCatching { serverManager.getTargetCodexVersion() }.getOrElse { "" }
-            val needsCliInstallOrUpgrade =
-                !serverManager.isCodexInstalled() || !codexVersionMatches(installedVersion, targetVersion)
-
-            val cliInstalled =
-                if (needsCliInstallOrUpgrade) {
-                    serverManager.installCodex { }
-                } else {
-                    true
+            val beforeVersion = runCatching { serverManager.getInstalledCodexVersion() }.getOrElse { "" }
+            val result = runCatching {
+                serverManager.installCodex { progress ->
+                    runOnUiThread {
+                        tvCodexAuthStatus.text = getString(R.string.codex_auth_status_template, progress)
+                    }
                 }
-
-            val binaryInstalled =
-                if (cliInstalled && !needsCliInstallOrUpgrade && serverManager.isPlatformBinaryInstalled()) {
-                    true
-                } else if (cliInstalled) {
-                    serverManager.installPlatformBinary { }
-                } else {
-                    false
-                }
-
-            if (cliInstalled) {
-                runCatching { serverManager.ensureCodexWrapperScript() }
+            }.getOrElse { error ->
+                CodexServerManager.CodexInstallResult(
+                    success = false,
+                    previousVersion = beforeVersion,
+                    installedVersion = runCatching { serverManager.getInstalledCodexVersion() }.getOrElse { beforeVersion },
+                    rolledBack = false,
+                    message = "安全更新发生异常，未确认切换成功：${error.message ?: "unknown error"}",
+                )
             }
 
             runOnUiThread {
                 codexInstallRunning = false
                 btnCodexInstall.isEnabled = true
-                val message = if (cliInstalled && binaryInstalled) {
-                    getString(R.string.codex_install_success)
-                } else {
-                    getString(R.string.codex_install_failed)
-                }
-                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                Toast.makeText(this, result.message, Toast.LENGTH_LONG).show()
                 refreshCodexAuthStatus()
                 refreshOptionalAgentInstallStatus()
             }

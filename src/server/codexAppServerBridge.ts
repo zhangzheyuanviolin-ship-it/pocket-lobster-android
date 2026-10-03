@@ -6720,21 +6720,23 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         const selected = configs
           .map(asRecord)
           .find((row) => normalizeText(row?.providerId) === providerId)
-        if (!selected) {
+        if (providerId !== 'openai' && !selected) {
           setJson(res, 404, { error: 'Provider configuration not found' })
           return
         }
         const startedAtMs = Date.now()
         const result = await verifyCodexProviderEndToEnd(appServer, providerId, model)
-        const runtimeStatus = await waitForProviderRuntimeStatus(
-          normalizeText(selected.id),
-          providerId,
-          model,
-          startedAtMs,
-        )
+        const runtimeStatus = providerId === 'openai'
+          ? null
+          : await waitForProviderRuntimeStatus(
+              normalizeText(selected?.id),
+              providerId,
+              model,
+              startedAtMs,
+            )
         setJson(res, 200, {
           ...result,
-          runtime: runtimeStatus,
+          ...(runtimeStatus ? { runtime: runtimeStatus } : {}),
         })
         return
       }
