@@ -1,0 +1,46 @@
+name: Publish validated v362 stable APK
+
+on:
+  push:
+    branches:
+      - automation/v362-stable-publish
+    paths:
+      - .github/workflows/publish-validated-v362.yml
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and promote the already validated cloud APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          TAG="stable-v362-20261003"
+          EXPECTED="970ee57c83764f34b557f94265553b368b406c0ea1bcd8da5090697b17eb9bc8"
+          STAGE="$(mktemp -d)"
+          gh api "repos/$REPO/releases/tags/v402-test" > "$STAGE/source.json"
+          jq -e '.target_commitish == "ee0610a06e2657c3371226acc4df8661a430817d"' "$STAGE/source.json"
+          jq -e --arg hash "sha256:$EXPECTED" '.assets[] | select(.name == "pocket-lobster-test.apk") | .digest == $hash and .size == 183430123' "$STAGE/source.json"
+          gh release download v402-test --repo "$REPO" --pattern pocket-lobster-test.apk --dir "$STAGE"
+          echo "$EXPECTED  $STAGE/pocket-lobster-test.apk" | sha256sum -c -
+          unzip -t "$STAGE/pocket-lobster-test.apk" > "$STAGE/zip-check.txt"
+          unzip -p "$STAGE/pocket-lobster-test.apk" assets/server-bundle/bundle-id | grep -Fx '1.0.121-codex-cli-0.160.0-openminis-1.12-safe-codex-updater-v362:c94009b02f0669ae2adfd374a76db5036cdd1bd5e03dcbf52c4fe3436cc6f01c'
+          gh api "repos/$REPO/releases/tags/$TAG" > "$STAGE/target.json"
+          jq -e '.target_commitish == "49ae6baf42d9f753676ee8c87dd4540143c2b97c"' "$STAGE/target.json"
+          gh release upload "$TAG" "$STAGE/pocket-lobster-test.apk" docs/pocket-lobster/STABLE_RELEASE.json --repo "$REPO" --clobber
+          RELEASE_ID="$(jq -r .id "$STAGE/target.json")"
+          gh api "repos/$REPO/releases/$RELEASE_ID/assets" > "$STAGE/uploaded.json"
+          jq -e --arg hash "sha256:$EXPECTED" '.[] | select(.name == "pocket-lobster-test.apk") | .state == "uploaded" and .digest == $hash and .size == 183430123' "$STAGE/uploaded.json"
+          jq -n '{draft:false,prerelease:false,make_latest:"true"}' > "$STAGE/publish.json"
+          gh api --method PATCH "repos/$REPO/releases/$RELEASE_ID" --input "$STAGE/publish.json" > "$STAGE/published.json"
+          jq -e '.draft == false and .prerelease == false' "$STAGE/published.json"
+          gh api "repos/$REPO/releases/latest" > "$STAGE/latest.json"
+          jq -e --arg tag "$TAG" '.tag_name == $tag' "$STAGE/latest.json"
+          echo "Stable v362 published from the original validated APK."
