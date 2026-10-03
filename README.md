@@ -2,10 +2,13 @@
 
 口袋大龙虾是一套运行在非 root ARM64 Android 手机上的多智能体工作平台。它把 Codex、Claude Code、OpenMinis 和手机操作智能体放进同一个原生应用，让模型不仅能对话，还能使用三套终端、真实可见浏览器、Android 共享存储和 Shizuku 系统链路完成实际任务。
 
-当前稳定版本：1.0.121，versionCode 362（用户验证的通讯通道）  
-稳定发布：[stable-v362-20261003](https://github.com/zhangzheyuanviolin-ship-it/pocket-lobster-android/releases/tag/stable-v362-20261003)  
-安装包：pocket-lobster-test.apk，包名 com.codex.mobile.pocketlobster.test  
-Codex CLI 手动安全安装目标：0.160.0  
+当前稳定版本：1.0.121，versionCode 362（用户验证的通讯通道）
+
+稳定发布：[stable-v362-20261003](https://github.com/zhangzheyuanviolin-ship-it/pocket-lobster-android/releases/tag/stable-v362-20261003)
+
+安装包：pocket-lobster-test.apk，包名 com.codex.mobile.pocketlobster.test
+
+Codex CLI 手动安全安装目标：0.160.0
 OpenMinis：1.12  
 Android：8.0 及以上，ARM64  
 许可证：GNU GPL v3，第三方组件许可证见 NOTICE 和 LICENSES
