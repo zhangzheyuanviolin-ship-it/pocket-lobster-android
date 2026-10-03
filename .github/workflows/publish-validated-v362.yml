@@ -23,6 +23,7 @@ jobs:
           set -euo pipefail
           REPO="$GITHUB_REPOSITORY"
           TAG="stable-v362-20261003"
+          RELEASE_ID="402504388"
           EXPECTED="970ee57c83764f34b557f94265553b368b406c0ea1bcd8da5090697b17eb9bc8"
           STAGE="$(mktemp -d)"
           gh api "repos/$REPO/releases/tags/v402-test" > "$STAGE/source.json"
@@ -32,10 +33,14 @@ jobs:
           echo "$EXPECTED  $STAGE/pocket-lobster-test.apk" | sha256sum -c -
           unzip -t "$STAGE/pocket-lobster-test.apk" > "$STAGE/zip-check.txt"
           unzip -p "$STAGE/pocket-lobster-test.apk" assets/server-bundle/bundle-id | grep -Fx '1.0.121-codex-cli-0.160.0-openminis-1.12-safe-codex-updater-v362:c94009b02f0669ae2adfd374a76db5036cdd1bd5e03dcbf52c4fe3436cc6f01c'
-          gh api "repos/$REPO/releases/tags/$TAG" > "$STAGE/target.json"
+          gh api "repos/$REPO/releases/$RELEASE_ID" > "$STAGE/target.json"
           jq -e '.target_commitish == "49ae6baf42d9f753676ee8c87dd4540143c2b97c"' "$STAGE/target.json"
-          gh release upload "$TAG" "$STAGE/pocket-lobster-test.apk" docs/pocket-lobster/STABLE_RELEASE.json --repo "$REPO" --clobber
-          RELEASE_ID="$(jq -r .id "$STAGE/target.json")"
+          jq -e --arg tag "$TAG" '.tag_name == $tag' "$STAGE/target.json"
+          gh api "repos/$REPO/releases/$RELEASE_ID/assets" > "$STAGE/existing.json"
+          jq -e --arg hash "sha256:$EXPECTED" '.[] | select(.name == "pocket-lobster-test.apk") | .state == "uploaded" and .digest == $hash and .size == 183430123' "$STAGE/existing.json"
+          if ! jq -e '.[] | select(.name == "STABLE_RELEASE.json" and .state == "uploaded")' "$STAGE/existing.json"; then
+            curl --fail --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/json" --data-binary @docs/pocket-lobster/STABLE_RELEASE.json "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=STABLE_RELEASE.json" > "$STAGE/manifest-upload.json"
+          fi
           gh api "repos/$REPO/releases/$RELEASE_ID/assets" > "$STAGE/uploaded.json"
           jq -e --arg hash "sha256:$EXPECTED" '.[] | select(.name == "pocket-lobster-test.apk") | .state == "uploaded" and .digest == $hash and .size == 183430123' "$STAGE/uploaded.json"
           jq -n '{draft:false,prerelease:false,make_latest:"true"}' > "$STAGE/publish.json"
