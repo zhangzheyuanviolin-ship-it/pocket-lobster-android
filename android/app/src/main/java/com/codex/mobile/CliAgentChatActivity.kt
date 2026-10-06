@@ -1233,6 +1233,9 @@ class CliAgentChatActivity : AppCompatActivity() {
             var capturedNativeSessionId = ""
             val result = runCatching {
                 val nativeSessionId = activeSession.nativeSessionId.trim()
+                if (modelConfig.contextWindowTokens > 200_000) {
+                    appendClaudeProcessLine(liveProcessLines, "当前 Claude CLI 的扩展上下文尚未验证，本轮按200000 tokens保守预算；配置数字不代表CLI已扩容")
+                }
                 val effectiveOutput = ClaudeContextBudget.outputLimit(modelConfig.contextWindowTokens, modelConfig.maxOutputTokens)
                 if (effectiveOutput != modelConfig.maxOutputTokens) {
                     appendClaudeProcessLine(liveProcessLines, "输出上限超过可用上下文预算，本轮安全限制为 $effectiveOutput tokens；不会修改已保存配置")

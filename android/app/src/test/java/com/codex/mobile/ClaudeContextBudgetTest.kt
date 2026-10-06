@@ -6,14 +6,14 @@ import org.junit.Test
 
 class ClaudeContextBudgetTest {
     @Test fun oversizedOutputDoesNotCollapseTheInputBudget() {
-        assertEquals(131072, ClaudeContextBudget.outputLimit(524288, 512000))
-        assertEquals(353894, ClaudeContextBudget.safeInputLimit(524288, 512000))
-        assertEquals(318504, ClaudeContextBudget.autoCompactLimit(524288, 512000, 514000))
+        assertEquals(50000, ClaudeContextBudget.outputLimit(524288, 512000))
+        assertEquals(135000, ClaudeContextBudget.safeInputLimit(524288, 512000))
+        assertEquals(121500, ClaudeContextBudget.autoCompactLimit(524288, 512000, 514000))
         assertTrue(ClaudeContextBudget.safeInputLimit(524288, 512000) > 14000)
     }
     @Test fun ordinaryRequestedOutputRemainsUnchanged() {
         assertEquals(32768, ClaudeContextBudget.outputLimit(1_000_000, 32768))
-        assertEquals(783457, ClaudeContextBudget.autoCompactLimit(1_000_000, 32768, 900000))
+        assertEquals(135457, ClaudeContextBudget.autoCompactLimit(1_000_000, 32768, 900000))
     }
     @Test fun stdinHistoryHasNoArtificial140KBArgumentLimit() {
         assertEquals(144000, ClaudeContextBudget.safeInputLimit(0, 0))
