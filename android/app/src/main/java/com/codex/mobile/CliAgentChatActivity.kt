@@ -725,7 +725,7 @@ class CliAgentChatActivity : AppCompatActivity() {
                     processText = snapshotLiveProcessLines().joinToString("\n").trim(),
                 )
             }
-            val nativeCompactFailed = result.assistantText.startsWith("上下文压缩执行失败：") ||
+            val nativeCompactFailed = !result.nativeCompactApplied || result.assistantText.startsWith("上下文压缩执行失败：") ||
                 result.processText.contains("Claude 返回错误")
             if (nativeCompactFailed) {
                 runOnUiThread {
@@ -799,9 +799,10 @@ class CliAgentChatActivity : AppCompatActivity() {
 
         val fullPrompt = buildPromptWithHistory(snapshot.messages, runtimeOptions)
         val promptBytes = promptUtf8Bytes(fullPrompt)
-        val configuredWindow = AgentModelConfigStore.loadCurrentConfig(this, agentId)
-            ?.autoCompactWindowTokens
-            ?.takeIf { it > 0 }
+        val config = AgentModelConfigStore.loadCurrentConfig(this, agentId) ?: return false
+        val configuredWindow = if (config.contextWindowTokens > 0 || config.autoCompactWindowTokens > 0) {
+            ClaudeContextBudget.autoCompactLimit(config.contextWindowTokens, config.maxOutputTokens, config.autoCompactWindowTokens)
+        } else null
         if (!force) {
             val thresholdReached = if (configuredWindow != null) {
                 estimatePromptTokens(fullPrompt) >= configuredWindow
@@ -812,6 +813,7 @@ class CliAgentChatActivity : AppCompatActivity() {
         }
 
         val summary = buildModelCompactionSummary(snapshot, trigger, promptBytes) ?: return false
+        if (abortRequested) return false
         val baseTitle = snapshot.title.trim().ifEmpty { "Claude Code 会话" }
         val nextTitle = if (baseTitle.contains("续接")) baseTitle else "$baseTitle（续接）"
 
@@ -846,33 +848,36 @@ class CliAgentChatActivity : AppCompatActivity() {
         promptBytes: Int,
     ): String? {
         val config = AgentModelConfigStore.loadCurrentConfig(this, agentId) ?: return null
-        val transcript = buildString {
-            session.messages.forEach { message ->
-                appendLine("[${message.role}] ${message.text}")
-            }
-        }
-        val prompt = """
-            你是会话压缩器。请完整阅读下面的真实会话，用当前模型生成可继续开发工作的高保真中文交接摘要。
-            必须保留：用户当前目标、已经完成的修改、所有文件绝对路径、分支和提交、版本号、命令与验证结果、接口和模型标识、错误原文与根因、尚未完成事项、明确约束、风险、下一步；最近三轮用户原话必须逐字保留；不得编造，不得用省略号代替关键事实。
-            输出必须以【模型生成的会话压缩摘要】开头，并包含 source_session_id=${session.sessionId}、trigger=$trigger、original_message_count=${session.messages.size}、estimated_prompt_bytes=$promptBytes。
-            只输出摘要正文，不要调用工具，不要解释任务。
-
-            真实会话：
-            $transcript
-        """.trimIndent()
+        val paths = BootstrapInstaller.getPaths(this)
+        val worker = File(paths.homeDir, ".pocketlobster/compaction/claude-context-compactor.cjs")
+        val script = assets.open("anyclaw/claude-context-compactor.cjs").bufferedReader(Charsets.UTF_8).use { it.readText() }
+        writeTextIfChanged(worker, script)
+        val messages = JSONArray()
+        session.messages.forEach { messages.put(JSONObject().put("role", it.role).put("text", it.text).put("atMs", it.atMs)) }
+        val payload = JSONObject()
+            .put("sessionId", session.sessionId).put("trigger", trigger).put("promptBytes", promptBytes)
+            .put("modelId", config.modelId).put("contextWindowTokens", config.contextWindowTokens).put("messages", messages)
         val result = runCatching {
-            runClaudePrint(
-                config = config,
-                prompt = prompt,
-                options = runtimeOptions,
-                sendPromptViaStdin = true,
+            val process = serverManager.startPrefixExecProcess(
+                listOf(File(paths.prefixDir, "bin/node").absolutePath, worker.absolutePath, "--cli",
+                    File(paths.prefixDir, "lib/node_modules/@anthropic-ai/claude-code/cli.js").absolutePath),
+                mapOf("ANTHROPIC_API_KEY" to config.apiKey.trim(), "ANTHROPIC_BASE_URL" to config.baseUrl.trim(),
+                    "ANYCLAW_AGENT_ID" to "claude", "GIT_CONFIG_NOSYSTEM" to "1", "GIT_ATTR_NOSYSTEM" to "1"),
             )
+            registerActiveProcess(process)
+            try {
+                process.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(payload.toString()); it.write("\n") }
+                runClaudeStreamJson(process)
+            } finally {
+                clearActiveProcess(process)
+                if (process.isAlive) process.destroy()
+            }
         }.getOrElse { error ->
             Log.e("CliAgentChat", "Model compaction failed", error)
             return null
         }
         val summary = result.assistantText.trim()
-        if (summary.length < 200 || !summary.contains("模型生成的会话压缩摘要")) return null
+        if (abortRequested || summary.length < 200 || !summary.startsWith("【模型生成的会话压缩摘要】")) return null
         return summary
     }
 
@@ -1063,12 +1068,8 @@ class CliAgentChatActivity : AppCompatActivity() {
     }
 
     private fun isClaudePromptOverHardLimit(prompt: String, config: AgentModelConfig): Boolean {
-        if (config.contextWindowTokens > 0) {
-            val reservedOutput = config.maxOutputTokens.takeIf { it > 0 } ?: 16_384
-            val safeInputLimit = (config.contextWindowTokens - reservedOutput).coerceAtLeast(1) * 9 / 10
-            return estimatePromptTokens(prompt) > safeInputLimit
-        }
-        return promptUtf8Bytes(prompt) > CLAUDE_HARD_PROMPT_BYTES
+        // Prompts go through stdin, so the former 140KB argv guard was not a context limit.
+        return estimatePromptTokens(prompt) > ClaudeContextBudget.safeInputLimit(config.contextWindowTokens, config.maxOutputTokens)
     }
 
     private fun isArgumentListTooLong(error: Throwable): Boolean {
@@ -1232,6 +1233,10 @@ class CliAgentChatActivity : AppCompatActivity() {
             var capturedNativeSessionId = ""
             val result = runCatching {
                 val nativeSessionId = activeSession.nativeSessionId.trim()
+                val effectiveOutput = ClaudeContextBudget.outputLimit(modelConfig.contextWindowTokens, modelConfig.maxOutputTokens)
+                if (effectiveOutput != modelConfig.maxOutputTokens) {
+                    appendClaudeProcessLine(liveProcessLines, "输出上限超过可用上下文预算，本轮安全限制为 $effectiveOutput tokens；不会修改已保存配置")
+                }
                 val bootstrapFromHistory = useNativeSession && nativeSessionId.isBlank()
                 if (nativeSessionId.isNotBlank()) {
                     capturedNativeSessionId = nativeSessionId
@@ -1246,6 +1251,7 @@ class CliAgentChatActivity : AppCompatActivity() {
                     }
                 }
 
+                if (abortRequested) throw InterruptedException("任务已终止")
                 var prompt = if (useNativeSession && !bootstrapFromHistory) {
                     buildClaudeNativeTurnPrompt(userText, runtimeOptions)
                 } else {
@@ -1261,9 +1267,12 @@ class CliAgentChatActivity : AppCompatActivity() {
                             renderSession()
                         }
                     } else {
-                        throw IllegalStateException("当前模型未能完成高保真上下文压缩；为避免丢失历史，已停止本次发送并完整保留原会话")
+                        throw IllegalStateException("压缩已自动重试及分片恢复，当前模型服务仍未返回可用摘要；原任务与附件已保留，服务恢复后可在本会话继续，不需要重建任务")
                     }
                     prompt = buildPromptWithHistory(activeSession.messages, runtimeOptions)
+                    if (isClaudePromptOverHardLimit(prompt, modelConfig)) {
+                        throw IllegalStateException("模型摘要仍超过输入预算，原会话和任务已保留，未发送截断内容")
+                    }
                 }
                 var firstResult = when (agentId) {
                     ExternalAgentId.CLAUDE_CODE -> runClaudePrint(
@@ -1543,8 +1552,9 @@ class CliAgentChatActivity : AppCompatActivity() {
         if (config.autoCompactWindowTokens > 0) {
             extraEnv["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = config.autoCompactWindowTokens.toString()
         }
-        if (config.maxOutputTokens > 0) {
-            extraEnv["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = config.maxOutputTokens.toString()
+        val effectiveOutput = ClaudeContextBudget.outputLimit(config.contextWindowTokens, config.maxOutputTokens)
+        if (effectiveOutput > 0) {
+            extraEnv["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = effectiveOutput.toString()
         }
         if (config.effortLevel in setOf("low", "medium", "high")) {
             extraEnv["CLAUDE_CODE_EFFORT_LEVEL"] = config.effortLevel
@@ -1705,6 +1715,9 @@ class CliAgentChatActivity : AppCompatActivity() {
         when (type) {
             "system" -> {
                 val subtype = payload.optString("subtype").trim()
+                if (subtype == "compaction_progress") {
+                    appendClaudeProcessLine(state.processLines, payload.optString("text"))
+                }
                 if (subtype.equals("compact_boundary", ignoreCase = true) ||
                     subtype.equals("compacted", ignoreCase = true)
                 ) {
