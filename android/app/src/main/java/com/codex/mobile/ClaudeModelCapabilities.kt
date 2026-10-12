@@ -24,7 +24,7 @@ object ClaudeModelCapabilities {
         val baseModel = modelId.trim().replace(Regex("\\[1m]$", RegexOption.IGNORE_CASE), "")
         val uri = runCatching { URI(baseUrl.trim()) }.getOrNull()
         val official = uri?.scheme.equals("https", ignoreCase = true) &&
-            uri?.host?.lowercase() == "api.minimax.io" &&
+            uri?.host?.lowercase() == "api.minimaxi.com" &&
             uri?.path?.trimEnd('/') == "/anthropic" && uri?.port in setOf(-1, 443) &&
             uri?.userInfo == null && uri?.query == null
         val million = official && baseModel.equals("MiniMax-M3", ignoreCase = true)

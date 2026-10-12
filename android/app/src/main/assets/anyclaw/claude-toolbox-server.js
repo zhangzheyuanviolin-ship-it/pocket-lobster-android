@@ -10,7 +10,7 @@ function claudeRuntimeCapabilities(config = {}, overrides = {}) {
   const baseModel = String(current.modelId || "").trim().replace(/\[1m\]$/i, "");
   let route;
   try { route = new URL(current.baseUrl || ""); } catch (_) {}
-  const official = route?.protocol === "https:" && route.hostname === "api.minimax.io" &&
+  const official = route?.protocol === "https:" && route.hostname === "api.minimaxi.com" &&
     route.pathname.replace(/\/$/, "") === "/anthropic" && (!route.port || route.port === "443") && !route.username && !route.password && !route.search;
   const million = !!official && /^MiniMax-M3$/i.test(baseModel);
   const requested = Number(current.contextWindowTokens) || 0;

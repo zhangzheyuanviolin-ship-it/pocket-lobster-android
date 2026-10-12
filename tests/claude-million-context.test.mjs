@@ -11,14 +11,14 @@ const chat = fs.readFileSync('android/app/src/main/java/com/codex/mobile/CliAgen
 const scope = { URL }
 vm.createContext(scope)
 vm.runInContext(toolbox.slice(toolbox.indexOf('function claudeRuntimeCapabilities'), toolbox.indexOf('const SERVER_INFO')) + ';this.resolve = claudeRuntimeCapabilities;', scope)
-const config = { id: 'm3', modelId: 'MiniMax-M3', baseUrl: 'https://api.minimax.io/anthropic', isDefault: true }
+const config = { id: 'm3', modelId: 'MiniMax-M3', baseUrl: 'https://api.minimaxi.com/anthropic', isDefault: true }
 test('official M3 resolves 1M and the real CLI marker; numeric limits alone are insufficient', () => {
   const cap = scope.resolve(config)
   assert.equal(cap.contextWindowTokens, 1000000)
   assert.equal(cap.cliModelId, 'MiniMax-M3[1m]')
   assert.equal(cap.autoCompactTokens, 784080)
   assert.equal(scope.resolve({ ...config, baseUrl: 'https://gateway.example/anthropic', contextWindowTokens: 1000000 }).contextWindowTokens, 200000)
-  assert.equal(scope.resolve({ ...config, baseUrl: 'https://api.minimax.io.evil.example/anthropic' }).millionContextSupported, false)
+  assert.equal(scope.resolve({ ...config, baseUrl: 'https://api.minimaxi.com.evil.example/anthropic' }).millionContextSupported, false)
   assert.equal(scope.resolve({ ...config, modelId: 'MiniMax-M2.7' }).millionContextSupported, false)
 })
 test('legacy values recover to 1M without mutation and explicit lower windows stay lower', () => {
