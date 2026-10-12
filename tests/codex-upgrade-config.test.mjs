@@ -22,13 +22,13 @@ assert.doesNotMatch(serverManager, /private const val CODEX_VERSION = "0\.137\.0
 assert.match(setupScript, /CODEX_VERSION="0\.160\.0"/)
 assert.match(setupScript, /@openai\/codex@\$\{CODEX_VERSION\}/)
 
-assert.match(gradle, /versionCode = 363/)
-assert.match(gradle, /versionName = "1\.0\.122-codex-cli-0\.160\.0-openminis-1\.12-claude-compaction-recovery-v363"/)
+assert.match(gradle, /versionCode = 364/)
+assert.match(gradle, /versionName = "1\.0\.123-codex-cli-0\.160\.0-openminis-1\.12-claude-million-context-v364"/)
 assert.match(gradle, /create\("operator"\)[\s\S]*applicationId = "com\.codex\.mobile\.pocketlobster\.test"/)
-assert.match(workflow, /claude-compaction-recovery-v363-beta/)
-assert.match(workflow, /versionCode='363'/)
+assert.match(workflow, /claude-million-context-v364-beta/)
+assert.match(workflow, /versionCode='364'/)
 assert.match(workflow, /PACKAGE_ID="com\.codex\.mobile\.pocketlobster\.beta"/)
-assert.match(baselineScript, /versionCode = 363/)
+assert.match(baselineScript, /versionCode = 364/)
 
 assert.equal(packageJson.engines.node, '>=22.5.0')
 assert.match(tsupConfig, /target: 'node22'/)

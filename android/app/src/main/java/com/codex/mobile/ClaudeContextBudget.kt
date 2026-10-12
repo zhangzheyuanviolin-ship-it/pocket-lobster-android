@@ -2,19 +2,18 @@ package com.codex.mobile
 
 /** Output ceilings cannot reserve almost the entire input window. No stored settings are rewritten. */
 object ClaudeContextBudget {
-    // The installed 2.1.97 CLI does not read CLAUDE_CODE_MAX_CONTEXT_TOKENS.
-    // Do not claim a larger custom-model window merely because it was typed in.
+    // Callers supply a resolved CLI/provider capability, not an arbitrary saved number.
     private fun knownWindow(contextWindow: Int): Int =
-        if (contextWindow > 0) contextWindow.coerceAtMost(200_000) else 200_000
+        if (contextWindow > 0) contextWindow.coerceAtMost(1_000_000) else 200_000
 
     fun outputLimit(contextWindow: Int, requestedOutput: Int): Int {
         if (requestedOutput <= 0) return 0
-        return requestedOutput.coerceAtMost((knownWindow(contextWindow) / 4).coerceAtLeast(1))
+        return requestedOutput.coerceAtMost(minOf(128_000, (knownWindow(contextWindow) / 4).coerceAtLeast(1)))
     }
 
     fun safeInputLimit(contextWindow: Int, requestedOutput: Int): Int {
         if (contextWindow <= 0) return 144_000
-        val reserve = outputLimit(contextWindow, requestedOutput.takeIf { it > 0 } ?: 16_384)
+        val reserve = outputLimit(contextWindow, requestedOutput.takeIf { it > 0 } ?: 32_000)
         return ((knownWindow(contextWindow).toLong() - reserve) * 9L / 10L).coerceAtLeast(1L).toInt()
     }
 

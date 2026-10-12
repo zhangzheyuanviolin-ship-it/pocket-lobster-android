@@ -81,5 +81,5 @@ test('Android invokes the isolated production worker and only creates a continua
   assert.doesNotMatch(generator, /runClaudePrint\(/)
   assert.match(source, /val summary = buildModelCompactionSummary\(snapshot, trigger, promptBytes\) \?: return false/)
   assert.match(source, /!result\.nativeCompactApplied/)
-  assert.match(source, /ClaudeContextBudget\.safeInputLimit/)
+  assert.match(source, /runtimeCapabilities\(\)\.safeInputTokens/)
 })

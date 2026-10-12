@@ -349,6 +349,8 @@ class CliAgentChatActivity : AppCompatActivity() {
         storedMessages.forEach { indexed ->
             val msg = indexed.value
             val role = msg.role.lowercase(Locale.getDefault())
+            val displayBody = if (role == "process") ClaudeProcessPresentation.forDisplay(msg.text) else msg.text
+            if (displayBody.isBlank()) return@forEach
             val roleText = when (role) {
                 "user" -> "您"
                 "assistant" -> AgentSessionStore.displayAgentName(agentId)
@@ -357,13 +359,13 @@ class CliAgentChatActivity : AppCompatActivity() {
             }
             displayItems += DisplayMessage(
                 roleText = roleText,
-                body = msg.text,
+                body = displayBody,
                 sourceRole = role,
                 sessionMessageIndex = indexed.index,
             )
         }
         if (showProcess) {
-            val live = snapshotLiveProcessLines().joinToString("\n").trim()
+            val live = ClaudeProcessPresentation.forDisplay(snapshotLiveProcessLines().joinToString("\n"))
             if (live.isNotEmpty()) {
                 displayItems += DisplayMessage(
                     roleText = getString(R.string.cli_process_role),
@@ -800,15 +802,9 @@ class CliAgentChatActivity : AppCompatActivity() {
         val fullPrompt = buildPromptWithHistory(snapshot.messages, runtimeOptions)
         val promptBytes = promptUtf8Bytes(fullPrompt)
         val config = AgentModelConfigStore.loadCurrentConfig(this, agentId) ?: return false
-        val configuredWindow = if (config.contextWindowTokens > 0 || config.autoCompactWindowTokens > 0) {
-            ClaudeContextBudget.autoCompactLimit(config.contextWindowTokens, config.maxOutputTokens, config.autoCompactWindowTokens)
-        } else null
+        val configuredWindow = config.runtimeCapabilities().autoCompactTokens
         if (!force) {
-            val thresholdReached = if (configuredWindow != null) {
-                estimatePromptTokens(fullPrompt) >= configuredWindow
-            } else {
-                promptBytes >= CLAUDE_AUTO_COMPACT_PROMPT_BYTES
-            }
+            val thresholdReached = estimatePromptTokens(fullPrompt) >= configuredWindow
             if (!thresholdReached) return false
         }
 
@@ -1069,7 +1065,7 @@ class CliAgentChatActivity : AppCompatActivity() {
 
     private fun isClaudePromptOverHardLimit(prompt: String, config: AgentModelConfig): Boolean {
         // Prompts go through stdin, so the former 140KB argv guard was not a context limit.
-        return estimatePromptTokens(prompt) > ClaudeContextBudget.safeInputLimit(config.contextWindowTokens, config.maxOutputTokens)
+        return estimatePromptTokens(prompt) > config.runtimeCapabilities().safeInputTokens
     }
 
     private fun isArgumentListTooLong(error: Throwable): Boolean {
@@ -1233,13 +1229,6 @@ class CliAgentChatActivity : AppCompatActivity() {
             var capturedNativeSessionId = ""
             val result = runCatching {
                 val nativeSessionId = activeSession.nativeSessionId.trim()
-                if (modelConfig.contextWindowTokens > 200_000) {
-                    appendClaudeProcessLine(liveProcessLines, "当前 Claude CLI 的扩展上下文尚未验证，本轮按200000 tokens保守预算；配置数字不代表CLI已扩容")
-                }
-                val effectiveOutput = ClaudeContextBudget.outputLimit(modelConfig.contextWindowTokens, modelConfig.maxOutputTokens)
-                if (effectiveOutput != modelConfig.maxOutputTokens) {
-                    appendClaudeProcessLine(liveProcessLines, "输出上限超过可用上下文预算，本轮安全限制为 $effectiveOutput tokens；不会修改已保存配置")
-                }
                 val bootstrapFromHistory = useNativeSession && nativeSessionId.isBlank()
                 if (nativeSessionId.isNotBlank()) {
                     capturedNativeSessionId = nativeSessionId
@@ -1499,7 +1488,7 @@ class CliAgentChatActivity : AppCompatActivity() {
         out.appendLine("20) Minis浏览器标准流程为list_tabs、navigate、wait_for_dom_stable，再执行get_text、get_readable、click或type；需要接手其他智能体的页面时必须传入list_tabs返回的明确tab_id，同一标签上的动作会自动串行，禁止猜测动作名或标签编号。")
         out.appendLine("21) click和type的selector_type支持css、xpath、text；元素暂时不存在时工具会自动等待重试并返回页面上下文。")
         out.appendLine("22) screenshot会直接返回PNG图像内容和imageFilePath；需要视觉判断时必须读取该图像，不得仅凭截图成功文案推断页面状态。")
-        out.appendLine("23) 用户要求切换已配置模型或调整上下文、压缩、输出、思考参数时，使用 mcp__anyclaw_toolbox__anyclaw_agent_model_config；先 get 核对，再 update，变更从下一轮生效且不得声称 CLI 不支持的参数已生效。")
+        out.appendLine("23) 用户要求切换已配置模型或调整上下文、压缩、输出、思考参数时，使用 mcp__anyclaw_toolbox__anyclaw_agent_model_config；先 get 并阅读 runtimeCapabilities 的实际预算、上限与说明，再 update。MiniMax M3 官方路线已验证可通过当前 CLI 的 [1m] 标识启用百万上下文，未知网关不能只填数字宣称扩容；变更从下一轮生效，超限请求会拒绝并保持配置。")
     }
 
     private fun runClaudePrint(
@@ -1533,7 +1522,7 @@ class CliAgentChatActivity : AppCompatActivity() {
             args += listOf("--resume", resumeSessionId.trim())
         }
         if (config.modelId.isNotBlank()) {
-            args += listOf("--model", config.modelId.trim())
+            args += listOf("--model", config.runtimeCapabilities().cliModelId)
         }
         args += listOf("--output-format", "stream-json", "--include-partial-messages", "--include-hook-events")
         if (!sendPromptViaStdin) {
@@ -1549,13 +1538,11 @@ class CliAgentChatActivity : AppCompatActivity() {
         if (config.baseUrl.isNotBlank()) {
             extraEnv["ANTHROPIC_BASE_URL"] = config.baseUrl.trim()
         }
-        if (config.contextWindowTokens > 0) {
-            extraEnv["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = config.contextWindowTokens.toString()
-        }
-        if (config.autoCompactWindowTokens > 0) {
-            extraEnv["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = config.autoCompactWindowTokens.toString()
-        }
-        val effectiveOutput = ClaudeContextBudget.outputLimit(config.contextWindowTokens, config.maxOutputTokens)
+        val capability = config.runtimeCapabilities()
+        extraEnv["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = capability.contextWindowTokens.toString()
+        extraEnv["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = capability.autoCompactTokens.toString()
+        if (capability.millionContextSupported) extraEnv["CLAUDE_CODE_DISABLE_1M_CONTEXT"] = "0"
+        val effectiveOutput = capability.maxOutputTokens
         if (effectiveOutput > 0) {
             extraEnv["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = effectiveOutput.toString()
         }
@@ -1727,9 +1714,6 @@ class CliAgentChatActivity : AppCompatActivity() {
                     state.compactApplied = true
                     appendClaudeProcessLine(state.processLines, "Claude 上下文压缩完成")
                 }
-                if (subtype.equals("init", ignoreCase = true)) {
-                    appendClaudeProcessLine(state.processLines, "Claude 会话已初始化")
-                }
             }
             "assistant" -> {
                 val message = payload.optJSONObject("message")
@@ -1755,17 +1739,16 @@ class CliAgentChatActivity : AppCompatActivity() {
                     appendClaudeProcessLine(state.processLines, "Claude 返回错误: $result")
                 }
             }
-            else -> {
-                val subtype = payload.optString("subtype").trim()
-                val status = payload.optString("status").trim()
-                val phase = listOf(type, subtype, status)
-                    .filter { it.isNotBlank() }
-                    .joinToString("/")
-                    .trim()
-                if (phase.isNotBlank() && !phase.equals("assistant", ignoreCase = true)) {
-                    appendClaudeProcessLine(state.processLines, "事件: $phase")
+            // Transport envelopes are not user-facing progress. Preserve real errors above.
+            "stream_event" -> {
+                val event = payload.optJSONObject("event")
+                if (event?.optString("type") == "error") {
+                    appendClaudeProcessLine(state.processLines, "Claude 错误: ${event.optJSONObject("error")?.optString("message").orEmpty()}")
                 }
             }
+            "error" -> appendClaudeProcessLine(state.processLines, "Claude 错误: ${payload.optJSONObject("error")?.optString("message").orEmpty()}")
+            "user" -> Unit
+            else -> Unit
         }
         return true
     }
@@ -1883,10 +1866,7 @@ class CliAgentChatActivity : AppCompatActivity() {
     }
 
     private fun appendClaudeProcessLine(lines: MutableList<String>, line: String) {
-        val normalized = line.trim()
-        if (normalized.isBlank()) return
-        if (lines.lastOrNull() == normalized) return
-        lines += normalized
+        val normalized = ClaudeProcessPresentation.prepareLine(lines, liveProcessLines, line) ?: return
         recordLiveProcessLine(normalized)
     }
 

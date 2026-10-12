@@ -2,6 +2,8 @@ package com.codex.mobile
 
 import android.os.Bundle
 import android.text.InputType
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -33,6 +35,7 @@ class AgentModelManagerActivity : AppCompatActivity() {
 
     private lateinit var agentId: ExternalAgentId
     private var rows: List<AgentModelConfig> = emptyList()
+    private var activeConfig: AgentModelConfig? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,6 +65,7 @@ class AgentModelManagerActivity : AppCompatActivity() {
 
     private fun refresh() {
         rows = AgentModelConfigStore.loadConfigs(this, agentId)
+        activeConfig = AgentModelConfigStore.loadCurrentConfig(this, agentId)
         renderRows()
     }
 
@@ -76,13 +80,15 @@ class AgentModelManagerActivity : AppCompatActivity() {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val rowView = convertView ?: LayoutInflater.from(this@AgentModelManagerActivity)
                     .inflate(R.layout.item_agent_model_row, parent, false)
-                val row = rows[position]
+                val stored = rows[position]
+                val row = activeConfig?.takeIf { it.id == stored.id } ?: stored
                 val checkedPrefix = if (row.isDefault) "✓ " else ""
                 rowView.findViewById<TextView>(R.id.tvAgentModelRowTitle).text = "$checkedPrefix${row.displayName}"
-                val contextLabel = if (row.contextWindowTokens > 0) row.contextWindowTokens.toString() else "自动"
-                val outputLabel = if (row.maxOutputTokens > 0) row.maxOutputTokens.toString() else "自动"
+                val capability = row.runtimeCapabilities()
+                val contextLabel = capability.contextWindowTokens.toString()
+                val outputLabel = if (capability.maxOutputTokens > 0) capability.maxOutputTokens.toString() else "自动"
                 rowView.findViewById<TextView>(R.id.tvAgentModelRowMeta).text =
-                    "${row.modelId} | ${row.providerName} | ${row.protocol.value}\n上下文 $contextLabel · 输出 $outputLabel · 思考 ${row.effortLevel}\n${row.baseUrl}"
+                    "${row.modelId} | ${row.providerName} | ${row.protocol.value}\n实际上下文预算 $contextLabel · 输出预算 $outputLabel · 思考 ${row.effortLevel}\n${row.baseUrl}"
 
                 rowView.findViewById<Button>(R.id.btnAgentModelRowSelect).setOnClickListener {
                     AgentModelConfigStore.setDefault(this@AgentModelManagerActivity, agentId, row.id)
@@ -150,19 +156,20 @@ class AgentModelManagerActivity : AppCompatActivity() {
         }
 
         val inferredMiniMaxM3 = existing?.modelId.orEmpty().contains("minimax-m3", ignoreCase = true)
+        val existingCapability = existing?.runtimeCapabilities()
         val contextInput = EditText(this).apply {
             hint = "最大上下文 tokens，0 表示由 CLI 自动判断"
-            setText((existing?.contextWindowTokens ?: if (inferredMiniMaxM3) 1_000_000 else 0).toString())
+            setText((if (existingCapability?.legacyBudgetRecovered == true) 1_000_000 else existing?.contextWindowTokens ?: if (inferredMiniMaxM3) 1_000_000 else 0).toString())
             inputType = InputType.TYPE_CLASS_NUMBER
         }
         val compactWindowInput = EditText(this).apply {
             hint = "自动压缩触发 tokens，0 表示 CLI 默认"
-            setText((existing?.autoCompactWindowTokens ?: if (inferredMiniMaxM3) 900_000 else 0).toString())
+            setText((if (existingCapability?.legacyBudgetRecovered == true) 0 else existing?.autoCompactWindowTokens ?: 0).toString())
             inputType = InputType.TYPE_CLASS_NUMBER
         }
         val maxOutputInput = EditText(this).apply {
             hint = "单次最大输出 tokens，0 表示模型默认"
-            setText((existing?.maxOutputTokens ?: if (inferredMiniMaxM3) 32_768 else 0).toString())
+            setText((if (existingCapability?.legacyBudgetRecovered == true) existingCapability.maxOutputTokens else existing?.maxOutputTokens ?: if (inferredMiniMaxM3) 32_768 else 0).toString())
             inputType = InputType.TYPE_CLASS_NUMBER
         }
         val thinkingTokensInput = EditText(this).apply {
@@ -193,8 +200,24 @@ class AgentModelManagerActivity : AppCompatActivity() {
 
         val setDefault = CheckBox(this).apply {
             text = "设为当前模型"
-            isChecked = existing?.isDefault ?: true
+            isChecked = existing == null || existing.isDefault || existing.id == activeConfig?.id
         }
+
+        val capabilityHint = TextView(this).apply { textSize = 12f }
+        fun updateCapabilityHint() {
+            capabilityHint.text = ClaudeModelCapabilities.resolve(
+                modelIdInput.text.toString(), baseUrlInput.text.toString(),
+                contextInput.text.toString().toIntOrNull() ?: 0, maxOutputInput.text.toString().toIntOrNull() ?: 0,
+                compactWindowInput.text.toString().toIntOrNull() ?: 0,
+            ).userExplanation()
+        }
+        val parameterWatcher = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { updateCapabilityHint() }
+            override fun afterTextChanged(s: Editable?) = Unit
+        }
+        listOf(modelIdInput, baseUrlInput, contextInput, maxOutputInput, compactWindowInput).forEach { it.addTextChangedListener(parameterWatcher) }
+        updateCapabilityHint()
 
         fun applyPreset(index: Int, forceOverwrite: Boolean) {
             val preset = presets.getOrNull(index) ?: return
@@ -244,6 +267,7 @@ class AgentModelManagerActivity : AppCompatActivity() {
             addView(maxOutputInput)
             addView(effortSpinner)
             addView(thinkingTokensInput)
+            addView(capabilityHint)
             addView(TextView(this@AgentModelManagerActivity).apply {
                 text = "Claude Code CLI 没有稳定的 temperature 参数，因此本应用不伪造该设置；提供商不支持的参数会保持默认。"
                 textSize = 12f
@@ -329,6 +353,15 @@ class AgentModelManagerActivity : AppCompatActivity() {
                             effortLevel = effortValues[effortSpinner.selectedItemPosition],
                             maxThinkingTokens = maxThinkingTokens,
                         )
+                        val capability = config.runtimeCapabilities()
+                        if (contextWindowTokens > capability.contextWindowTokens) {
+                            contextInput.error = "当前模型路线最多支持 ${capability.contextWindowTokens}；扩展能力须先验证，不能仅保存更大数字"
+                            return@setOnClickListener
+                        }
+                        if (maxOutputTokens > capability.maxOutputTokens) {
+                            maxOutputInput.error = "当前上下文与 CLI 路线的输出预算上限为 ${capability.maxOutputTokens}"
+                            return@setOnClickListener
+                        }
                         AgentModelConfigStore.saveConfig(this, config)
                         refresh()
                         dialog.dismiss()

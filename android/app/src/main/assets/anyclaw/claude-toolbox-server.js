@@ -4,6 +4,35 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
+// Keep this pure resolver in parity with ClaudeModelCapabilities.kt; tests cover both.
+function claudeRuntimeCapabilities(config = {}, overrides = {}) {
+  const current = { ...config, ...overrides };
+  const baseModel = String(current.modelId || "").trim().replace(/\[1m\]$/i, "");
+  let route;
+  try { route = new URL(current.baseUrl || ""); } catch (_) {}
+  const official = route?.protocol === "https:" && ["api.minimax.io", "api.minimaxi.com"].includes(route.hostname) &&
+    route.pathname.replace(/\/$/, "") === "/anthropic" && (!route.port || route.port === "443") && !route.username && !route.password && !route.search;
+  const million = !!official && /^MiniMax-M3$/i.test(baseModel);
+  const requested = Number(current.contextWindowTokens) || 0;
+  const output = Number(current.maxOutputTokens) || 0;
+  const compact = Number(current.autoCompactWindowTokens) || 0;
+  const legacy = million && requested === 524288 && output === 512000 && compact === 514000;
+  const ceiling = million ? 1000000 : 200000;
+  const window = requested <= 0 || legacy ? ceiling : Math.min(requested, ceiling);
+  const outputCeiling = Math.max(1, Math.min(128000, Math.floor(window / 4)));
+  const effectiveOutput = output > 0 ? Math.min(output, outputCeiling) : 0;
+  const safeInput = Math.max(1, Math.floor((window - Math.min(output || 32000, outputCeiling)) * 0.9));
+  const proactive = Math.max(1, Math.floor(safeInput * 0.9));
+  return { contextWindowTokens: window, contextCeilingTokens: ceiling, maxOutputTokens: effectiveOutput,
+    outputCeilingTokens: outputCeiling, safeInputTokens: safeInput,
+    autoCompactTokens: compact > 0 && !legacy ? Math.min(compact, proactive) : proactive,
+    cliModelId: million ? baseModel + (window > 200000 ? "[1m]" : "") : String(current.modelId || ""),
+    millionContextSupported: million, legacyBudgetRecovered: legacy, contextIsGlobalHardLimit: false,
+    note: million ? "当前 MiniMax M3 官方路线已验证百万上下文，通过当前 CLI 的 [1m] 标识启用，不需要升级二进制；输入与输出共享窗口。" :
+      "此模型或网关的扩展能力尚未验证，按二十万默认预算处理；不是所有 CLI 模型的硬上限，不要仅凭参数保存成功宣称扩容。",
+    outputNote: "当前 CLI 通用输出上限按128000处理，且输出预算最多占上下文四分之一；返回的生效预算与已保存请求值可能不同。" };
+}
+
 const SERVER_INFO = { name: "anyclaw-toolbox", version: "2.3.0" };
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_STDIO_BYTES = 4 * 1024 * 1024;
@@ -311,7 +340,7 @@ const TOOL_DEFS = [
     replace: { type: "string" },
     createDirs: { type: "boolean" }
   }, ["path", "mode"]),
-  tool("anyclaw_agent_model_config", "Read or update Claude's own active model and runtime parameters. Use when the user asks in natural language to switch a configured Claude model or change context, compaction, output, effort, or thinking limits. Changes apply from the next turn and never expose API keys.", {
+  tool("anyclaw_agent_model_config", "Read or update Claude's active model and parameters. ALWAYS get first and read runtimeCapabilities: it reports the actual context/output budget and supported ceiling, not merely saved numbers. Only the verified official MiniMax-M3 route enables 1M on the current CLI; unknown gateways retain the 200K default, not a universal hard limit. Never claim an unsupported value became effective. Updates apply next turn and never expose API keys.", {
     action: { type: "string", enum: ["get", "update", "reset"] },
     selectedConfigId: { type: "string" },
     contextWindowTokens: { type: "integer", minimum: 0, maximum: 2000000 },
@@ -2135,19 +2164,25 @@ async function callTool(name, args) {
       try {
         overrides = JSON.parse(fs.readFileSync(CLAUDE_RUNTIME_OVERRIDE_PATH, "utf8"));
       } catch (_) {}
+      const selected = configs.find(item => item.id === overrides.selectedConfigId) || configs.find(item => item.isDefault) || configs[0] || {};
       if (action === "get") {
-        return { ok: true, configs, overrides, appliesFrom: "next_turn", apiKeysExposed: false };
+        return { ok: true, configs, overrides, runtimeCapabilities: claudeRuntimeCapabilities(selected, overrides), appliesFrom: "next_turn", apiKeysExposed: false };
       }
       if (action === "reset") {
         fs.mkdirSync(AGENT_STATE_DIR, { recursive: true });
         const temp = `${CLAUDE_RUNTIME_OVERRIDE_PATH}.${process.pid}.tmp`;
         fs.writeFileSync(temp, "{}\n", { encoding: "utf8", mode: 0o600 });
         fs.renameSync(temp, CLAUDE_RUNTIME_OVERRIDE_PATH);
-        return { ok: true, overrides: {}, appliesFrom: "next_turn" };
+        const storedDefault = configs.find(item => item.isDefault) || configs[0] || {};
+        return { ok: true, overrides: {}, runtimeCapabilities: claudeRuntimeCapabilities(storedDefault), appliesFrom: "next_turn" };
       }
       if (action !== "update") return { ok: false, error: "action_must_be_get_update_or_reset" };
 
       const next = { ...overrides };
+      if (claudeRuntimeCapabilities(selected, overrides).legacyBudgetRecovered) {
+        next.contextWindowTokens = 1000000;
+        next.autoCompactWindowTokens = 0;
+      }
       if (Object.prototype.hasOwnProperty.call(args, "selectedConfigId")) {
         const selectedConfigId = toStringSafe(args.selectedConfigId, "").trim();
         if (selectedConfigId && !configs.some((item) => item && item.id === selectedConfigId)) {
@@ -2179,11 +2214,19 @@ async function callTool(name, args) {
       if (Number(next.contextWindowTokens) > 0 && Number(next.autoCompactWindowTokens) > Number(next.contextWindowTokens)) {
         return { ok: false, error: "auto_compact_exceeds_context_window" };
       }
+      const nextSelected = configs.find(item => item.id === next.selectedConfigId) || configs.find(item => item.isDefault) || configs[0] || {};
+      const runtimeCapabilities = claudeRuntimeCapabilities(nextSelected, next);
+      if (Object.prototype.hasOwnProperty.call(args, "contextWindowTokens") && args.contextWindowTokens > runtimeCapabilities.contextCeilingTokens) {
+        return { ok: false, error: "unsupported_context_window", maximum: runtimeCapabilities.contextCeilingTokens, runtimeCapabilities, configurationUnchanged: true };
+      }
+      if (Object.prototype.hasOwnProperty.call(args, "maxOutputTokens") && args.maxOutputTokens > runtimeCapabilities.outputCeilingTokens) {
+        return { ok: false, error: "unsupported_output_budget", maximum: runtimeCapabilities.outputCeilingTokens, runtimeCapabilities, configurationUnchanged: true };
+      }
       fs.mkdirSync(AGENT_STATE_DIR, { recursive: true });
       const temp = `${CLAUDE_RUNTIME_OVERRIDE_PATH}.${process.pid}.tmp`;
       fs.writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
       fs.renameSync(temp, CLAUDE_RUNTIME_OVERRIDE_PATH);
-      return { ok: true, overrides: next, appliesFrom: "next_turn", apiKeysExposed: false };
+      return { ok: true, overrides: next, runtimeCapabilities, appliesFrom: "next_turn", apiKeysExposed: false };
     }
     case "anyclaw_terminal": {
       const command = toStringSafe(args.command, "").trim();

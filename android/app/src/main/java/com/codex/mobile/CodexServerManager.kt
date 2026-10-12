@@ -3165,7 +3165,7 @@ EOF
         val marker = "POCKETLOBSTER_CLAUDE_HEALTH_OK_${System.currentTimeMillis()}"
         val env = claudeModelEnvironment(config)
         val args = mutableListOf("-p", "--output-format", "json", "--max-turns", "1")
-        if (config.modelId.isNotBlank()) args += listOf("--model", config.modelId.trim())
+        if (config.modelId.isNotBlank()) args += listOf("--model", config.runtimeCapabilities().cliModelId)
         val result = runClaudeCandidateCommand(
             cliFile = cliFile,
             args = args,
@@ -3181,9 +3181,11 @@ EOF
     private fun claudeModelEnvironment(config: AgentModelConfig): Map<String, String> {
         val env = mutableMapOf("ANTHROPIC_API_KEY" to config.apiKey.trim())
         if (config.baseUrl.isNotBlank()) env["ANTHROPIC_BASE_URL"] = config.baseUrl.trim()
-        if (config.contextWindowTokens > 0) env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = config.contextWindowTokens.toString()
-        if (config.autoCompactWindowTokens > 0) env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = config.autoCompactWindowTokens.toString()
-        if (config.maxOutputTokens > 0) env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = config.maxOutputTokens.toString()
+        val capability = config.runtimeCapabilities()
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = capability.contextWindowTokens.toString()
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = capability.autoCompactTokens.toString()
+        if (capability.millionContextSupported) env["CLAUDE_CODE_DISABLE_1M_CONTEXT"] = "0"
+        if (capability.maxOutputTokens > 0) env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = capability.maxOutputTokens.toString()
         if (config.effortLevel in setOf("low", "medium", "high")) env["CLAUDE_CODE_EFFORT_LEVEL"] = config.effortLevel
         if (config.maxThinkingTokens > 0) env["MAX_THINKING_TOKENS"] = config.maxThinkingTokens.toString()
         return env

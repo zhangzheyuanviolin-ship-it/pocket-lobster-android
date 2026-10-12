@@ -39,6 +39,10 @@ data class AgentModelConfig(
     val maxThinkingTokens: Int = 0,
 )
 
+fun AgentModelConfig.runtimeCapabilities(): ClaudeRuntimeCapability = ClaudeModelCapabilities.resolve(
+    modelId, baseUrl, contextWindowTokens, maxOutputTokens, autoCompactWindowTokens,
+)
+
 object AgentModelConfigStore {
     private const val PREFS_NAME = "agent_model_configs"
     private const val KEY_CONFIGS_JSON = "configs_json"
@@ -242,8 +246,9 @@ object AgentModelConfigStore {
 
     private fun clearRuntimeSelectedConfig(context: Context) {
         val override = readRuntimeOverride(context)
-        if (!override.has("selectedConfigId")) return
-        override.remove("selectedConfigId")
+        val runtimeFields = listOf("selectedConfigId", "contextWindowTokens", "autoCompactWindowTokens", "maxOutputTokens", "effortLevel", "maxThinkingTokens")
+        if (runtimeFields.none { override.has(it) }) return
+        runtimeFields.forEach { override.remove(it) }
         val file = stateFile(context, RUNTIME_OVERRIDE_FILE)
         file.parentFile?.mkdirs()
         val temp = java.io.File(file.parentFile, ".${file.name}.tmp")
@@ -264,6 +269,7 @@ object AgentModelConfigStore {
                     .put("providerName", cfg.providerName)
                     .put("modelId", cfg.modelId)
                     .put("isDefault", cfg.isDefault)
+                    .put("baseUrl", cfg.baseUrl)
                     .put("contextWindowTokens", cfg.contextWindowTokens)
                     .put("autoCompactWindowTokens", cfg.autoCompactWindowTokens)
                     .put("maxOutputTokens", cfg.maxOutputTokens)
