@@ -31,8 +31,8 @@ class ClaudeModelCapabilitiesTest {
             assertEquals(200000, cap.contextWindowTokens)
         }
     }
-    @Test fun chinaOfficialEndpointAndCaseInsensitiveMarkerAreSupported() {
-        val cap = ClaudeModelCapabilities.resolve("MINIMAX-M3[1M]", "https://api.minimaxi.com:443/anthropic/", 1000000, 0, 0)
+    @Test fun caseInsensitiveMarkerOnTheVerifiedRouteIsSupported() {
+        val cap = ClaudeModelCapabilities.resolve("MINIMAX-M3[1M]", "https://api.minimax.io:443/anthropic/", 1000000, 0, 0)
         assertTrue(cap.millionContextSupported)
         assertEquals("MINIMAX-M3[1m]", cap.cliModelId)
     }
