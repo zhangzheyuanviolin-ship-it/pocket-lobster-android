@@ -69,7 +69,7 @@ object PhoneUiAgentProgressOverlay {
                 gravity = Gravity.TOP or Gravity.END
                 x = (8 * density).toInt()
                 y = (48 * density).toInt()
-                title = "口袋大龙虾手机操作进度"
+                title = "Pocket Lobster UI Agent Progress"
             }
             manager.addView(view, params)
             windowManager = manager

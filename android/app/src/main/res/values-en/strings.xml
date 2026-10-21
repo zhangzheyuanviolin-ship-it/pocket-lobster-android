@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Pocket Lobster</string>
+    <string name="agent_hub_title">Pocket Lobster Agent Hub</string>
+    <string name="conversation_exported_toast">Exported to Download/PocketLobster/exports.</string>
+    <string name="storage_permission_required_message_android_r">Pocket Lobster needs full file access to read and write shared storage (for example /sdcard). Grant \"All files access\" to continue.</string>
+    <string name="storage_permission_required_message_legacy">Pocket Lobster needs storage permission to read and write shared storage (for example /sdcard). Grant permission to continue.</string>
+    <string name="shizuku_revoke_hint">To completely revoke access: Tap \"Open Shizuku app\" and disable authorization for Pocket Lobster.</string>
+</resources>

@@ -15,7 +15,7 @@ class PhoneUiAgentBootstrapActivity : Activity() {
                 setTextColor(Color.BLACK)
                 gravity = Gravity.CENTER
                 textSize = 24f
-                text = "口袋大龙虾虚拟屏幕已就绪\n请根据用户任务启动目标应用"
+                text = "Pocket Lobster virtual screen ready\n请根据用户任务启动目标应用"
                 contentDescription = text
             },
         )
